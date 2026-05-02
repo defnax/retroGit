@@ -1,5 +1,5 @@
 /*******************************************************************************
- * services/rsRetroGitItems.h                                                  *
+ * services/rsGitItems.h                                                       *
  *                                                                             *
  * Copyright (C) 2026 RetroShare Team <retroshare.project@gmail.com>           *
  *                                                                             *
@@ -16,7 +16,7 @@
  * You should have received a copy of the GNU Affero General Public License    *
  * along with this program. If not, see <https://www.gnu.org/licenses/>.       *
  *                                                                             *
- ********************************************************************************/
+ *******************************************************************************/
 
 #ifndef SERVICES_RS_GIT_ITEMS_H
 #define SERVICES_RS_GIT_ITEMS_H
@@ -24,130 +24,129 @@
 #include <map>
 
 #include "rsitems/rsserviceids.h"
-#include "serialiser/rsserial.h"
 #include "rsitems/rsitem.h"
-#include "interface/rsGit.h" 
+#include "interface/rsGit.h"
 #include <retroshare/rsgxscommon.h>
 #include <retroshare/rsgxsifacetypes.h>
 #include <rsitems/rsgxsitems.h>
+#include "serialiser/rsserializer.h"
+
 /**************************************************************************/
 
-const uint16_t RS_SERVICE_TYPE_RetroGit_PLUGIN = 0xc5e5;
+/* Service and config service IDs */
+const uint16_t RS_SERVICE_TYPE_RetroGit_PLUGIN        = 0xc5e5;
+const uint16_t RS_SERVICE_TYPE_RetroGit_PLUGIN_CONFIG = 0xc5e6;
 
-const uint8_t RS_PKT_SUBTYPE_RetroGit_DATA 	   = 0x01;
-const uint8_t RS_PKT_SUBTYPE_RetroGit_CONFIG   = 0x02;
+/* Item subtypes for the GXS service (RS_SERVICE_TYPE_RetroGit_PLUGIN) */
+const uint8_t RS_PKT_SUBTYPE_RetroGit_GROUP  = 0x02;  // GXS group item (repository metadata)
 
-const uint8_t QOS_PRIORITY_RS_RetroGit = 9 ;
+/* Item subtypes for the config service (RS_SERVICE_TYPE_RetroGit_PLUGIN_CONFIG) */
+const uint8_t RS_PKT_SUBTYPE_RetroGit_CONFIG = 0x01;  // Persistent plugin config
 
+const uint8_t QOS_PRIORITY_RS_RetroGit = 9;
+
+/**************************************************************************/
+/* GXS Group Item — represents a Git Repository group                     */
+/**************************************************************************/
 
 class RsGitGroupItem : public RsGxsGrpItem
 {
 public:
-    RsGitGroupItem() : RsGxsGrpItem(RS_SERVICE_TYPE_RetroGit_PLUGIN, RS_PKT_SUBTYPE_GXS_GROUP_DATA_ITEM) {}
-    virtual ~RsGitGroupItem() override {}
+    RsGitGroupItem()
+        : RsGxsGrpItem(RS_SERVICE_TYPE_RetroGit_PLUGIN, RS_PKT_SUBTYPE_RetroGit_GROUP) {}
 
-    virtual RsGitGroupItem* clone() const { return new RsGitGroupItem(*this); }
+    virtual ~RsGitGroupItem() override {}
 
     RsGitGroup mGroup;
 
-    // GXS methods
-    virtual void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext& ctx) override
+    // Do NOT serialize 'meta' here — the GXS layer handles it automatically
+    virtual void serial_process(RsGenericSerializer::SerializeJob j,
+                                RsGenericSerializer::SerializeContext& ctx) override
     {
-        RS_SERIAL_PROCESS(meta);
         RS_SERIAL_PROCESS(mGroup.mGroupName);
         RS_SERIAL_PROCESS(mGroup.mGroupDescription);
     }
+
+    void clear() override
+    {
+        mGroup.mGroupName.clear();
+        mGroup.mGroupDescription.clear();
+    }
 };
 
+/**************************************************************************/
+/* Config Item — persists plugin state across restarts                    */
+/**************************************************************************/
 
-class RsGitConfigItem : public RsItem
+struct RsGitConfigItem : public RsItem
 {
-public:
-    RsGitConfigItem() : RsItem(RS_PKT_VERSION_SERVICE, RS_SERVICE_TYPE_RetroGit_PLUGIN, RS_PKT_SUBTYPE_RetroGit_CONFIG) {}
-    virtual ~RsGitConfigItem() override {}
+    RsGitConfigItem()
+        : RsItem(RS_PKT_VERSION_SERVICE, RS_SERVICE_TYPE_RetroGit_PLUGIN_CONFIG,
+                 RS_PKT_SUBTYPE_RetroGit_CONFIG) {}
 
-    virtual void clear() override { mKnownGit.clear(); }
-    virtual void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext& ctx) override
-    {
-        RS_SERIAL_PROCESS(mKnownGit);
-    }
+    virtual ~RsGitConfigItem() {}
+
+    void serial_process(RsGenericSerializer::SerializeJob j,
+                        RsGenericSerializer::SerializeContext& ctx)
+    { RS_SERIAL_PROCESS(mKnownGit); }
+
+    void clear() { mKnownGit.clear(); }
 
     std::map<uint32_t, uint32_t> mKnownGit;
 };
 
-
-
-class RsGitItem: public RsItem
-{
-public:
-	RsGitItem(uint8_t RetroGit_subtype)
-		: RsItem(RS_PKT_VERSION_SERVICE,RS_SERVICE_TYPE_RetroGit_PLUGIN,RetroGit_subtype)
-	{
-		setPriorityLevel(QOS_PRIORITY_RS_RetroGit) ;
-	}
-
-	virtual ~RsGitItem() {};
-	virtual void clear() {};
-	virtual void serial_process(RsGenericSerializer::SerializeJob, RsGenericSerializer::SerializeContext&) {}
-	virtual std::ostream& print(std::ostream &out, uint16_t indent = 0) = 0 ;
-
-	virtual bool serialise(void *data,uint32_t& size) = 0 ;	// Isn't it better that items can serialise themselves ?
-	virtual uint32_t serial_size() const = 0 ; 							// deserialise is handled using a constructor
-    
-    RsGitGroup mGroup;
-};
-
-
-class RsGitDataItem: public RsGitItem
-{
-public:
-	RsGitDataItem() :RsGitItem(RS_PKT_SUBTYPE_RetroGit_DATA) {}
-	RsGitDataItem(void *data,uint32_t size) ; // de-serialization
-
-	virtual bool serialise(void *data,uint32_t& size) ;
-	virtual uint32_t serial_size() const ;
-
-	virtual ~RsGitDataItem()
-	{
-	}
-	virtual std::ostream& print(std::ostream &out, uint16_t indent = 0);
-
-	uint32_t flags ;
-	uint32_t data_size ;
-	std::string m_msg;
-	RsGxsId m_gxsId; // Optional: track origin GXS ID in the item
-};
-
-
-class RsGitSerialiser: public RsSerialType
-{
-public:
-	RsGitSerialiser()
-		:RsSerialType(RS_PKT_VERSION_SERVICE, RS_SERVICE_TYPE_RetroGit_PLUGIN)
-	{
-	}
-	virtual ~RsGitSerialiser() {}
-
-	virtual uint32_t 	size (RsItem *item)
-	{
-		return dynamic_cast<RsGitItem *>(item)->serial_size() ;
-	}
-
-	virtual	bool serialise  (RsItem *item, void *data, uint32_t *size)
-	{
-		return dynamic_cast<RsGitItem *>(item)->serialise(data,*size) ;
-	}
-	virtual	RsItem *deserialise(void *data, uint32_t *size);
-};
+/**************************************************************************/
+/* GXS Serializer — handles group items for the GXS exchange layer        */
+/**************************************************************************/
 
 class RsGxsRetroGitSerialiser : public RsServiceSerializer
 {
 public:
-    RsGxsRetroGitSerialiser() : RsServiceSerializer(RS_SERVICE_TYPE_RetroGit_PLUGIN) {}
+    RsGxsRetroGitSerialiser()
+        : RsServiceSerializer(RS_SERVICE_TYPE_RetroGit_PLUGIN) {}
+
     virtual ~RsGxsRetroGitSerialiser() {}
 
-    virtual RsItem *create_item(uint16_t service, uint8_t item_subtype) const override;
+    RsItem* create_item(uint16_t service_id, uint8_t item_sub_id) const override
+    {
+        if (service_id != RS_SERVICE_TYPE_RetroGit_PLUGIN)
+            return nullptr;
+
+        switch (item_sub_id)
+        {
+        case RS_PKT_SUBTYPE_RetroGit_GROUP: return new RsGitGroupItem();
+        default:
+            return nullptr;
+        }
+    }
 };
+
+/**************************************************************************/
+/* Config Serializer — handles config items for saveList/loadList         */
+/**************************************************************************/
+
+class RsGitConfigSerializer : public RsServiceSerializer
+{
+public:
+    RsGitConfigSerializer()
+        : RsServiceSerializer(RS_SERVICE_TYPE_RetroGit_PLUGIN_CONFIG) {}
+
+    virtual ~RsGitConfigSerializer() {}
+
+    RsItem* create_item(uint16_t service_id, uint8_t item_sub_id) const override
+    {
+        if (service_id != RS_SERVICE_TYPE_RetroGit_PLUGIN_CONFIG)
+            return nullptr;
+
+        switch (item_sub_id)
+        {
+        case RS_PKT_SUBTYPE_RetroGit_CONFIG: return new RsGitConfigItem();
+        default:
+            return nullptr;
+        }
+    }
+};
+
 /**************************************************************************/
 
 #endif // SERVICES_RS_GIT_ITEMS_H

@@ -33,7 +33,7 @@
 #include <QString>
 
 class RsGit ;
-extern RsGit *rsRetroGit;
+extern RsGit *rsGit;
  
 static const uint32_t CONFIG_TYPE_RetroGit_PLUGIN = 0xe001 ;
 
@@ -120,7 +120,7 @@ public:
     virtual void setMessageReadStatus(uint32_t &token, const RsGxsGrpMsgIdPair &msgId, bool read) = 0;
 };
 
-extern RsGit *rsRetroGit;
+extern RsGit *rsGit;
 
 #endif // INTERFACE_RS_GIT_H
 

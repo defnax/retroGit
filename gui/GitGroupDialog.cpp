@@ -106,7 +106,7 @@ bool GitGroupDialog::service_createGroup(RsGroupMetaData &meta)
 	RsGitGroup grp;
 	prepareGitGroup(grp, meta);
 
-	bool success = rsRetroGit->createGroup(grp);
+	bool success = rsGit->createGroup(grp);
 	// TODO createGroup should refresh groupId or Data
 	return success;
 }
@@ -119,7 +119,7 @@ bool GitGroupDialog::service_updateGroup(const RsGroupMetaData &editedMeta)
 	std::cerr << "GitGroupDialog::service_updateGroup() submitting changes";
 	std::cerr << std::endl;
 
-    bool success = rsRetroGit->createGroup(grp);
+    bool success = rsGit->createGroup(grp);
 	// TODO updateGroup should refresh groupId or Data
 	return success;
 }
@@ -150,7 +150,7 @@ bool GitGroupDialog::service_getGroupData(const RsGxsGroupId &grpId, RsGxsGeneri
 
 	std::list<RsGxsGroupId> groupIds({grpId});
 	std::vector<RsGitGroup> groups;
-	if (!rsRetroGit->getGroups(groupIds, groups))
+	if (!rsGit->getGroups(groupIds, groups))
 	{
 		std::cerr << "GitGroupDialog::service_loadGroup() Error getting GroupData";
 		std::cerr << std::endl;

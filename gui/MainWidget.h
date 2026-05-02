@@ -29,6 +29,8 @@
 
 #include <list>
 #include <retroshare/rsgxsifacetypes.h>
+#include <retroshare/rsevents.h>
+#include "gui/common/GroupTreeWidget.h"
 
 #include <QWidget>
 
@@ -47,14 +49,28 @@ public:
 	explicit MainWidget(QWidget *parent, RetroGitNotify *notify);
 	~MainWidget();
 
+protected:
+	virtual void showEvent(QShowEvent *event) override;
+
 private slots:
 	void createGroup();
+	void updateDisplay();
 
 private:
 	void loadGroupMeta();
 	void insertGroupsData(const std::list<RsGroupMetaData> &gitList);
+	void GroupMetaDataToGroupItemInfo(const RsGroupMetaData &groupInfo, GroupItemInfo &groupItemInfo);
+	void handleEvent_main_thread(std::shared_ptr<const RsEvent> event);
+	void processSettings(bool load);
 
-private:
+	QTreeWidgetItem *mYourGroups;
+	QTreeWidgetItem *mSubscribedGroups;
+	QTreeWidgetItem *mPopularGroups;
+	QTreeWidgetItem *mOtherGroups;
+	bool mInitialLoadDone = false;
+
+	RsEventsHandlerId_t mEventHandlerId;
+
 	Ui::MainWidget *ui;
 
 };

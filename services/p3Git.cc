@@ -28,7 +28,7 @@
 
 #include "gxs/rsgenexchange.h"
 
-RsGit *rsRetroGit = NULL;
+RsGit *rsGit = NULL;
 
 static uint32_t retroGitAuthenPolicy()
 {
@@ -49,12 +49,12 @@ p3Git::p3Git(RsGeneralDataService* gds, RsNetworkExchangeService* nes, RsGixs *g
 	: RsGenExchange(gds, nes, new RsGxsRetroGitSerialiser(), RS_SERVICE_TYPE_RetroGit_PLUGIN, gixs, retroGitAuthenPolicy()),
       mRetroGitMtx("p3Git"), mNotify(notifier), RsGxsIfaceHelper(static_cast<RsGxsIface&>(*this))
 {
-	rsRetroGit = this;
+	rsGit = this;
 }
 
 p3Git::~p3Git()
 {
-	rsRetroGit = NULL;
+	rsGit = NULL;
 }
 
 RsServiceInfo p3Git::getServiceInfo()
@@ -76,7 +76,7 @@ RsServiceInfo p3Git::getServiceInfo()
 RsSerialiser* p3Git::setupSerialiser()
 {
     RsSerialiser* rss = new RsSerialiser;
-    rss->addSerialType(new RsGxsRetroGitSerialiser());
+    rss->addSerialType(new RsGitConfigSerializer());
     return rss;
 }
 
@@ -125,8 +125,63 @@ RsTokenService* p3Git::getTokenService() {
 	return RsGenExchange::getTokenService();
 }
 
-void p3Git::notifyChanges(std::vector<RsGxsNotify *> &)
+void p3Git::notifyChanges(std::vector<RsGxsNotify *> &changes)
 {
+    std::cerr << "p3Git::notifyChanges() " << changes.size() << " changes" << std::endl;
+
+    for (auto it = changes.begin(); it != changes.end(); ++it)
+    {
+        /* ---- Message changes (new commit / post) ---- */
+        RsGxsMsgChange *msgChange = dynamic_cast<RsGxsMsgChange*>(*it);
+        if (msgChange)
+        {
+            if (msgChange->getType() == RsGxsNotify::TYPE_RECEIVED_NEW ||
+                msgChange->getType() == RsGxsNotify::TYPE_PUBLISHED)
+            {
+                if (rsEvents)
+                {
+                    auto ev = std::make_shared<RsGitEvent>();
+                    ev->mGitGroupId = msgChange->mGroupId;
+                    ev->mGitMsgId   = msgChange->mMsgId;
+                    ev->mGitEventCode = RsGitEventCode::NEW_POST;
+                    rsEvents->postEvent(ev);
+                }
+            }
+            continue;
+        }
+
+        /* ---- Group changes (new repo / subscription / update) ---- */
+        RsGxsGroupChange *grpChange = dynamic_cast<RsGxsGroupChange*>(*it);
+        if (grpChange && rsEvents)
+        {
+            auto ev = std::make_shared<RsGitEvent>();
+            ev->mGitGroupId = grpChange->mGroupId;
+
+            switch (grpChange->getType())
+            {
+            case RsGxsNotify::TYPE_PUBLISHED:
+                // Fired when a group is subscribed/unsubscribed
+                ev->mGitEventCode = RsGitEventCode::SUBSCRIBE_STATUS_CHANGED;
+                rsEvents->postEvent(ev);
+                break;
+
+            case RsGxsNotify::TYPE_RECEIVED_NEW:
+                // A new repository arrived from the network
+                ev->mGitEventCode = RsGitEventCode::NEW_GIT;
+                rsEvents->postEvent(ev);
+                break;
+
+            case RsGxsNotify::TYPE_PROCESSED:
+                // An existing repository was updated
+                ev->mGitEventCode = RsGitEventCode::GIT_UPDATED;
+                rsEvents->postEvent(ev);
+                break;
+
+            default:
+                break;
+            }
+        }
+    }
 }
 
 // Blocking Interfaces.
@@ -191,18 +246,7 @@ bool p3Git::createGroup(uint32_t &token, RsGitGroup &group)
     return true;
 }
 
-RsItem *RsGxsRetroGitSerialiser::create_item(uint16_t service, uint8_t item_subtype) const
-{
-    if (service != RS_SERVICE_TYPE_RetroGit_PLUGIN)
-        return NULL;
 
-    if (item_subtype == RS_PKT_SUBTYPE_GXS_GROUP_DATA_ITEM)
-        return new RsGitGroupItem();
-    else if (item_subtype == RS_PKT_SUBTYPE_RetroGit_CONFIG)
-        return new RsGitConfigItem();
-
-    return NULL;
-}
 
 bool p3Git::subscribeToGroup(uint32_t& token, const RsGxsGroupId& groupId, bool subscribe_flag)
 {
