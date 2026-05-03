@@ -39,6 +39,8 @@ const uint16_t RS_SERVICE_TYPE_RetroGit_PLUGIN_CONFIG = 0xc5e6;
 
 /* Item subtypes for the GXS service (RS_SERVICE_TYPE_RetroGit_PLUGIN) */
 const uint8_t RS_PKT_SUBTYPE_RetroGit_GROUP  = 0x02;  // GXS group item (repository metadata)
+const uint8_t RS_PKT_SUBTYPE_RetroGit_MSG    = 0x03;  // GXS message item (commit/issue metadata)
+
 
 /* Item subtypes for the config service (RS_SERVICE_TYPE_RetroGit_PLUGIN_CONFIG) */
 const uint8_t RS_PKT_SUBTYPE_RetroGit_CONFIG = 0x01;  // Persistent plugin config
@@ -71,6 +73,29 @@ public:
     {
         mGroup.mGroupName.clear();
         mGroup.mGroupDescription.clear();
+    }
+};
+
+/**************************************************************************/
+/* GXS Msg Item — represents a Git commit/issue                           */
+/**************************************************************************/
+
+class RsGitMsgItem : public RsGxsMsgItem
+{
+public:
+    RsGitMsgItem()
+        : RsGxsMsgItem(RS_SERVICE_TYPE_RetroGit_PLUGIN, RS_PKT_SUBTYPE_RetroGit_MSG) {}
+
+    virtual ~RsGitMsgItem() override {}
+
+    virtual void serial_process(RsGenericSerializer::SerializeJob j,
+                                RsGenericSerializer::SerializeContext& ctx) override
+    {
+        // No extra fields beyond the base GXS message for now
+    }
+
+    void clear() override
+    {
     }
 };
 
@@ -115,6 +140,7 @@ public:
         switch (item_sub_id)
         {
         case RS_PKT_SUBTYPE_RetroGit_GROUP: return new RsGitGroupItem();
+        case RS_PKT_SUBTYPE_RetroGit_MSG: return new RsGitMsgItem();
         default:
             return nullptr;
         }
