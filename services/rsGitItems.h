@@ -88,14 +88,43 @@ public:
 
     virtual ~RsGitMsgItem() override {}
 
+    uint32_t mGitMsgType = 0; // 1 = UPDATE, 2 = PULL_REQUEST
+    std::string mPackfileData;
+    std::map<std::string, std::string> mRefUpdates;
+    std::vector<RsGxsFile> mFiles;
+    
+    // For pull requests
+    std::string mTitle;
+    std::string mDescription;
+    std::string mTargetBranch;
+    std::string mSourceBranch;
+    uint32_t mStatus = 0;
+
     virtual void serial_process(RsGenericSerializer::SerializeJob j,
                                 RsGenericSerializer::SerializeContext& ctx) override
     {
-        // No extra fields beyond the base GXS message for now
+        RS_SERIAL_PROCESS(mGitMsgType);
+        RS_SERIAL_PROCESS(mPackfileData);
+        RS_SERIAL_PROCESS(mRefUpdates);
+        RS_SERIAL_PROCESS(mFiles);
+        RS_SERIAL_PROCESS(mTitle);
+        RS_SERIAL_PROCESS(mDescription);
+        RS_SERIAL_PROCESS(mTargetBranch);
+        RS_SERIAL_PROCESS(mSourceBranch);
+        RS_SERIAL_PROCESS(mStatus);
     }
 
     void clear() override
     {
+        mGitMsgType = 0;
+        mPackfileData.clear();
+        mRefUpdates.clear();
+        mFiles.clear();
+        mTitle.clear();
+        mDescription.clear();
+        mTargetBranch.clear();
+        mSourceBranch.clear();
+        mStatus = 0;
     }
 };
 

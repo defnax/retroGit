@@ -63,6 +63,9 @@ public:
     virtual bool createGroup(RsGitGroup &group) override;
     virtual bool updateGroup(RsGitGroup &group) override;
 
+    virtual bool publishGitUpdate(uint32_t &token, RsGitUpdate &update) override;
+    virtual bool publishPullRequest(uint32_t &token, RsGitPullRequest &pr) override;
+
     virtual bool getGroups(const std::list<RsGxsGroupId> &groupIds, std::vector<RsGitGroup> &groups) override;
 
     virtual bool subscribeToGroup(uint32_t &token, const RsGxsGroupId &groupId, bool subscribe) override;
@@ -72,7 +75,15 @@ public:
     virtual void setMessageReadStatus(uint32_t &token,const RsGxsGrpMsgIdPair &msgId,bool read) override;
 
 private:
+    struct PendingPackfile
+    {
+        RsGxsGroupId groupId;
+        RsFileHash fileHash;
+        std::map<std::string, std::string> refUpdates;
+    };
+
     RsMutex mRetroGitMtx;
     RetroGitNotify *mNotify;
     std::map<uint32_t, uint32_t> mKnownGit;
+    std::list<PendingPackfile> mPendingPackfiles;
 };

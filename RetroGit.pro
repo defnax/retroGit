@@ -50,17 +50,21 @@ win32 {
 SOURCES = RetroGitPlugin.cpp               \
           services/p3Git.cc           \
           services/rsGitItems.cc \
+          services/GitManager.cpp \
           gui/MainWidget.cpp \
           gui/RetroGitNotify.cpp \
           gui/GitGroupDialog.cpp \
+          gui/GitCommitDialog.cpp
 
 HEADERS = RetroGitPlugin.h                 \
           services/p3Git.h            \
           services/rsGitItems.h       \
+          services/GitManager.h       \
           interface/rsGit.h \
           gui/MainWidget.h \
           gui/RetroGitNotify.h \
           gui/GitGroupDialog.h \
+          gui/GitCommitDialog.h
 
 FORMS += \
           gui/MainWidget.ui \

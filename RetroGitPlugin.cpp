@@ -35,6 +35,7 @@
 #include <util/rsdir.h>
 #include "services/p3Git.h"
 #include "services/rsGitItems.h"
+#include "services/GitManager.h"
 #include <interface/rsGit.h>
 #include "pqi/p3cfgmgr.h"
 
@@ -107,11 +108,14 @@ RetroGitPlugin::RetroGitPlugin()
     mGxsCircles = NULL;
     mGxsIdService = NULL;
     mPgpAuxUtils = NULL;
+
+    GitManager::init();
 }
 
 RetroGitPlugin::~RetroGitPlugin()
 {
 	delete mRetroGitNotify;
+    GitManager::shutdown();
 }
 
 void RetroGitPlugin::setInterfaces(RsPlugInInterfaces &interfaces)

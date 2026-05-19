@@ -48,6 +48,26 @@ struct RsGitGroup : public RsGxsGenericGroupData
       std::string mGroupDescription;
 };
 
+struct RsGitUpdate
+{
+    RsMsgMetaData mMeta;
+    std::string mPackfileData;
+    std::map<std::string, std::string> mRefUpdates;
+    std::vector<RsGxsFile> mFiles;
+};
+
+struct RsGitPullRequest
+{
+    RsMsgMetaData mMeta;
+    std::string mTitle;
+    std::string mDescription;
+    std::string mTargetBranch;
+    std::string mSourceBranch;
+    std::string mPackfileData;
+    uint32_t mStatus;
+    std::vector<RsGxsFile> mFiles;
+};
+
 enum class RsGitEventCode: uint8_t
 {
     UNKNOWN                       = 0x00,  // event not recognized
@@ -87,6 +107,16 @@ public:
     // Blocking Interfaces.
     virtual bool createGroup(RsGitGroup &group) = 0;
     virtual bool updateGroup(RsGitGroup &group) = 0;
+
+    /**
+     * @brief Publish a Git Push/Update (Packfile + Refs) to a Repository.
+     */
+    virtual bool publishGitUpdate(uint32_t &token, RsGitUpdate &update) = 0;
+
+    /**
+     * @brief Publish a Pull Request to a Repository.
+     */
+    virtual bool publishPullRequest(uint32_t &token, RsGitPullRequest &pr) = 0;
 
     virtual bool getGroups(const std::list<RsGxsGroupId> &groupIds,std::vector<RsGitGroup> &groups) = 0;
 

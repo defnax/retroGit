@@ -61,9 +61,23 @@ private slots:
     void groupListCustomPopupMenu(QPoint point);
     void showGroupDetails();
     void editGroupDetails();
+    
+    void onPushClicked();
+    void onPullClicked();
+    void onCommitClicked();
+    
+    void onBrowseClicked();
+    void onOpenFolderClicked();
+    void onCloneClicked();
+    void onTreeSelectionChanged();
+    void onLocalPathChanged(const QString &text);
 
 private:
     void loadGroupMeta();
+    void saveRepoLocalPath(const QString &groupId, const QString &path);
+    QString loadRepoLocalPath(const QString &groupId);
+    void populateCommitLog(const QString &groupId);
+    void populateRepoBrowser(const QString &groupId);
     void insertGroupsData(const std::list<RsGroupMetaData> &gitList);
     void GroupMetaDataToGroupItemInfo(const RsGroupMetaData &groupInfo,
                                     GroupItemInfo &groupItemInfo);
@@ -77,6 +91,16 @@ private:
     RsEventsHandlerId_t mEventHandlerId;
 
     Ui::MainWidget *ui;
+    
+    // UI elements for the right pane
+    class QLineEdit *mLocalPathEdit;
+    class QPushButton *mBtnOpenFolder;
+    class QPushButton *mBtnPush;
+    class QPushButton *mBtnPull;
+    class QPushButton *mBtnClone;
+    class QPushButton *mBtnCommit;
+    class QTableWidget *mCommitTable;
+    class QListWidget *mRepoBrowserList;
 };
 
 #endif // MAINPAGE_H

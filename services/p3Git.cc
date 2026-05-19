@@ -25,6 +25,8 @@
 #include "gui/RetroGitNotify.h"
 #include "p3Git.h"
 #include "rsGitItems.h"
+#include "GitManager.h"
+#include <retroshare/rsfiles.h>
 
 #include "gxs/rsgenexchange.h"
 
@@ -52,7 +54,7 @@ static uint32_t retroGitAuthenPolicy()
 
 p3Git::p3Git(RsGeneralDataService *gds, RsNetworkExchangeService *nes,RsGixs *gixs, RetroGitNotify *notifier)
     : RsGenExchange(gds, nes, new RsGxsRetroGitSerialiser(),RS_SERVICE_TYPE_RetroGit_PLUGIN, gixs,retroGitAuthenPolicy()),
-      mRetroGitMtx("p3Git"), mNotify(notifier),RsGxsIfaceHelper(static_cast<RsGxsIface &>(*this))
+      RsGxsIfaceHelper(static_cast<RsGxsIface &>(*this)), mRetroGitMtx("p3Git"), mNotify(notifier)
 {
     rsGit = this;
 }
@@ -82,6 +84,7 @@ RsSerialiser *p3Git::setupSerialiser()
 {
     RsSerialiser *rss = new RsSerialiser;
     rss->addSerialType(new RsGitConfigSerializer());
+    rss->addSerialType(new RsGxsRetroGitSerialiser());
     return rss;
 }
 
@@ -122,7 +125,35 @@ bool p3Git::loadList(std::list<RsItem *> &loadList)
 
 void p3Git::service_tick()
 {
-    return;
+    std::list<PendingPackfile> completed;
+    {
+        RS_STACK_MUTEX(mRetroGitMtx);
+        for (auto it = mPendingPackfiles.begin(); it != mPendingPackfiles.end(); ) {
+            FileInfo fi;
+            if (rsFiles && rsFiles->alreadyHaveFile(it->fileHash, fi)) {
+                completed.push_back(*it);
+                it = mPendingPackfiles.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    
+    for (const auto& pending : completed) {
+        std::string repoPath = GitManager::getBareRepoPath(pending.groupId.toStdString());
+        FileInfo fi;
+        if (rsFiles && rsFiles->FileDetails(pending.fileHash, RS_FILE_HINTS_LOCAL, fi)) {
+            std::cout << "p3Git: Pending packfile downloaded: " << fi.path << ", unpacking..." << std::endl;
+            GitManager::unpackPackfileFromFile(repoPath, fi.path, pending.refUpdates);
+            
+            if (rsEvents) {
+                auto ev = std::make_shared<RsGitEvent>();
+                ev->mGitGroupId = pending.groupId;
+                ev->mGitEventCode = RsGitEventCode::NEW_POST;
+                rsEvents->postEvent(ev);
+            }
+        }
+    }
 }
 
 RsTokenService *p3Git::getTokenService()
@@ -141,7 +172,42 @@ void p3Git::notifyChanges(std::vector<RsGxsNotify *> &changes)
     if (msgChange) {
       if (msgChange->getType() == RsGxsNotify::TYPE_RECEIVED_NEW ||
           msgChange->getType() == RsGxsNotify::TYPE_PUBLISHED) {
-        if (rsEvents) {
+          
+        bool unpackedImmediately = false;
+        if (msgChange->mNewMsgItem) {
+            RsGitMsgItem* gitMsg = dynamic_cast<RsGitMsgItem*>(msgChange->mNewMsgItem);
+            if (gitMsg && gitMsg->mGitMsgType == 1) // UPDATE
+            {
+                std::string repoPath = GitManager::getBareRepoPath(msgChange->mGroupId.toStdString());
+                if (!gitMsg->mFiles.empty()) {
+                    const RsGxsFile& packFile = gitMsg->mFiles[0];
+                    FileInfo info;
+                    if (rsFiles && rsFiles->alreadyHaveFile(packFile.mHash, info)) {
+                        GitManager::unpackPackfileFromFile(repoPath, info.path, gitMsg->mRefUpdates);
+                        unpackedImmediately = true;
+                    } else {
+                        if (rsFiles) {
+                            std::list<RsPeerId> srcIds;
+                            TransferRequestFlags flags = RS_FILE_REQ_ANONYMOUS_ROUTING;
+                            rsFiles->FileRequest(packFile.mName, packFile.mHash, packFile.mSize, "", flags, srcIds);
+                        }
+                        
+                        PendingPackfile pending;
+                        pending.groupId = msgChange->mGroupId;
+                        pending.fileHash = packFile.mHash;
+                        pending.refUpdates = gitMsg->mRefUpdates;
+                        
+                        RS_STACK_MUTEX(mRetroGitMtx);
+                        mPendingPackfiles.push_back(pending);
+                    }
+                } else if (!gitMsg->mPackfileData.empty()) {
+                    GitManager::unpackPackfile(repoPath, gitMsg->mPackfileData, gitMsg->mRefUpdates);
+                    unpackedImmediately = true;
+                }
+            }
+        }
+
+        if (unpackedImmediately && rsEvents) {
           auto ev = std::make_shared<RsGitEvent>();
           ev->mGitGroupId = msgChange->mGroupId;
           ev->mGitMsgId = msgChange->mMsgId;
@@ -160,20 +226,20 @@ void p3Git::notifyChanges(std::vector<RsGxsNotify *> &changes)
 
       switch (grpChange->getType()) {
       case RsGxsNotify::TYPE_PUBLISHED:
-        // Fired when we publish/update our own group
-        ev->mGitEventCode = RsGitEventCode::GIT_UPDATED;
-        rsEvents->postEvent(ev);
-        break;
-
-      case RsGxsNotify::TYPE_RECEIVED_NEW:
-        // A new repository arrived from the network
-        ev->mGitEventCode = RsGitEventCode::NEW_GIT;
-        rsEvents->postEvent(ev);
-        break;
-
       case RsGxsNotify::TYPE_PROCESSED:
-        // An existing repository was updated (processed from network)
-        ev->mGitEventCode = RsGitEventCode::GIT_UPDATED;
+      case RsGxsNotify::TYPE_RECEIVED_NEW:
+        {
+            std::string repoPath = GitManager::getBareRepoPath(grpChange->mGroupId.toStdString());
+            GitManager::initRepository(repoPath);
+        }
+        
+        if (grpChange->getType() == RsGxsNotify::TYPE_PUBLISHED)
+            ev->mGitEventCode = RsGitEventCode::GIT_UPDATED;
+        else if (grpChange->getType() == RsGxsNotify::TYPE_RECEIVED_NEW)
+            ev->mGitEventCode = RsGitEventCode::NEW_GIT;
+        else
+            ev->mGitEventCode = RsGitEventCode::GIT_UPDATED;
+            
         rsEvents->postEvent(ev);
         break;
 
@@ -265,6 +331,36 @@ bool p3Git::updateGroup(RsGitGroup &group)
 {
     uint32_t token;
     return updateGroup(token, group) && waitToken(token) == RsTokenService::COMPLETE;
+}
+
+bool p3Git::publishGitUpdate(uint32_t &token, RsGitUpdate &update)
+{
+    RsGitMsgItem *msgItem = new RsGitMsgItem();
+    msgItem->meta = update.mMeta;
+    msgItem->mGitMsgType = 1; // UPDATE
+    msgItem->mPackfileData = update.mPackfileData;
+    msgItem->mRefUpdates = update.mRefUpdates;
+    msgItem->mFiles = update.mFiles;
+    
+    this->publishMsg(token, msgItem);
+    return true;
+}
+
+bool p3Git::publishPullRequest(uint32_t &token, RsGitPullRequest &pr)
+{
+    RsGitMsgItem *msgItem = new RsGitMsgItem();
+    msgItem->meta = pr.mMeta;
+    msgItem->mGitMsgType = 2; // PULL_REQUEST
+    msgItem->mTitle = pr.mTitle;
+    msgItem->mDescription = pr.mDescription;
+    msgItem->mTargetBranch = pr.mTargetBranch;
+    msgItem->mSourceBranch = pr.mSourceBranch;
+    msgItem->mPackfileData = pr.mPackfileData;
+    msgItem->mStatus = pr.mStatus;
+    msgItem->mFiles = pr.mFiles;
+    
+    this->publishMsg(token, msgItem);
+    return true;
 }
 
 bool p3Git::subscribeToGroup(uint32_t &token, const RsGxsGroupId &groupId,bool subscribe_flag)

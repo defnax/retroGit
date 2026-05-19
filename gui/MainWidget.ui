@@ -137,15 +137,13 @@
            </item>
           </layout>
          </widget>
-         <widget class="QTabWidget" name="tabWidget">
+         <widget class="QTabWidget" name="rightPaneTabWidget">
+          <property name="currentIndex">
+           <number>0</number>
+          </property>
           <widget class="QWidget" name="tabWidgetPage1">
            <attribute name="title">
-            <string/>
-           </attribute>
-          </widget>
-          <widget class="QWidget" name="tabWidgetPage2">
-           <attribute name="title">
-            <string/>
+            <string>Working Directory</string>
            </attribute>
           </widget>
          </widget>
