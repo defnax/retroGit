@@ -31,6 +31,12 @@ struct GitCommitInfo {
     std::string message;
     std::string author;
     std::string date;
+    std::string full_hash;
+};
+
+struct GitDiffLine {
+    char origin;
+    std::string text;
 };
 
 class GitManager
@@ -47,9 +53,14 @@ public:
     static void shutdown();
 
     /**
-     * @brief Initialize a new bare Git repository at the given path.
+     * @brief Initialize a new Git repository at the given path.
      */
-    static bool initRepository(const std::string& repoPath);
+    static bool initRepository(const std::string& repoPath, bool isBare = true);
+
+    /**
+     * @brief Check if the directory is a valid Git repository.
+     */
+    static bool isValidRepository(const std::string& repoPath);
 
     /**
      * @brief Get the absolute bare repository path inside RsAccounts::AccountDirectory.
@@ -75,6 +86,20 @@ public:
      * @brief Retrieve a flat list of all files in the HEAD commit tree.
      */
     static bool getRepoFiles(const std::string& repoPath, std::vector<std::string>& files);
+
+    /**
+     * @brief Retrieve detailed info about a specific commit, including author, title, body, date and changed files.
+     */
+    static bool getCommitDetails(const std::string& repoPath, const std::string& commitHash,
+                                 std::string& authorName, std::string& authorEmail,
+                                 std::string& summary, std::string& body,
+                                 std::string& date, std::vector<std::string>& changedFiles);
+
+    /**
+     * @brief Retrieve the diff of a specific file inside a commit.
+     */
+    static bool getFileDiff(const std::string& repoPath, const std::string& commitHash,
+                            const std::string& relativePath, std::vector<GitDiffLine>& diffLines);
 
     /**
      * @brief Unpack a received packfile into the local bare repository and update references.

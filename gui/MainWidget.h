@@ -71,8 +71,14 @@ private slots:
     void onCloneClicked();
     void onTreeSelectionChanged();
     void onLocalPathChanged(const QString &text);
+    void onCommitSelectionChanged();
+    void onChangedFilesContextMenu(const QPoint &pos);
+    void onCommitTableContextMenu(const QPoint &pos);
+    void onTabCloseRequested(int index);
 
 private:
+    void showDiffForFile(const QString &filePath);
+    void showDiffForCommit(const QString &commitHash);
     void loadGroupMeta();
     void saveRepoLocalPath(const QString &groupId, const QString &path);
     QString loadRepoLocalPath(const QString &groupId);
@@ -101,6 +107,17 @@ private:
     class QPushButton *mBtnCommit;
     class QTableWidget *mCommitTable;
     class QListWidget *mRepoBrowserList;
+
+    // UI elements for commit details (left pane)
+    class QWidget *mCommitDetailsWidget;
+    class QFrame *mDetailsAuthorFrame;
+    class QLabel *mDetailsAuthorNameLabel;
+    class QLabel *mDetailsAuthorEmailLabel;
+    class QLabel *mDetailsHashLabel;
+    class QLabel *mDetailsTitleLabel;
+    class QLabel *mDetailsBodyText;
+    class QLabel *mDetailsDateLabel;
+    class QTreeWidget *mChangedFilesTree;
 };
 
 #endif // MAINPAGE_H

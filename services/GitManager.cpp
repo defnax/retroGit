@@ -40,10 +40,10 @@ void GitManager::shutdown()
     git_libgit2_shutdown();
 }
 
-bool GitManager::initRepository(const std::string& repoPath)
+bool GitManager::initRepository(const std::string& repoPath, bool isBare)
 {
     git_repository *repo = NULL;
-    int error = git_repository_init(&repo, repoPath.c_str(), 1); // 1 = is_bare
+    int error = git_repository_init(&repo, repoPath.c_str(), isBare ? 1 : 0);
     
     if (error < 0) {
         const git_error *e = git_error_last();
@@ -53,6 +53,17 @@ bool GitManager::initRepository(const std::string& repoPath)
     
     git_repository_free(repo);
     return true;
+}
+
+bool GitManager::isValidRepository(const std::string& repoPath)
+{
+    git_repository *repo = NULL;
+    int error = git_repository_open(&repo, repoPath.c_str());
+    if (error == 0) {
+        git_repository_free(repo);
+        return true;
+    }
+    return false;
 }
 
 std::string GitManager::getBareRepoPath(const std::string& groupId)
@@ -207,7 +218,7 @@ bool GitManager::getCommitLog(const std::string &repoPath, std::vector<GitCommit
         } else {
             git_revwalk_free(walker);
             git_repository_free(repo);
-            return false;
+            return true;
         }
     }
 
@@ -219,6 +230,7 @@ bool GitManager::getCommitLog(const std::string &repoPath, std::vector<GitCommit
             char oid_str[GIT_OID_HEXSZ + 1];
             git_oid_tostr(oid_str, sizeof(oid_str), &oid);
             info.hash = std::string(oid_str, 8); // Short hash
+            info.full_hash = std::string(oid_str);
             
             const char *summary = git_commit_summary(commit);
             info.message = summary ? summary : "";
@@ -280,7 +292,7 @@ bool GitManager::getRepoFiles(const std::string& repoPath, std::vector<std::stri
         // Fallback: try to resolve refs/heads/master if HEAD is not resolved
         if (git_reference_name_to_id(&head_oid, repo, "refs/heads/master") != 0) {
             git_repository_free(repo);
-            return false;
+            return true;
         }
     }
 
@@ -392,4 +404,170 @@ bool GitManager::commitChanges(const std::string& repoPath, const std::string& c
     git_repository_free(repo);
 
     return error == 0;
+}
+
+bool GitManager::getCommitDetails(const std::string& repoPath, const std::string& commitHash,
+                                 std::string& authorName, std::string& authorEmail,
+                                 std::string& summary, std::string& body,
+                                 std::string& date, std::vector<std::string>& changedFiles)
+{
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, repoPath.c_str()) != 0) {
+        return false;
+    }
+
+    git_oid oid;
+    if (git_oid_fromstr(&oid, commitHash.c_str()) != 0) {
+        git_repository_free(repo);
+        return false;
+    }
+
+    git_commit *commit = nullptr;
+    if (git_commit_lookup(&commit, repo, &oid) != 0) {
+        git_repository_free(repo);
+        return false;
+    }
+
+    // Author info
+    const git_signature *sig = git_commit_author(commit);
+    if (sig) {
+        authorName = sig->name ? sig->name : "";
+        authorEmail = sig->email ? sig->email : "";
+        
+        std::time_t t = sig->when.time;
+        char buf[64];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", std::localtime(&t));
+        date = buf;
+    }
+
+    // Message
+    const char *sum_ptr = git_commit_summary(commit);
+    summary = sum_ptr ? sum_ptr : "";
+
+    const char *body_ptr = git_commit_body(commit);
+    body = body_ptr ? body_ptr : "";
+
+    // Changed files (Diff with parent)
+    git_tree *commit_tree = nullptr;
+    if (git_commit_tree(&commit_tree, commit) == 0) {
+        git_tree *parent_tree = nullptr;
+        unsigned int parent_count = git_commit_parentcount(commit);
+        if (parent_count > 0) {
+            git_commit *parent = nullptr;
+            if (git_commit_parent(&parent, commit, 0) == 0) {
+                git_commit_tree(&parent_tree, parent);
+                git_commit_free(parent);
+            }
+        }
+
+        git_diff *diff = nullptr;
+        if (git_diff_tree_to_tree(&diff, repo, parent_tree, commit_tree, nullptr) == 0) {
+            size_t num_deltas = git_diff_num_deltas(diff);
+            for (size_t i = 0; i < num_deltas; ++i) {
+                const git_diff_delta *delta = git_diff_get_delta(diff, i);
+                if (delta) {
+                    std::string path = delta->new_file.path ? delta->new_file.path : "";
+                    if (path.empty() && delta->old_file.path) {
+                        path = delta->old_file.path;
+                    }
+                    if (!path.empty()) {
+                        changedFiles.push_back(path);
+                    }
+                }
+            }
+            git_diff_free(diff);
+        }
+
+        if (parent_tree) {
+            git_tree_free(parent_tree);
+        }
+        git_tree_free(commit_tree);
+    }
+
+    git_commit_free(commit);
+    git_repository_free(repo);
+    return true;
+}
+
+struct DiffCallbackPayload {
+    std::vector<GitDiffLine> *lines;
+};
+
+static int file_diff_line_cb(const git_diff_delta *delta, const git_diff_hunk *hunk, const git_diff_line *line, void *payload)
+{
+    (void)delta;
+    (void)hunk;
+    DiffCallbackPayload *p = static_cast<DiffCallbackPayload*>(payload);
+    GitDiffLine diffLine;
+    diffLine.origin = line->origin;
+    diffLine.text = std::string(line->content, line->content_len);
+    p->lines->push_back(diffLine);
+    return 0;
+}
+
+bool GitManager::getFileDiff(const std::string& repoPath, const std::string& commitHash,
+                            const std::string& relativePath, std::vector<GitDiffLine>& diffLines)
+{
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, repoPath.c_str()) != 0) {
+        return false;
+    }
+
+    git_oid oid;
+    if (git_oid_fromstr(&oid, commitHash.c_str()) != 0) {
+        git_repository_free(repo);
+        return false;
+    }
+
+    git_commit *commit = nullptr;
+    if (git_commit_lookup(&commit, repo, &oid) != 0) {
+        git_repository_free(repo);
+        return false;
+    }
+
+    git_tree *commit_tree = nullptr;
+    if (git_commit_tree(&commit_tree, commit) != 0) {
+        git_commit_free(commit);
+        git_repository_free(repo);
+        return false;
+    }
+
+    git_tree *parent_tree = nullptr;
+    unsigned int parent_count = git_commit_parentcount(commit);
+    if (parent_count > 0) {
+        git_commit *parent = nullptr;
+        if (git_commit_parent(&parent, commit, 0) == 0) {
+            git_commit_tree(&parent_tree, parent);
+            git_commit_free(parent);
+        }
+    }
+
+    git_diff_options opts = GIT_DIFF_OPTIONS_INIT;
+    char *pathspec_arr[1];
+    if (!relativePath.empty()) {
+        pathspec_arr[0] = const_cast<char*>(relativePath.c_str());
+        opts.pathspec.strings = pathspec_arr;
+        opts.pathspec.count = 1;
+    }
+
+    git_diff *diff = nullptr;
+    bool success = false;
+    if (git_diff_tree_to_tree(&diff, repo, parent_tree, commit_tree, &opts) == 0) {
+        DiffCallbackPayload payload;
+        payload.lines = &diffLines;
+        
+        if (git_diff_print(diff, GIT_DIFF_FORMAT_PATCH, file_diff_line_cb, &payload) == 0) {
+            success = true;
+        }
+        git_diff_free(diff);
+    }
+
+    if (parent_tree) {
+        git_tree_free(parent_tree);
+    }
+    git_tree_free(commit_tree);
+    git_commit_free(commit);
+    git_repository_free(repo);
+
+    return success;
 }
