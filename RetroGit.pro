@@ -27,6 +27,8 @@ INCLUDEPATH += ../../rapidjson-1.1.0
 
 linux-* {
 	#INCLUDEPATH += /usr/include
+	CONFIG += link_pkgconfig
+	PKGCONFIG *= libgit2
 }
 
 #################################### Windows #####################################
