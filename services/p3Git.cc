@@ -268,18 +268,19 @@ void p3Git::notifyChanges(std::vector<RsGxsNotify *> &changes)
         case RsGxsNotify::TYPE_PUBLISHED:
         case RsGxsNotify::TYPE_PROCESSED:
         case RsGxsNotify::TYPE_RECEIVED_NEW:
+        case RsGxsNotify::TYPE_UPDATED:
           {
               std::string repoPath = GitManager::getBareRepoPath(grpChange->mGroupId.toStdString());
               GitManager::initRepository(repoPath);
           }
-          
+
           if (grpChange->getType() == RsGxsNotify::TYPE_PUBLISHED)
               ev->mGitEventCode = RsGitEventCode::GIT_UPDATED;
           else if (grpChange->getType() == RsGxsNotify::TYPE_RECEIVED_NEW)
               ev->mGitEventCode = RsGitEventCode::NEW_GIT;
-          else
+          else // TYPE_PROCESSED or TYPE_UPDATED
               ev->mGitEventCode = RsGitEventCode::GIT_UPDATED;
-              
+
           rsEvents->postEvent(ev);
           break;
 
@@ -322,7 +323,8 @@ bool p3Git::getGroups(const std::list<RsGxsGroupId> &groupIds,std::vector<RsGitG
     }
     } else {
     if (!requestGroupInfo(token, opts, groupIds) ||
-        waitToken(token) != RsTokenService::COMPLETE) {
+        waitToken(token, std::chrono::milliseconds(5000)) !=
+            RsTokenService::COMPLETE) {
       std::cerr << "p3Git::getGroups() token wait failed/timed out for specific request." << std::endl;
       return false;
     }
