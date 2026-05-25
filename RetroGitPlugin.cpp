@@ -43,6 +43,7 @@
 #include <retroshare/rsgxstunnel.h>
 #include <retroshare/rsplugin.h>
 #include <retroshare/rsversion.h>
+#include <retroshare/rsreputations.h>
 
 #define IMAGE_GIT ":/images/git.png"
 
@@ -169,7 +170,7 @@ p3Service *RetroGitPlugin::p3_service() const
         mRetroGitNetService = new RsGxsNetService(
                         RS_SERVICE_TYPE_RetroGit_PLUGIN, mGds, mNxsMgr, 
             mRetroGit, mRetroGit->getServiceInfo(), 
-            NULL, mGxsCircles, mGxsIdService,
+            dynamic_cast<RsGixsReputation*>(mReputations), mGxsCircles, mGxsIdService,
             mPgpAuxUtils);
 
         mRetroGit->setNetworkExchangeService(mRetroGitNetService);

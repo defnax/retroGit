@@ -84,7 +84,6 @@ RsSerialiser *p3Git::setupSerialiser()
 {
     RsSerialiser *rss = new RsSerialiser;
     rss->addSerialType(new RsGitConfigSerializer());
-    rss->addSerialType(new RsGxsRetroGitSerialiser());
     return rss;
 }
 
