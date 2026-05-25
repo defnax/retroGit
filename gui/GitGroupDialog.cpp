@@ -96,6 +96,8 @@ QPixmap GitGroupDialog::serviceImage()
 void GitGroupDialog::prepareGitGroup(RsGitGroup &group,const RsGroupMetaData &meta)
 {
     group.mMeta = meta;
+    group.mGroupName = meta.mGroupName;
+    group.mGroupDescription = std::string(getDescription().toUtf8());
 }
 
 bool GitGroupDialog::service_createGroup(RsGroupMetaData &meta)
