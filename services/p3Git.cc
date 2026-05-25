@@ -27,6 +27,7 @@
 #include "rsGitItems.h"
 #include "GitManager.h"
 #include <retroshare/rsfiles.h>
+#include <retroshare/rsservicecontrol.h>
 
 #include "gxs/rsgenexchange.h"
 
@@ -169,6 +170,25 @@ void p3Git::notifyChanges(std::vector<RsGxsNotify *> &changes)
     /* ---- Message changes (new commit / post) ---- */
     RsGxsMsgChange *msgChange = dynamic_cast<RsGxsMsgChange *>(*it);
     if (msgChange) {
+      std::cerr << "p3Git: Message change notification. Type: ";
+      switch (msgChange->getType()) {
+        case RsGxsNotify::TYPE_PUBLISHED: std::cerr << "TYPE_PUBLISHED"; break;
+        case RsGxsNotify::TYPE_RECEIVED_NEW: std::cerr << "TYPE_RECEIVED_NEW"; break;
+        case RsGxsNotify::TYPE_PROCESSED: std::cerr << "TYPE_PROCESSED"; break;
+        case RsGxsNotify::TYPE_MESSAGE_DELETED: std::cerr << "TYPE_MESSAGE_DELETED"; break;
+        default: std::cerr << msgChange->getType(); break;
+      }
+      std::cerr << ", GroupId: " << msgChange->mGroupId.toStdString()
+                << ", MsgId: " << msgChange->mMsgId.toStdString();
+      if (msgChange->mNewMsgItem) {
+          RsGitMsgItem* gitMsg = dynamic_cast<RsGitMsgItem*>(msgChange->mNewMsgItem);
+          if (gitMsg) {
+              std::cerr << ", MsgType: " << (gitMsg->mGitMsgType == 1 ? "UPDATE" : gitMsg->mGitMsgType == 2 ? "PULL_REQUEST" : "UNKNOWN")
+                        << ", Author Identity: " << gitMsg->meta.mAuthorId.toStdString();
+          }
+      }
+      std::cerr << std::endl;
+
       if (msgChange->getType() == RsGxsNotify::TYPE_RECEIVED_NEW ||
           msgChange->getType() == RsGxsNotify::TYPE_PUBLISHED) {
           
@@ -219,31 +239,53 @@ void p3Git::notifyChanges(std::vector<RsGxsNotify *> &changes)
 
     /* ---- Group changes (new repo / subscription / update) ---- */
     RsGxsGroupChange *grpChange = dynamic_cast<RsGxsGroupChange *>(*it);
-    if (grpChange && rsEvents) {
-      auto ev = std::make_shared<RsGitEvent>();
-      ev->mGitGroupId = grpChange->mGroupId;
-
+    if (grpChange) {
+      std::cerr << "p3Git: Group change notification. Type: ";
       switch (grpChange->getType()) {
-      case RsGxsNotify::TYPE_PUBLISHED:
-      case RsGxsNotify::TYPE_PROCESSED:
-      case RsGxsNotify::TYPE_RECEIVED_NEW:
-        {
-            std::string repoPath = GitManager::getBareRepoPath(grpChange->mGroupId.toStdString());
-            GitManager::initRepository(repoPath);
-        }
-        
-        if (grpChange->getType() == RsGxsNotify::TYPE_PUBLISHED)
-            ev->mGitEventCode = RsGitEventCode::GIT_UPDATED;
-        else if (grpChange->getType() == RsGxsNotify::TYPE_RECEIVED_NEW)
-            ev->mGitEventCode = RsGitEventCode::NEW_GIT;
-        else
-            ev->mGitEventCode = RsGitEventCode::GIT_UPDATED;
-            
-        rsEvents->postEvent(ev);
-        break;
+        case RsGxsNotify::TYPE_PUBLISHED: std::cerr << "TYPE_PUBLISHED"; break;
+        case RsGxsNotify::TYPE_RECEIVED_NEW: std::cerr << "TYPE_RECEIVED_NEW"; break;
+        case RsGxsNotify::TYPE_PROCESSED: std::cerr << "TYPE_PROCESSED"; break;
+        case RsGxsNotify::TYPE_UPDATED: std::cerr << "TYPE_UPDATED"; break;
+        case RsGxsNotify::TYPE_GROUP_DELETED: std::cerr << "TYPE_GROUP_DELETED"; break;
+        default: std::cerr << grpChange->getType(); break;
+      }
+      std::cerr << ", GroupId: " << grpChange->mGroupId.toStdString();
+      if (grpChange->mNewGroupItem) {
+          RsGitGroupItem* gitItem = dynamic_cast<RsGitGroupItem*>(grpChange->mNewGroupItem);
+          if (gitItem) {
+              std::cerr << ", Name: \"" << gitItem->mGroup.mGroupName << "\""
+                        << ", Creator Identity: " << gitItem->meta.mAuthorId.toStdString()
+                        << ", Originator Peer: " << gitItem->meta.mOriginator.toStdString();
+          }
+      }
+      std::cerr << std::endl;
 
-      default:
-        break;
+      if (rsEvents) {
+        auto ev = std::make_shared<RsGitEvent>();
+        ev->mGitGroupId = grpChange->mGroupId;
+
+        switch (grpChange->getType()) {
+        case RsGxsNotify::TYPE_PUBLISHED:
+        case RsGxsNotify::TYPE_PROCESSED:
+        case RsGxsNotify::TYPE_RECEIVED_NEW:
+          {
+              std::string repoPath = GitManager::getBareRepoPath(grpChange->mGroupId.toStdString());
+              GitManager::initRepository(repoPath);
+          }
+          
+          if (grpChange->getType() == RsGxsNotify::TYPE_PUBLISHED)
+              ev->mGitEventCode = RsGitEventCode::GIT_UPDATED;
+          else if (grpChange->getType() == RsGxsNotify::TYPE_RECEIVED_NEW)
+              ev->mGitEventCode = RsGitEventCode::NEW_GIT;
+          else
+              ev->mGitEventCode = RsGitEventCode::GIT_UPDATED;
+              
+          rsEvents->postEvent(ev);
+          break;
+
+        default:
+          break;
+        }
       }
     }
   }
@@ -258,6 +300,15 @@ bool p3Git::createGroup(RsGitGroup &group)
 
 bool p3Git::getGroups(const std::list<RsGxsGroupId> &groupIds,std::vector<RsGitGroup> &groups)
 {
+    std::cerr << "p3Git::getGroups() called. Requested groupIds count: " << groupIds.size() << std::endl;
+    if (rsServiceControl) {
+        std::set<RsPeerId> onlinePeers;
+        rsServiceControl->getPeersConnected(getServiceInfo().mServiceType, onlinePeers);
+        std::cerr << "p3Git::getGroups() - Online peers supporting RetroGit: " << onlinePeers.size() << std::endl;
+        for (auto const& peer : onlinePeers) {
+            std::cerr << "  - PeerId: " << peer.toStdString() << std::endl;
+        }
+    }
     uint32_t token;
     RsTokReqOptions opts;
     opts.mReqType = GXS_REQUEST_TYPE_GROUP_DATA;
@@ -266,19 +317,24 @@ bool p3Git::getGroups(const std::list<RsGxsGroupId> &groupIds,std::vector<RsGitG
     if (!requestGroupInfo(token, opts) ||
         waitToken(token, std::chrono::milliseconds(5000)) !=
             RsTokenService::COMPLETE) {
+      std::cerr << "p3Git::getGroups() token wait failed/timed out for general request." << std::endl;
       return false;
     }
     } else {
     if (!requestGroupInfo(token, opts, groupIds) ||
         waitToken(token) != RsTokenService::COMPLETE) {
+      std::cerr << "p3Git::getGroups() token wait failed/timed out for specific request." << std::endl;
       return false;
     }
     }
 
     std::vector<RsGxsGrpItem *> grpItems;
     if (!RsGenExchange::getGroupData(token, grpItems)) {
+        std::cerr << "p3Git::getGroups() failed to get group data for token: " << token << std::endl;
         return false; // Real error: token or data retrieval failed
     }
+
+    std::cerr << "p3Git::getGroups() retrieved " << grpItems.size() << " group items from GXS database." << std::endl;
 
     for (std::vector<RsGxsGrpItem *>::iterator it = grpItems.begin();
          it != grpItems.end(); ++it) {
@@ -286,11 +342,22 @@ bool p3Git::getGroups(const std::list<RsGxsGroupId> &groupIds,std::vector<RsGitG
         if (gitItem) {
             RsGitGroup g = gitItem->mGroup;
             g.mMeta = gitItem->meta;
+            if (g.mGroupName.empty() && !g.mMeta.mGroupName.empty()) {
+                g.mGroupName = g.mMeta.mGroupName;
+            }
             groups.push_back(g);
+            std::cerr << "p3Git::getGroups() populated group name: \"" << g.mGroupName << "\""
+                      << ", meta name: \"" << g.mMeta.mGroupName << "\""
+                      << ", GroupId: " << g.mMeta.mGroupId.toStdString()
+                      << ", Raw Flags: " << g.mMeta.mSubscribeFlags
+                      << std::endl;
+        } else {
+            std::cerr << "p3Git::getGroups() dynamic_cast to RsGitGroupItem failed for retrieved item!" << std::endl;
         }
         delete *it;
     }
 
+    std::cerr << "p3Git::getGroups() returning true. Populated groups count: " << groups.size() << std::endl;
     // Return true even when groups is empty — that is a valid state
     return true;
 }
