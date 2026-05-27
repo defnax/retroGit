@@ -175,6 +175,7 @@ p3Service *RetroGitPlugin::p3_service() const
 
         mRetroGit->setNetworkExchangeService(mRetroGitNetService);
         mRetroGit->start("RetroGit Engine");
+        mRetroGitNetService->start("RetroGit NS");
     }
     return mRetroGitNetService;
 }
