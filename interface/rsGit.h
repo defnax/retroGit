@@ -39,6 +39,8 @@ extern RsGit *rsGit;
 
 static const uint32_t CONFIG_TYPE_RetroGit_PLUGIN = 0xe001;
 
+#define RETRO_GIT_GXS_TUNNEL_SERVICE_ID 0xE001
+
 /**
  * @brief Data structure representing a RetroGit Group (Repository)
  */
@@ -76,24 +78,33 @@ enum class RsGitEventCode: uint8_t
     SUBSCRIBE_STATUS_CHANGED      = 0x03, // this event happens when we subscribe a git repository
     POST_UPDATED                  = 0x04, // this event happens when there is any change to a commit
     GIT_UPDATED                   = 0x05, // this event happens when there is any change to the git account
-    READ_STATUS_CHANGED           = 0x06 // existing message has been read or set to unread
+    READ_STATUS_CHANGED           = 0x06, // existing message has been read or set to unread
+    CLONE_STATUS_CHANGED          = 0x07  // clone progress/result status
 };
 
 struct RsGitEvent : RsEvent
 {
     RsGitEvent()
       : RsEvent(RsEventType::GIT),
-      mGitEventCode(RsGitEventCode::UNKNOWN) {}
+      mGitEventCode(RsGitEventCode::UNKNOWN),
+      mCloneSuccess(false) {}
 
     RsGitEventCode mGitEventCode;
     RsGxsGroupId mGitGroupId;
     RsGxsMessageId mGitMsgId;
+
+    // Clone status tracking fields
+    std::string mCloneStatus;
+    bool mCloneSuccess;
 };
 
 class RsGit
 {
 public:
     virtual ~RsGit() {}
+
+    virtual bool requestCloneOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &toId, const RsGxsId &ownId, const std::string &localPath) = 0;
+    virtual bool requestPullOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &toId, const RsGxsId &ownId, const std::string &localPath) = 0;
 
     /**
     * @brief Create a new RetroGit group/repository.
@@ -119,6 +130,32 @@ public:
     virtual bool publishPullRequest(uint32_t &token, RsGitPullRequest &pr) = 0;
 
     virtual bool getGroups(const std::list<RsGxsGroupId> &groupIds,std::vector<RsGitGroup> &groups) = 0;
+
+    /**
+     * @brief Retrieve all push updates (commits/packfiles metadata) for a group.
+     */
+    virtual bool getUpdates(const RsGxsGroupId &groupId, std::vector<RsGitUpdate> &updates) = 0;
+
+    /**
+     * @brief Manually unpack a downloaded packfile and update refs.
+     */
+    virtual bool unpackUpdate(const RsGxsGroupId &groupId, const RsGxsMessageId &msgId, const RsFileHash &fileHash, const std::map<std::string, std::string> &refUpdates) = 0;
+
+    /**
+    * @brief Set the processed status of a message (commit/issue)
+    * @param msgId The Group ID and Message ID pair
+    * @param processed True to mark as processed, false for unprocessed
+    * @return true if successful
+    */
+    virtual bool setMessageProcessedStatus(const RsGxsGrpMsgIdPair &msgId, bool processed) = 0;
+
+    /**
+    * @brief Async set the processed status of a message
+    * @param token Request token
+    * @param msgId The Group ID and Message ID pair
+    * @param processed True to mark as processed, false for unprocessed
+    */
+    virtual void setMessageProcessedStatus(uint32_t &token, const RsGxsGrpMsgIdPair &msgId, bool processed) = 0;
 
     /**
     * @brief Subscribe or unsubscribe to a RetroGit group

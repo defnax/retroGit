@@ -39,6 +39,12 @@ struct GitDiffLine {
     std::string text;
 };
 
+struct GitLocalChange {
+    std::string path;
+    char status; // '+', '-', '~', '?'
+    std::string color_hex;
+};
+
 class GitManager
 {
 public:
@@ -71,6 +77,11 @@ public:
      * @brief Clone a bare repository to a local working directory.
      */
     static bool cloneRepository(const std::string& bareRepoPath, const std::string& localPath);
+
+    /**
+     * @brief Pull changes from origin into a local working directory.
+     */
+    static bool pullRepository(const std::string& localPath);
 
     /**
      * @brief Commit all changes in the working directory.
@@ -118,6 +129,16 @@ public:
      * @brief Create a packfile from the local repository and return ref updates.
      */
     static bool createPackfile(const std::string &repoPath, std::string &packfileData, std::map<std::string, std::string> &refUpdates);
+
+    /**
+     * @brief Retrieve uncommitted changes in the repository.
+     */
+    static bool getLocalChanges(const std::string& repoPath, std::vector<GitLocalChange>& changes);
+
+    /**
+     * @brief Extract a file from the repository's HEAD tree to a destination path.
+     */
+    static bool extractFile(const std::string& repoPath, const std::string& relativePath, const std::string& destPath);
 };
 
 #endif // GITMANAGER_H

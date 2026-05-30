@@ -37,7 +37,7 @@
 
 class RetroGitNotify;
 
-class p3Git: public RsGenExchange, public RsGit, public p3Config, public RsGxsIfaceHelper
+class p3Git: public RsGenExchange, public RsGit, public p3Config, public RsGxsIfaceHelper, public RsGxsTunnelService::RsGxsTunnelClientService
 {
 public:
     p3Git(RsGeneralDataService *gds, RsNetworkExchangeService *nes, RsGixs *gixs,RetroGitNotify *notifier);
@@ -68,22 +68,56 @@ public:
 
     virtual bool getGroups(const std::list<RsGxsGroupId> &groupIds, std::vector<RsGitGroup> &groups) override;
 
+    virtual bool getUpdates(const RsGxsGroupId &groupId, std::vector<RsGitUpdate> &updates) override;
+    virtual bool unpackUpdate(const RsGxsGroupId &groupId, const RsGxsMessageId &msgId, const RsFileHash &fileHash, const std::map<std::string, std::string> &refUpdates) override;
+
+    virtual bool setMessageProcessedStatus(const RsGxsGrpMsgIdPair &msgId, bool processed) override;
+    virtual void setMessageProcessedStatus(uint32_t &token, const RsGxsGrpMsgIdPair &msgId, bool processed) override;
+
     virtual bool subscribeToGroup(uint32_t &token, const RsGxsGroupId &groupId, bool subscribe) override;
     virtual bool subscribe(const RsGxsGroupId &groupId, bool subscribe) override;
 
     virtual bool setMessageReadStatus(const RsGxsGrpMsgIdPair &msgId,bool read) override;
     virtual void setMessageReadStatus(uint32_t &token,const RsGxsGrpMsgIdPair &msgId,bool read) override;
 
+    // RsGit overrides
+    virtual bool requestCloneOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &toId, const RsGxsId &ownId, const std::string &localPath) override;
+    virtual bool requestPullOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &toId, const RsGxsId &ownId, const std::string &localPath) override;
+
+    // RsGxsTunnelClientService methods
+    virtual void notifyTunnelStatus(const RsGxsTunnelId& tunnel_id, uint32_t tunnel_status) override;
+    virtual void receiveData(const RsGxsTunnelId& id, unsigned char *data, uint32_t data_size) override;
+    virtual void connectToGxsTunnelService(RsGxsTunnelService *tunnel_service) override;
+    virtual bool acceptDataFromPeer(const RsGxsId& gxs_id, const RsGxsTunnelId& tunnel_id, bool am_I_client_side) override;
+
 private:
     struct PendingPackfile
     {
         RsGxsGroupId groupId;
+        RsGxsMessageId msgId;
         RsFileHash fileHash;
         std::map<std::string, std::string> refUpdates;
     };
+
+    struct PendingClone {
+        RsGxsGroupId groupId;
+        std::string localPath;
+    };
+
+    struct PendingPull {
+        RsGxsGroupId groupId;
+        std::string localPath;
+    };
+
+    void postCloneStatus(const RsGxsGroupId &groupId, const std::string &status, bool success);
 
     RsMutex mRetroGitMtx;
     RetroGitNotify *mNotify;
     std::map<uint32_t, uint32_t> mKnownGit;
     std::list<PendingPackfile> mPendingPackfiles;
+
+    RsGxsTunnelService *mGxsTunnels;
+    std::map<RsGxsTunnelId, PendingClone> mPendingClones;
+    std::map<RsGxsTunnelId, PendingPull> mPendingPulls;
+    std::map<RsGxsTunnelId, RsGxsId> mTunnelToGxsIdMap;
 };
