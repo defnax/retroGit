@@ -25,6 +25,15 @@
 #include <string.h>
 #include <ctime>
 #include <retroshare/rsinit.h>
+#include <algorithm>
+
+static std::string normalizePath(const std::string& path)
+{
+    std::string norm = path;
+    std::replace(norm.begin(), norm.end(), '\\', '/');
+    return norm;
+}
+
 
 bool GitManager::init()
 {
@@ -43,8 +52,9 @@ void GitManager::shutdown()
 
 bool GitManager::initRepository(const std::string& repoPath, bool isBare)
 {
+    std::string normPath = normalizePath(repoPath);
     git_repository *repo = NULL;
-    int error = git_repository_init(&repo, repoPath.c_str(), isBare ? 1 : 0);
+    int error = git_repository_init(&repo, normPath.c_str(), isBare ? 1 : 0);
     
     if (error < 0) {
         const git_error *e = git_error_last();
@@ -55,34 +65,36 @@ bool GitManager::initRepository(const std::string& repoPath, bool isBare)
     git_repository_free(repo);
     return true;
 }
-
+ 
 bool GitManager::isValidRepository(const std::string& repoPath)
 {
+    std::string normPath = normalizePath(repoPath);
     git_repository *repo = NULL;
-    int error = git_repository_open(&repo, repoPath.c_str());
+    int error = git_repository_open(&repo, normPath.c_str());
     if (error == 0) {
         git_repository_free(repo);
         return true;
     }
     return false;
 }
-
+ 
 std::string GitManager::getBareRepoPath(const std::string& groupId)
 {
     return RsAccounts::AccountDirectory() + "/retrogit_repos/" + groupId + ".git";
 }
-
+ 
 bool GitManager::unpackPackfile(const std::string& repoPath, const std::string& packfileData, const std::map<std::string, std::string>& refUpdates)
 {
+    std::string normPath = normalizePath(repoPath);
     git_repository *repo = NULL;
-    int error = git_repository_open(&repo, repoPath.c_str());
+    int error = git_repository_open(&repo, normPath.c_str());
     if (error < 0) {
-        std::cout << "unpackPackfile: Repository not found. Initializing bare repo at: " << repoPath << std::endl;
-        if (!initRepository(repoPath)) {
+        std::cout << "unpackPackfile: Repository not found. Initializing bare repo at: " << normPath << std::endl;
+        if (!initRepository(normPath)) {
             std::cerr << "unpackPackfile failed to initialize bare repository" << std::endl;
             return false;
         }
-        error = git_repository_open(&repo, repoPath.c_str());
+        error = git_repository_open(&repo, normPath.c_str());
         if (error < 0) {
             std::cerr << "unpackPackfile failed to open repo after initialization" << std::endl;
             return false;
@@ -159,8 +171,9 @@ static int packbuilder_callback(void *buf, size_t size, void *payload) {
 
 bool GitManager::createPackfile(const std::string& repoPath, std::string& outPackfileData, std::map<std::string, std::string>& outRefUpdates)
 {
+    std::string normPath = normalizePath(repoPath);
     git_repository *repo = NULL;
-    int error = git_repository_open(&repo, repoPath.c_str());
+    int error = git_repository_open(&repo, normPath.c_str());
     if (error < 0) {
         std::cerr << "createPackfile failed to open repo" << std::endl;
         return false;
@@ -202,8 +215,9 @@ bool GitManager::createPackfile(const std::string& repoPath, std::string& outPac
 }
 
 bool GitManager::getCommitLog(const std::string &repoPath, std::vector<GitCommitInfo> &commits) {
+    std::string normPath = normalizePath(repoPath);
     git_repository *repo = nullptr;
-    if (git_repository_open(&repo, repoPath.c_str()) != 0) {
+    if (git_repository_open(&repo, normPath.c_str()) != 0) {
         return false;
     }
 
@@ -265,11 +279,13 @@ bool GitManager::getCommitLog(const std::string &repoPath, std::vector<GitCommit
 
 bool GitManager::cloneRepository(const std::string& bareRepoPath, const std::string& localPath)
 {
+    std::string normBare = normalizePath(bareRepoPath);
+    std::string normLocal = normalizePath(localPath);
     git_repository *cloned_repo = nullptr;
     git_clone_options clone_opts = GIT_CLONE_OPTIONS_INIT;
     clone_opts.bare = 0;
     
-    int error = git_clone(&cloned_repo, bareRepoPath.c_str(), localPath.c_str(), &clone_opts);
+    int error = git_clone(&cloned_repo, normBare.c_str(), normLocal.c_str(), &clone_opts);
     if (error == 0) {
         git_repository_free(cloned_repo);
         return true;
@@ -292,8 +308,9 @@ static int tree_walk_cb(const char *root, const git_tree_entry *entry, void *pay
 
 bool GitManager::getRepoFiles(const std::string& repoPath, std::vector<std::string>& files)
 {
+    std::string normPath = normalizePath(repoPath);
     git_repository *repo = nullptr;
-    if (git_repository_open(&repo, repoPath.c_str()) != 0) return false;
+    if (git_repository_open(&repo, normPath.c_str()) != 0) return false;
 
     git_oid head_oid;
     if (git_reference_name_to_id(&head_oid, repo, "HEAD") != 0) {
@@ -329,8 +346,9 @@ bool GitManager::getRepoFiles(const std::string& repoPath, std::vector<std::stri
 
 bool GitManager::commitChanges(const std::string& repoPath, const std::string& commitMessage, const std::string& authorName, const std::string& authorEmail)
 {
+    std::string normPath = normalizePath(repoPath);
     git_repository *repo = NULL;
-    int error = git_repository_open(&repo, repoPath.c_str());
+    int error = git_repository_open(&repo, normPath.c_str());
     if (error < 0) {
         std::cerr << "commitChanges: Failed to open repo" << std::endl;
         return false;
@@ -421,8 +439,9 @@ bool GitManager::getCommitDetails(const std::string& repoPath, const std::string
                                  std::string& summary, std::string& body,
                                  std::string& date, std::vector<std::string>& changedFiles)
 {
+    std::string normPath = normalizePath(repoPath);
     git_repository *repo = nullptr;
-    if (git_repository_open(&repo, repoPath.c_str()) != 0) {
+    if (git_repository_open(&repo, normPath.c_str()) != 0) {
         return false;
     }
 
@@ -518,8 +537,9 @@ static int file_diff_line_cb(const git_diff_delta *delta, const git_diff_hunk *h
 bool GitManager::getFileDiff(const std::string& repoPath, const std::string& commitHash,
                             const std::string& relativePath, std::vector<GitDiffLine>& diffLines)
 {
+    std::string normPath = normalizePath(repoPath);
     git_repository *repo = nullptr;
-    if (git_repository_open(&repo, repoPath.c_str()) != 0) {
+    if (git_repository_open(&repo, normPath.c_str()) != 0) {
         return false;
     }
 
@@ -618,12 +638,18 @@ bool GitManager::getFileDiff(const std::string& repoPath, const std::string& com
 
 bool GitManager::getLocalChanges(const std::string& repoPath, std::vector<GitLocalChange>& changes)
 {
+    std::string normPath = normalizePath(repoPath);
     git_repository *repo = nullptr;
-    if (git_repository_open(&repo, repoPath.c_str()) != 0) {
+    int open_err = git_repository_open(&repo, normPath.c_str());
+    if (open_err != 0) {
+        const git_error *e = git_error_last();
+        std::cerr << "RetroGit debug: getLocalChanges failed to open repository at: " << normPath
+                  << " Error: " << open_err << " / " << (e ? e->message : "None") << std::endl;
         return false;
     }
 
     if (git_repository_is_bare(repo)) {
+        std::cerr << "RetroGit debug: getLocalChanges - repository is BARE: " << repoPath << std::endl;
         git_repository_free(repo);
         return false;
     }
@@ -634,9 +660,11 @@ bool GitManager::getLocalChanges(const std::string& repoPath, std::vector<GitLoc
     opts.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED | GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS | GIT_STATUS_OPT_RENAMES_HEAD_TO_INDEX;
 
     bool success = false;
-    if (git_status_list_new(&status_list, repo, &opts) == 0) {
+    int status_err = git_status_list_new(&status_list, repo, &opts);
+    if (status_err == 0) {
         success = true;
         size_t count = git_status_list_entrycount(status_list);
+        std::cerr << "RetroGit debug: getLocalChanges status list count: " << count << " for path: " << repoPath << std::endl;
         for (size_t i = 0; i < count; ++i) {
             const git_status_entry *entry = git_status_byindex(status_list, i);
             if (!entry) continue;
@@ -694,4 +722,161 @@ bool GitManager::getLocalChanges(const std::string& repoPath, std::vector<GitLoc
 
     git_repository_free(repo);
     return success;
+}
+
+bool GitManager::extractFile(const std::string& repoPath, const std::string& relativePath, const std::string& destPath)
+{
+    std::string normPath = normalizePath(repoPath);
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normPath.c_str()) != 0) return false;
+
+    git_oid head_oid;
+    if (git_reference_name_to_id(&head_oid, repo, "HEAD") != 0) {
+        if (git_reference_name_to_id(&head_oid, repo, "refs/heads/master") != 0) {
+            if (git_reference_name_to_id(&head_oid, repo, "refs/heads/main") != 0) {
+                git_repository_free(repo);
+                return false;
+            }
+        }
+    }
+
+    git_commit *commit = nullptr;
+    if (git_commit_lookup(&commit, repo, &head_oid) != 0) {
+        git_repository_free(repo);
+        return false;
+    }
+
+    git_tree *tree = nullptr;
+    if (git_commit_tree(&tree, commit) != 0) {
+        git_commit_free(commit);
+        git_repository_free(repo);
+        return false;
+    }
+
+    git_tree_entry *entry = nullptr;
+    if (git_tree_entry_bypath(&entry, tree, relativePath.c_str()) != 0) {
+        git_tree_free(tree);
+        git_commit_free(commit);
+        git_repository_free(repo);
+        return false;
+    }
+
+    git_object *obj = nullptr;
+    if (git_tree_entry_to_object(&obj, repo, entry) != 0) {
+        git_tree_entry_free(entry);
+        git_tree_free(tree);
+        git_commit_free(commit);
+        git_repository_free(repo);
+        return false;
+    }
+
+    git_blob *blob = (git_blob*)obj;
+    const void *content = git_blob_rawcontent(blob);
+    size_t size = git_blob_rawsize(blob);
+
+    // Write to destPath
+    std::ofstream outfile(destPath.c_str(), std::ios::binary);
+    if (!outfile) {
+        git_object_free(obj);
+        git_tree_entry_free(entry);
+        git_tree_free(tree);
+        git_commit_free(commit);
+        git_repository_free(repo);
+        return false;
+    }
+
+    outfile.write((const char*)content, size);
+    outfile.close();
+
+    git_object_free(obj);
+    git_tree_entry_free(entry);
+    git_tree_free(tree);
+    git_commit_free(commit);
+    git_repository_free(repo);
+    return true;
+}
+
+bool GitManager::pullRepository(const std::string& localPath)
+{
+    std::string normPath = normalizePath(localPath);
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normPath.c_str()) != 0) {
+        return false;
+    }
+
+    git_remote *remote = nullptr;
+    if (git_remote_lookup(&remote, repo, "origin") != 0) {
+        git_repository_free(repo);
+        return false;
+    }
+
+    // Fetch from origin remote
+    git_fetch_options fetch_opts = GIT_FETCH_OPTIONS_INIT;
+    if (git_remote_fetch(remote, nullptr, &fetch_opts, nullptr) != 0) {
+        const git_error *e = git_error_last();
+        if (e) {
+            std::cerr << "Git remote fetch failed: " << e->message << std::endl;
+        }
+        git_remote_free(remote);
+        git_repository_free(repo);
+        return false;
+    }
+    git_remote_free(remote);
+
+    // Resolve current active branch reference name
+    std::string remoteBranch = "refs/remotes/origin/master"; // default fallback
+    git_reference *head_ref = nullptr;
+    if (git_reference_lookup(&head_ref, repo, "HEAD") == 0) {
+        if (git_reference_type(head_ref) == GIT_REF_SYMBOLIC) {
+            const char *target = git_reference_symbolic_target(head_ref);
+            if (target) {
+                std::string targetStr(target);
+                if (targetStr.rfind("refs/heads/", 0) == 0) {
+                    remoteBranch = "refs/remotes/origin/" + targetStr.substr(11);
+                }
+            }
+        }
+        git_reference_free(head_ref);
+    }
+
+    git_reference *remote_ref = nullptr;
+    int error = git_reference_lookup(&remote_ref, repo, remoteBranch.c_str());
+    if (error != 0) {
+        error = git_reference_lookup(&remote_ref, repo, "refs/remotes/origin/master");
+        if (error != 0) {
+            error = git_reference_lookup(&remote_ref, repo, "refs/remotes/origin/main");
+        }
+    }
+
+    if (error != 0) {
+        std::cerr << "Failed to find remote tracking branch for pull reset." << std::endl;
+        git_repository_free(repo);
+        return false;
+    }
+
+    git_object *target_commit = nullptr;
+    if (git_reference_peel(&target_commit, remote_ref, GIT_OBJECT_COMMIT) != 0) {
+        git_reference_free(remote_ref);
+        git_repository_free(repo);
+        return false;
+    }
+    git_reference_free(remote_ref);
+
+    // Perform hard reset to force update the working directory and index
+    git_checkout_options checkout_opts = GIT_CHECKOUT_OPTIONS_INIT;
+    checkout_opts.checkout_strategy = GIT_CHECKOUT_FORCE;
+
+    if (git_reset(repo, target_commit, GIT_RESET_HARD, &checkout_opts) != 0) {
+        const git_error *e = git_error_last();
+        if (e) {
+            std::cerr << "Git reset hard failed: " << e->message << std::endl;
+        }
+        git_object_free(target_commit);
+        git_repository_free(repo);
+        return false;
+    }
+
+    git_object_free(target_commit);
+    git_repository_free(repo);
+    return true;
 }

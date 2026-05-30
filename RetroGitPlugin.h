@@ -60,6 +60,7 @@ private:
 	RsPluginHandler *mPlugInHandler;
 	RsPeers *mPeers;
 	std::string mGxsDir;
+	RsGxsTunnelService *mGxsTunnels;
 
 	mutable MainWidget *mainpage ;
 	mutable ConfigPage *mConfigPage ;

@@ -39,6 +39,8 @@ extern RsGit *rsGit;
 
 static const uint32_t CONFIG_TYPE_RetroGit_PLUGIN = 0xe001;
 
+#define RETRO_GIT_GXS_TUNNEL_SERVICE_ID 0xE001
+
 /**
  * @brief Data structure representing a RetroGit Group (Repository)
  */
@@ -76,24 +78,33 @@ enum class RsGitEventCode: uint8_t
     SUBSCRIBE_STATUS_CHANGED      = 0x03, // this event happens when we subscribe a git repository
     POST_UPDATED                  = 0x04, // this event happens when there is any change to a commit
     GIT_UPDATED                   = 0x05, // this event happens when there is any change to the git account
-    READ_STATUS_CHANGED           = 0x06 // existing message has been read or set to unread
+    READ_STATUS_CHANGED           = 0x06, // existing message has been read or set to unread
+    CLONE_STATUS_CHANGED          = 0x07  // clone progress/result status
 };
 
 struct RsGitEvent : RsEvent
 {
     RsGitEvent()
       : RsEvent(RsEventType::GIT),
-      mGitEventCode(RsGitEventCode::UNKNOWN) {}
+      mGitEventCode(RsGitEventCode::UNKNOWN),
+      mCloneSuccess(false) {}
 
     RsGitEventCode mGitEventCode;
     RsGxsGroupId mGitGroupId;
     RsGxsMessageId mGitMsgId;
+
+    // Clone status tracking fields
+    std::string mCloneStatus;
+    bool mCloneSuccess;
 };
 
 class RsGit
 {
 public:
     virtual ~RsGit() {}
+
+    virtual bool requestCloneOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &toId, const RsGxsId &ownId, const std::string &localPath) = 0;
+    virtual bool requestPullOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &toId, const RsGxsId &ownId, const std::string &localPath) = 0;
 
     /**
     * @brief Create a new RetroGit group/repository.

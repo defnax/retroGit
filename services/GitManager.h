@@ -79,6 +79,11 @@ public:
     static bool cloneRepository(const std::string& bareRepoPath, const std::string& localPath);
 
     /**
+     * @brief Pull changes from origin into a local working directory.
+     */
+    static bool pullRepository(const std::string& localPath);
+
+    /**
      * @brief Commit all changes in the working directory.
      */
     static bool commitChanges(const std::string& repoPath, const std::string& commitMessage, const std::string& authorName, const std::string& authorEmail);
@@ -129,6 +134,11 @@ public:
      * @brief Retrieve uncommitted changes in the repository.
      */
     static bool getLocalChanges(const std::string& repoPath, std::vector<GitLocalChange>& changes);
+
+    /**
+     * @brief Extract a file from the repository's HEAD tree to a destination path.
+     */
+    static bool extractFile(const std::string& repoPath, const std::string& relativePath, const std::string& destPath);
 };
 
 #endif // GITMANAGER_H

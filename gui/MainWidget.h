@@ -79,13 +79,18 @@ private slots:
     void onChangedFilesDoubleClicked(class QTreeWidgetItem *item, int column);
     void onCommitTableContextMenu(const QPoint &pos);
     void onTabCloseRequested(int index);
+    void onRepoBrowserContextMenu(const QPoint &pos);
+    void openSelectedFile();
     void pollDownloadProgress();
     void onDownloadClicked();
     void onCancelDownloadClicked();
+    void onCommitReadStatusToggled(const QString &msgIdStr, bool markRead);
+    void markRepositoryAsRead();
 
 private:
     void showDiffForFile(const QString &filePath);
     void showDiffForCommit(const QString &commitHash);
+    void refreshCurrentRepo();
     void loadGroupMeta();
     void saveRepoLocalPath(const QString &groupId, const QString &path);
     QString loadRepoLocalPath(const QString &groupId);
@@ -118,6 +123,21 @@ private:
     class QTableWidget *mPackfilesTable;
     class QTimer *mDownloadPollTimer;
     std::vector<RsGitUpdate> mAvailableUpdates;
+
+    struct CloneRecord {
+        QString repoId;
+        QString repoName;
+        QString ownerId;
+        QString status;
+        QString time;
+    };
+    std::vector<CloneRecord> mCloneHistory;
+    void populateClonesTable();
+
+    class QWidget *mPackfilesTab;
+    class QTableWidget *mClonesTable;
+    class QLabel *mLblOwnerInfo;
+    class QLabel *mLblSubscriberInfo;
 
     // UI elements for commit details (left pane)
     class QWidget *mCommitDetailsWidget;

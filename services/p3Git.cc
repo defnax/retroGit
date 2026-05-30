@@ -26,10 +26,8 @@
 #include "p3Git.h"
 #include "rsGitItems.h"
 #include "GitManager.h"
-#include <retroshare/rsfiles.h>
-#include <retroshare/rsservicecontrol.h>
-
-#include "gxs/rsgenexchange.h"
+#include <QJsonDocument>
+#include <QVariantMap>
 
 RsGit *rsGit = NULL;
 
@@ -55,7 +53,7 @@ static uint32_t retroGitAuthenPolicy()
 
 p3Git::p3Git(RsGeneralDataService *gds, RsNetworkExchangeService *nes,RsGixs *gixs, RetroGitNotify *notifier)
     : RsGenExchange(gds, nes, new RsGxsRetroGitSerialiser(),RS_SERVICE_TYPE_RetroGit_PLUGIN, gixs,retroGitAuthenPolicy()),
-      RsGxsIfaceHelper(static_cast<RsGxsIface &>(*this)), mRetroGitMtx("p3Git"), mNotify(notifier)
+      RsGxsIfaceHelper(static_cast<RsGxsIface &>(*this)), mRetroGitMtx("p3Git"), mNotify(notifier), mGxsTunnels(NULL)
 {
     rsGit = this;
 }
@@ -606,4 +604,301 @@ void p3Git::setMessageProcessedStatus(uint32_t &token, const RsGxsGrpMsgIdPair &
         ev->mGitEventCode = RsGitEventCode::POST_UPDATED;
         rsEvents->postEvent(ev);
     }
+}
+
+bool p3Git::requestCloneOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &toId, const RsGxsId &ownId, const std::string &localPath)
+{
+    if (!mGxsTunnels) {
+        std::cerr << "p3Git: requestCloneOverTunnel failed. mGxsTunnels is NULL" << std::endl;
+        postCloneStatus(groupId, "GxsTunnel service not available.", false);
+        return false;
+    }
+
+    RsGxsTunnelId tunnelId;
+    uint32_t error_code = 0;
+
+    std::cout << "p3Git: Requesting direct clone tunnel to owner GXS ID: " << toId << std::endl;
+    postCloneStatus(groupId, "Requesting direct secure tunnel to peer...", false);
+
+    if (mGxsTunnels->requestSecuredTunnel(toId, ownId, tunnelId, RETRO_GIT_GXS_TUNNEL_SERVICE_ID, error_code)) {
+        RS_STACK_MUTEX(mRetroGitMtx);
+        PendingClone pc;
+        pc.groupId = groupId;
+        pc.localPath = localPath;
+        mPendingClones[tunnelId] = pc;
+        mTunnelToGxsIdMap[tunnelId] = toId;
+        std::cout << "p3Git: Clone tunnel requested. Tunnel ID: " << tunnelId << std::endl;
+        return true;
+    } else {
+        std::cerr << "p3Git: requestSecuredTunnel failed, error code: " << error_code << std::endl;
+        postCloneStatus(groupId, "Failed to request secure tunnel to peer.", false);
+        return false;
+    }
+}
+
+bool p3Git::requestPullOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &toId, const RsGxsId &ownId, const std::string &localPath)
+{
+    if (!mGxsTunnels) {
+        std::cerr << "p3Git: requestPullOverTunnel failed. mGxsTunnels is NULL" << std::endl;
+        postCloneStatus(groupId, "GxsTunnel service not available.", false);
+        return false;
+    }
+
+    RsGxsTunnelId tunnelId;
+    uint32_t error_code = 0;
+
+    std::cout << "p3Git: Requesting direct pull tunnel to owner GXS ID: " << toId << std::endl;
+    postCloneStatus(groupId, "Requesting direct secure tunnel to peer...", false);
+
+    if (mGxsTunnels->requestSecuredTunnel(toId, ownId, tunnelId, RETRO_GIT_GXS_TUNNEL_SERVICE_ID, error_code)) {
+        RS_STACK_MUTEX(mRetroGitMtx);
+        PendingPull pp;
+        pp.groupId = groupId;
+        pp.localPath = localPath;
+        mPendingPulls[tunnelId] = pp;
+        mTunnelToGxsIdMap[tunnelId] = toId;
+        std::cout << "p3Git: Pull tunnel requested. Tunnel ID: " << tunnelId << std::endl;
+        return true;
+    } else {
+        std::cerr << "p3Git: requestSecuredTunnel failed, error code: " << error_code << std::endl;
+        postCloneStatus(groupId, "Failed to request secure tunnel to peer.", false);
+        return false;
+    }
+}
+
+void p3Git::postCloneStatus(const RsGxsGroupId &groupId, const std::string &status, bool success)
+{
+    if (rsEvents) {
+        auto ev = std::make_shared<RsGitEvent>();
+        ev->mGitGroupId = groupId;
+        ev->mGitEventCode = RsGitEventCode::CLONE_STATUS_CHANGED;
+        ev->mCloneStatus = status;
+        ev->mCloneSuccess = success;
+        rsEvents->postEvent(ev);
+    }
+}
+
+void p3Git::notifyTunnelStatus(const RsGxsTunnelId& tunnel_id, uint32_t tunnel_status)
+{
+    RsGxsGroupId groupId;
+    bool isPull = false;
+    {
+        RS_STACK_MUTEX(mRetroGitMtx);
+        auto it = mPendingClones.find(tunnel_id);
+        if (it != mPendingClones.end()) {
+            groupId = it->second.groupId;
+        } else {
+            auto it2 = mPendingPulls.find(tunnel_id);
+            if (it2 != mPendingPulls.end()) {
+                groupId = it2->second.groupId;
+                isPull = true;
+            }
+        }
+    }
+
+    if (groupId.isNull()) return;
+
+    if (tunnel_status == RsGxsTunnelService::RS_GXS_TUNNEL_STATUS_CAN_TALK) {
+        std::cout << "p3Git: Tunnel secured (tunnel_id=" << tunnel_id << "). Sending " << (isPull ? "pull_req" : "clone_req") << "..." << std::endl;
+        postCloneStatus(groupId, isPull ? "Tunnel secured. Requesting sync data..." : "Tunnel secured. Requesting repository data...", false);
+
+        // Send JSON message
+        QVariantMap req;
+        req["type"] = isPull ? "pull_req" : "clone_req";
+        req["group_id"] = QString::fromStdString(groupId.toStdString());
+
+        QJsonDocument doc = QJsonDocument::fromVariant(req);
+        std::string msg = doc.toJson().toStdString();
+
+        mGxsTunnels->sendData(tunnel_id, RETRO_GIT_GXS_TUNNEL_SERVICE_ID, (const uint8_t*)msg.c_str(), msg.size());
+    }
+    else if (tunnel_status == RsGxsTunnelService::RS_GXS_TUNNEL_STATUS_REMOTELY_CLOSED ||
+             tunnel_status == RsGxsTunnelService::RS_GXS_TUNNEL_STATUS_TUNNEL_DN)
+    {
+        std::cout << "p3Git: Tunnel went down/closed (tunnel_id=" << tunnel_id << ")" << std::endl;
+        postCloneStatus(groupId, "Secure tunnel went down.", false);
+        {
+            RS_STACK_MUTEX(mRetroGitMtx);
+            mPendingClones.erase(tunnel_id);
+            mPendingPulls.erase(tunnel_id);
+            mTunnelToGxsIdMap.erase(tunnel_id);
+        }
+    }
+}
+
+void p3Git::receiveData(const RsGxsTunnelId& id, unsigned char *data, uint32_t data_size)
+{
+    std::string msg((const char*)data, data_size);
+    free(data); // Free the memory as per ownership rules
+
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(msg));
+    if (doc.isNull()) {
+        std::cerr << "p3Git: Failed to parse received JSON data from tunnel." << std::endl;
+        return;
+    }
+
+    QVariantMap map = doc.toVariant().toMap();
+    QString type = map["type"].toString();
+
+    if (type == "clone_req" || type == "pull_req") {
+        QString groupIdStr = map["group_id"].toString();
+        std::cout << "p3Git: Received request " << type.toStdString() << " for group " << groupIdStr.toStdString() << std::endl;
+
+        std::string barePath = GitManager::getBareRepoPath(groupIdStr.toStdString());
+        if (!GitManager::isValidRepository(barePath)) {
+            std::cerr << "p3Git: Requested repository is not valid locally: " << barePath << std::endl;
+            return;
+        }
+
+        std::string packfileData;
+        std::map<std::string, std::string> refUpdates;
+        if (GitManager::createPackfile(barePath, packfileData, refUpdates)) {
+            std::cout << "p3Git: Generated packfile of size " << packfileData.size() << " bytes. Sending..." << std::endl;
+            QByteArray base64Pack = QByteArray(packfileData.data(), packfileData.size()).toBase64();
+
+            QVariantMap resp;
+            resp["type"] = (type == "pull_req") ? "pull_res" : "clone_res";
+            resp["group_id"] = groupIdStr;
+            resp["packfile"] = QString::fromLatin1(base64Pack);
+
+            QVariantMap refs;
+            for (auto const& pair : refUpdates) {
+                refs[QString::fromStdString(pair.first)] = QString::fromStdString(pair.second);
+            }
+            resp["ref_updates"] = refs;
+
+            QJsonDocument respDoc = QJsonDocument::fromVariant(resp);
+            std::string respStr = respDoc.toJson().toStdString();
+
+            mGxsTunnels->sendData(id, RETRO_GIT_GXS_TUNNEL_SERVICE_ID, (const uint8_t*)respStr.c_str(), respStr.size());
+        } else {
+            std::cerr << "p3Git: Failed to create packfile for group " << groupIdStr.toStdString() << std::endl;
+        }
+    }
+    else if (type == "clone_res") {
+        QString groupIdStr = map["group_id"].toString();
+        RsGxsGroupId groupId(groupIdStr.toStdString());
+        std::cout << "p3Git: Received clone response for group " << groupIdStr.toStdString() << std::endl;
+
+        PendingClone pc;
+        {
+            RS_STACK_MUTEX(mRetroGitMtx);
+            auto it = mPendingClones.find(id);
+            if (it != mPendingClones.end()) {
+                pc = it->second;
+                mPendingClones.erase(it);
+                mTunnelToGxsIdMap.erase(id);
+            }
+        }
+
+        if (pc.groupId.isNull()) {
+            std::cerr << "p3Git: Received clone response but no pending clone found for tunnel " << id << std::endl;
+            return;
+        }
+
+        postCloneStatus(groupId, "Received repository data. Unpacking...", false);
+
+        QByteArray base64Pack = map["packfile"].toString().toLatin1();
+        QByteArray packfileData = QByteArray::fromBase64(base64Pack);
+
+        QVariantMap refs = map["ref_updates"].toMap();
+        std::map<std::string, std::string> refUpdates;
+        for (auto it = refs.begin(); it != refs.end(); ++it) {
+            refUpdates[it.key().toStdString()] = it.value().toString().toStdString();
+        }
+
+        std::string barePath = GitManager::getBareRepoPath(groupId.toStdString());
+        if (GitManager::unpackPackfile(barePath, std::string(packfileData.data(), packfileData.size()), refUpdates)) {
+            postCloneStatus(groupId, "Repository unpacked. Writing working tree...", false);
+
+            if (GitManager::cloneRepository(barePath, pc.localPath)) {
+                std::cout << "p3Git: Successfully cloned/checked out bare repo to working path: " << pc.localPath << std::endl;
+                postCloneStatus(groupId, "Clone completed successfully!", true);
+            } else {
+                std::cerr << "p3Git: Failed to clone bare repo to working path: " << pc.localPath << std::endl;
+                postCloneStatus(groupId, "Failed to write working tree to selected path.", false);
+            }
+        } else {
+            std::cerr << "p3Git: Failed to unpack packfile to bare repository: " << barePath << std::endl;
+            postCloneStatus(groupId, "Failed to unpack repository packfile.", false);
+        }
+
+        // Close the tunnel now that we've finished transfer
+        mGxsTunnels->closeExistingTunnel(id, RETRO_GIT_GXS_TUNNEL_SERVICE_ID);
+    }
+    else if (type == "pull_res") {
+        QString groupIdStr = map["group_id"].toString();
+        RsGxsGroupId groupId(groupIdStr.toStdString());
+        std::cout << "p3Git: Received pull response for group " << groupIdStr.toStdString() << std::endl;
+
+        PendingPull pp;
+        {
+            RS_STACK_MUTEX(mRetroGitMtx);
+            auto it = mPendingPulls.find(id);
+            if (it != mPendingPulls.end()) {
+                pp = it->second;
+                mPendingPulls.erase(it);
+                mTunnelToGxsIdMap.erase(id);
+            }
+        }
+
+        if (pp.groupId.isNull()) {
+            std::cerr << "p3Git: Received pull response but no pending pull found for tunnel " << id << std::endl;
+            return;
+        }
+
+        postCloneStatus(groupId, "Received repository changes. Unpacking...", false);
+
+        QByteArray base64Pack = map["packfile"].toString().toLatin1();
+        QByteArray packfileData = QByteArray::fromBase64(base64Pack);
+
+        QVariantMap refs = map["ref_updates"].toMap();
+        std::map<std::string, std::string> refUpdates;
+        for (auto it = refs.begin(); it != refs.end(); ++it) {
+            refUpdates[it.key().toStdString()] = it.value().toString().toStdString();
+        }
+
+        std::string barePath = GitManager::getBareRepoPath(groupId.toStdString());
+        if (GitManager::unpackPackfile(barePath, std::string(packfileData.data(), packfileData.size()), refUpdates)) {
+            bool hasWorkingDir = !pp.localPath.empty() && GitManager::isValidRepository(pp.localPath);
+            if (hasWorkingDir) {
+                postCloneStatus(groupId, "Syncing working tree...", false);
+                if (GitManager::pullRepository(pp.localPath)) {
+                    postCloneStatus(groupId, "Sync completed successfully!", true);
+                } else {
+                    postCloneStatus(groupId, "Failed to update working tree with new changes.", false);
+                }
+            } else {
+                postCloneStatus(groupId, "Bare repository synced successfully!", true);
+            }
+        } else {
+            postCloneStatus(groupId, "Failed to unpack sync packfile.", false);
+        }
+
+        // Close the tunnel now that we've finished transfer
+        mGxsTunnels->closeExistingTunnel(id, RETRO_GIT_GXS_TUNNEL_SERVICE_ID);
+    }
+}
+
+void p3Git::connectToGxsTunnelService(RsGxsTunnelService *tunnel_service)
+{
+    mGxsTunnels = tunnel_service;
+    if (mGxsTunnels) {
+        std::cout << "p3Git: Registering GXS Tunnel client (Service ID: " << RETRO_GIT_GXS_TUNNEL_SERVICE_ID << ")" << std::endl;
+        if (!mGxsTunnels->registerClientService(RETRO_GIT_GXS_TUNNEL_SERVICE_ID, this)) {
+            std::cerr << "p3Git: FAILED to register GXS Tunnel client!" << std::endl;
+        }
+    }
+}
+
+bool p3Git::acceptDataFromPeer(const RsGxsId& gxs_id, const RsGxsTunnelId& tunnel_id, bool am_I_client_side)
+{
+    std::cout << "p3Git: acceptDataFromPeer: gxs=" << gxs_id
+              << " tunnel=" << tunnel_id
+              << " side=" << (am_I_client_side ? "client" : "server") << std::endl;
+    {
+        RS_STACK_MUTEX(mRetroGitMtx);
+        mTunnelToGxsIdMap[tunnel_id] = gxs_id;
+    }
+    return true;
 }

@@ -68,6 +68,7 @@
 #include <QTextBrowser>
 #include <QTabBar>
 #include <QFileInfo>
+#include <QShortcut>
 #include <retroshare/rsfiles.h>
 #include <retroshare/rsidentity.h>
 
@@ -141,8 +142,8 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
     QLabel *lblLog = new QLabel(tr("Recent Commits:"), ui->tabWidgetPage1);
     workDirLayout->addWidget(lblLog);
     
-    mCommitTable = new QTableWidget(0, 4, ui->tabWidgetPage1);
-    mCommitTable->setHorizontalHeaderLabels(QStringList() << tr("Hash") << tr("Message") << tr("Author") << tr("Date"));
+    mCommitTable = new QTableWidget(0, 6, ui->tabWidgetPage1);
+    mCommitTable->setHorizontalHeaderLabels(QStringList() << tr("Hash") << tr("Message") << tr("Author") << tr("Date") << tr("Status") << tr("Action"));
     mCommitTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     mCommitTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     mCommitTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -164,25 +165,47 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
     repoBrowserLayout->addWidget(lblBrowser);
     
     mRepoBrowserList = new QListWidget(repoBrowserTab);
+    mRepoBrowserList->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(mRepoBrowserList, SIGNAL(customContextMenuRequested(QPoint)), this, SLOT(onRepoBrowserContextMenu(QPoint)));
+    connect(mRepoBrowserList, SIGNAL(itemDoubleClicked(QListWidgetItem*)), this, SLOT(openSelectedFile()));
     repoBrowserLayout->addWidget(mRepoBrowserList);
     
     ui->rightPaneTabWidget->addTab(repoBrowserTab, QIcon(":/images/git.png"), tr("Files"));
     
     // Packfiles / Available Pushes Tab
-    QWidget *packfilesTab = new QWidget();
-    QVBoxLayout *packfilesLayout = new QVBoxLayout(packfilesTab);
+    mPackfilesTab = new QWidget();
+    QVBoxLayout *packfilesLayout = new QVBoxLayout(mPackfilesTab);
     
-    QLabel *lblPackfiles = new QLabel(tr("Available Pushes to download manually from GXS:"), packfilesTab);
+    QLabel *lblPackfiles = new QLabel(tr("Available Pushes to download:"), mPackfilesTab);
     packfilesLayout->addWidget(lblPackfiles);
     
-    mPackfilesTable = new QTableWidget(0, 6, packfilesTab);
+    mPackfilesTable = new QTableWidget(0, 6, mPackfilesTab);
     mPackfilesTable->setHorizontalHeaderLabels(QStringList() << tr("Author") << tr("Date") << tr("Refs Updated") << tr("Size") << tr("Status / Progress") << tr("Action"));
     mPackfilesTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
     mPackfilesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     mPackfilesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     packfilesLayout->addWidget(mPackfilesTable);
+
+    // Separator line
+    QFrame *lineSeparator = new QFrame(mPackfilesTab);
+    lineSeparator->setFrameShape(QFrame::HLine);
+    lineSeparator->setFrameShadow(QFrame::Sunken);
+    packfilesLayout->addWidget(lineSeparator);
+
+    // Direct Clones section
+    QLabel *lblClones = new QLabel(tr("Decentralized Clones (GxsTunnels):"), mPackfilesTab);
+    packfilesLayout->addWidget(lblClones);
+
+    mClonesTable = new QTableWidget(0, 4, mPackfilesTab);
+    mClonesTable->setHorizontalHeaderLabels(QStringList() << tr("Repository") << tr("Author") << tr("Status / Progress") << tr("Date"));
+    mClonesTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    mClonesTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    mClonesTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    mClonesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    mClonesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    packfilesLayout->addWidget(mClonesTable);
     
-    ui->rightPaneTabWidget->addTab(packfilesTab, QIcon(":/images/git.png"), tr("Pushes / Packs"));
+    ui->rightPaneTabWidget->addTab(mPackfilesTab, QIcon(":/images/git.png"), tr("Pushes / Packs"));
     
     ui->rightPaneTabWidget->setTabsClosable(true);
     connect(ui->rightPaneTabWidget, SIGNAL(tabCloseRequested(int)), this, SLOT(onTabCloseRequested(int)));
@@ -204,6 +227,10 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
     
     connect(ui->treeWidget->treeWidget(), SIGNAL(itemSelectionChanged()), this, SLOT(onTreeSelectionChanged()));
     connect(mCommitTable, SIGNAL(itemSelectionChanged()), this, SLOT(onCommitSelectionChanged()));
+
+    // Create F5 shortcut for silent repository refresh
+    QShortcut *refreshShortcut = new QShortcut(QKeySequence(Qt::Key_F5), this);
+    connect(refreshShortcut, SIGNAL(activated()), this, SLOT(refreshCurrentRepo()));
 
     // Create Commit Details panel
     mCommitDetailsWidget = new QWidget(ui->layoutWidget);
@@ -321,11 +348,39 @@ void MainWidget::processSettings(bool load)
     // state of splitter
     ui->splitter->restoreState(Settings->value("SplitterList").toByteArray());
 
+    // Load clone history
+    int count = Settings->beginReadArray("CloneHistory");
+    mCloneHistory.clear();
+    for (int i = 0; i < count; ++i) {
+        Settings->setArrayIndex(i);
+        CloneRecord rec;
+        rec.repoId = Settings->value("repoId").toString();
+        rec.repoName = Settings->value("repoName").toString();
+        rec.ownerId = Settings->value("ownerId").toString();
+        rec.status = Settings->value("status").toString();
+        rec.time = Settings->value("time").toString();
+        mCloneHistory.push_back(rec);
+    }
+    Settings->endArray();
+    populateClonesTable();
+
   } else {
     // save settings
 
     // state of splitter
     Settings->setValue("SplitterList", ui->splitter->saveState());
+
+    // Save clone history
+    Settings->beginWriteArray("CloneHistory");
+    for (int i = 0; i < (int)mCloneHistory.size(); ++i) {
+        Settings->setArrayIndex(i);
+        Settings->setValue("repoId", mCloneHistory[i].repoId);
+        Settings->setValue("repoName", mCloneHistory[i].repoName);
+        Settings->setValue("ownerId", mCloneHistory[i].ownerId);
+        Settings->setValue("status", mCloneHistory[i].status);
+        Settings->setValue("time", mCloneHistory[i].time);
+    }
+    Settings->endArray();
   }
 
   Settings->endGroup();
@@ -355,15 +410,41 @@ void MainWidget::loadGroupMeta()
 
     // Convert to RsGroupMetaData for display
     std::list<RsGroupMetaData> groupMeta;
+    std::map<QString, int> groupUnreadCounts;
     for (auto &group : groups) {
       groupMeta.push_back(group.mMeta);
+      
+      int unreadCount = 0;
+      std::vector<RsGitUpdate> updates;
+      if (rsGit->getUpdates(group.mMeta.mGroupId, updates)) {
+          for (const auto &update : updates) {
+              if (update.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) {
+                  unreadCount++;
+              }
+          }
+      }
+      groupUnreadCounts[QString::fromStdString(group.mMeta.mGroupId.toStdString())] = unreadCount;
     }
 
     // Update UI in main thread
     RsQThreadUtils::postToObject(
-        [this, groupMeta]() {
+        [this, groupMeta, groupUnreadCounts]() {
           if (groupMeta.size() > 0) {
             insertGroupsData(groupMeta);
+            
+            // Set unread count for each group item (this automatically sets it bold if unread > 0)
+            for (const auto &meta : groupMeta) {
+                QString groupIdStr = QString::fromStdString(meta.mGroupId.toStdString());
+                QTreeWidgetItem *item = ui->treeWidget->getItemFromId(groupIdStr);
+                if (item) {
+                    int unread = 0;
+                    auto itUnread = groupUnreadCounts.find(groupIdStr);
+                    if (itUnread != groupUnreadCounts.end()) {
+                        unread = itUnread->second;
+                    }
+                    ui->treeWidget->setUnreadCount(item, unread);
+                }
+            }
           }
         },
         this);
@@ -480,10 +561,55 @@ void MainWidget::handleEvent_main_thread(std::shared_ptr<const RsEvent> event)
         case RsGitEventCode::SUBSCRIBE_STATUS_CHANGED:
             updateDisplay();
             break;
+        case RsGitEventCode::CLONE_STATUS_CHANGED:
+        {
+            QString status = QString::fromStdString(e->mCloneStatus);
+            QString targetGroupId = QString::fromStdString(e->mGitGroupId.toStdString());
+            
+            // Find active clone in history and update it
+            for (int i = 0; i < (int)mCloneHistory.size(); ++i) {
+                if (mCloneHistory[i].repoId == targetGroupId && 
+                    !mCloneHistory[i].status.contains("Successful") && 
+                    !mCloneHistory[i].status.contains("Failed") && 
+                    !mCloneHistory[i].status.contains("completed")) 
+                {
+                    mCloneHistory[i].status = status;
+                    break;
+                }
+            }
+            populateClonesTable();
+
+            if (e->mCloneSuccess) {
+                QMessageBox::information(this, tr("Clone Successful"), tr("Successfully cloned decentral repository."));
+                updateDisplay();
+                onTreeSelectionChanged();
+            } else if (!status.isEmpty() && (status.contains("Failed") || status.contains("failed") || status.contains("down") || status.contains("not available"))) {
+                QMessageBox::critical(this, tr("Clone Failed"), status);
+            }
+            break;
+        }
         case RsGitEventCode::NEW_POST:
         {
+            loadGroupMeta();
+            
             // A packfile was received and unpacked into the bare repo — refresh browser/log
             QString updatedGroupId = QString::fromStdString(e->mGitGroupId.toStdString());
+            
+            // Check if we are a subscriber and notify about new changes to sync
+            bool isAdmin = false;
+            std::list<RsGxsGroupId> groupIds({RsGxsGroupId(updatedGroupId.toStdString())});
+            std::vector<RsGitGroup> groups;
+            if (rsGit && rsGit->getGroups(groupIds, groups) && !groups.empty()) {
+                uint32_t flags = groups[0].mMeta.mSubscribeFlags;
+                isAdmin = IS_GROUP_ADMIN(flags);
+                
+                if (!isAdmin) {
+                    QString repoName = QString::fromUtf8(groups[0].mGroupName.c_str());
+                    QMessageBox::information(this, tr("New Updates Available"),
+                        tr("The repository '%1' has new commits published by the owner. Please pull/sync to update your local files.").arg(repoName));
+                }
+            }
+
             QTreeWidgetItem *selectedItem = ui->treeWidget->treeWidget()->currentItem();
             if (selectedItem) {
                 QString currentGroupId = ui->treeWidget->itemId(selectedItem);
@@ -495,6 +621,12 @@ void MainWidget::handleEvent_main_thread(std::shared_ptr<const RsEvent> event)
                         mBtnPush->setText(tr("Push Local Commits"));
                 }
             }
+            break;
+        }
+        case RsGitEventCode::READ_STATUS_CHANGED:
+        {
+            loadGroupMeta();
+            refreshCurrentRepo();
             break;
         }
 
@@ -538,7 +670,75 @@ void MainWidget::groupListCustomPopupMenu(QPoint /*point*/)
         }
     }
 
+    if (IS_GROUP_SUBSCRIBED(subscribeFlags)) {
+        int unreadCount = 0;
+        std::vector<RsGitUpdate> updates;
+        if (rsGit && rsGit->getUpdates(RsGxsGroupId(groupId.toStdString()), updates)) {
+            for (const auto &update : updates) {
+                if (update.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) {
+                    unreadCount++;
+                }
+            }
+        }
+        if (unreadCount > 0) {
+            contextMnu.addSeparator();
+            action = contextMnu.addAction(QIcon(), tr("Mark Repository as Read"), this, SLOT(markRepositoryAsRead()));
+            action->setEnabled(true);
+        }
+    }
+
     contextMnu.exec(QCursor::pos());
+}
+
+void MainWidget::markRepositoryAsRead()
+{
+    if (!ui->treeWidget || !ui->treeWidget->treeWidget())
+        return;
+    QTreeWidgetItem *item = ui->treeWidget->treeWidget()->currentItem();
+    if (!item)
+        return;
+
+    QString groupId = ui->treeWidget->itemId(item);
+    if (groupId.isEmpty())
+        return;
+
+    RsThread::async([this, groupId]() {
+        std::vector<RsGitUpdate> updates;
+        if (rsGit && rsGit->getUpdates(RsGxsGroupId(groupId.toStdString()), updates)) {
+            for (const auto &update : updates) {
+                if (update.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) {
+                    rsGit->setMessageReadStatus(RsGxsGrpMsgIdPair(RsGxsGroupId(groupId.toStdString()), update.mMeta.mMsgId), true);
+                }
+            }
+            RsQThreadUtils::postToObject([this]() {
+                refreshCurrentRepo();
+                loadGroupMeta();
+            }, this);
+        }
+    });
+}
+
+void MainWidget::onCommitReadStatusToggled(const QString &msgIdStr, bool markRead)
+{
+    if (!ui->treeWidget || !ui->treeWidget->treeWidget()) return;
+    QTreeWidgetItem *item = ui->treeWidget->treeWidget()->currentItem();
+    if (!item) return;
+
+    QString groupId = ui->treeWidget->itemId(item);
+    if (groupId.isEmpty()) return;
+
+    RsThread::async([this, groupId, msgIdStr, markRead]() {
+        if (rsGit) {
+            rsGit->setMessageReadStatus(
+                RsGxsGrpMsgIdPair(RsGxsGroupId(groupId.toStdString()), RsGxsMessageId(msgIdStr.toStdString())),
+                markRead
+            );
+            RsQThreadUtils::postToObject([this]() {
+                refreshCurrentRepo();
+                loadGroupMeta();
+            }, this);
+        }
+    });
 }
 
 void MainWidget::showGroupDetails()
@@ -661,6 +861,8 @@ void MainWidget::onTreeSelectionChanged()
     mLocalPathEdit->blockSignals(false);
     
     bool hasPath = !path.isEmpty();
+    bool pathExists = false;
+    bool isCloned = false;
     bool isAdmin = false;
     
     std::list<RsGxsGroupId> groupIds({RsGxsGroupId(groupId.toStdString())});
@@ -669,12 +871,20 @@ void MainWidget::onTreeSelectionChanged()
         uint32_t flags = groups[0].mMeta.mSubscribeFlags;
         isAdmin = IS_GROUP_ADMIN(flags);
     }
+
+    if (hasPath) {
+        QString cleanPath = QDir::cleanPath(path);
+        pathExists = QDir(cleanPath).exists();
+        if (pathExists && GitManager::isValidRepository(cleanPath.toStdString())) {
+            isCloned = true;
+        }
+    }
     
     mBtnPush->setEnabled(isAdmin);
     mBtnPull->setEnabled(true);
-    mBtnClone->setEnabled(!isAdmin);
-    mBtnOpenFolder->setEnabled(hasPath);
-    mBtnCommit->setEnabled(hasPath && isAdmin);
+    mBtnClone->setEnabled(!isAdmin && !isCloned);
+    mBtnOpenFolder->setEnabled(hasPath && pathExists);
+    mBtnCommit->setEnabled(hasPath && pathExists && isAdmin);
     
     populateCommitLog(groupId);
     populateRepoBrowser(groupId);
@@ -693,9 +903,12 @@ void MainWidget::populateCommitLog(const QString &groupId)
     
     std::string repoPath = GitManager::getBareRepoPath(groupId.toStdString());
     
-    QString localPath = mLocalPathEdit->text();
-    if (!localPath.isEmpty() && QDir(localPath).exists()) {
-        repoPath = localPath.toStdString();
+    QString rawPath = mLocalPathEdit->text().trimmed();
+    if (!rawPath.isEmpty()) {
+        QString localPath = QDir::cleanPath(rawPath);
+        if (QDir(localPath).exists()) {
+            repoPath = localPath.toStdString();
+        }
     }
     
     std::vector<GitCommitInfo> commits;
@@ -703,48 +916,323 @@ void MainWidget::populateCommitLog(const QString &groupId)
     
     std::vector<GitLocalChange> localChanges;
     bool hasLocalChanges = false;
-    if (GitManager::getLocalChanges(repoPath, localChanges) && !localChanges.empty()) {
+    bool statusOk = GitManager::getLocalChanges(repoPath, localChanges);
+    if (statusOk && !localChanges.empty()) {
         hasLocalChanges = true;
     }
     
-    if (gotLog || hasLocalChanges) {
-        int offset = hasLocalChanges ? 1 : 0;
-        mCommitTable->setRowCount(commits.size() + offset);
+    // Load GXS updates to map commits and find undownloaded commits
+    std::set<std::string> localCommitShas;
+    for (const auto &c : commits) {
+        localCommitShas.insert(c.hash);
+        localCommitShas.insert(c.full_hash);
+    }
+    
+    std::vector<RsGitUpdate> updates;
+    if (rsGit) {
+        rsGit->getUpdates(RsGxsGroupId(groupId.toStdString()), updates);
+    }
+    
+    std::vector<RsGitUpdate> undownloadedUpdates;
+    std::set<std::string> unreadCommitShas;
+    std::map<std::string, std::pair<RsGxsMessageId, bool>> commitToMsgId;
+    std::map<std::string, std::string> commitToMsgName;
+    
+    for (const auto &update : updates) {
+        bool isUnread = (update.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD);
         
-        if (hasLocalChanges) {
-            QTableWidgetItem *itemHash = new QTableWidgetItem("*");
-            itemHash->setData(Qt::UserRole, QString("LOCAL_CHANGES"));
+        // Check if this update has been downloaded
+        bool isDownloaded = false;
+        for (const auto &pair : update.mRefUpdates) {
+            commitToMsgId[pair.second] = {update.mMeta.mMsgId, isUnread};
+            commitToMsgName[pair.second] = update.mMeta.mMsgName;
+            if (isUnread) {
+                unreadCommitShas.insert(pair.second);
+            }
+            if (localCommitShas.count(pair.second)) {
+                isDownloaded = true;
+            }
+        }
+        
+        if (!isDownloaded) {
+            undownloadedUpdates.push_back(update);
+        }
+    }
+    
+    int offset = hasLocalChanges ? 1 : 0;
+    int totalRows = undownloadedUpdates.size() + commits.size() + offset;
+    mCommitTable->setRowCount(totalRows);
+    
+    if (hasLocalChanges) {
+        QTableWidgetItem *itemHash = new QTableWidgetItem("*");
+        itemHash->setData(Qt::UserRole, QString("LOCAL_CHANGES"));
+        QFont font = itemHash->font();
+        font.setBold(true);
+        itemHash->setFont(font);
+        
+        QTableWidgetItem *itemMsg = new QTableWidgetItem(tr("Local changes (Uncommitted)"));
+        itemMsg->setFont(font);
+        itemMsg->setForeground(QBrush(QColor("#d35400"))); // Orange to highlight local changes
+        
+        QTableWidgetItem *itemAuth = new QTableWidgetItem("");
+        QTableWidgetItem *itemDate = new QTableWidgetItem("");
+        QTableWidgetItem *itemStatus = new QTableWidgetItem("-");
+        QTableWidgetItem *itemAction = new QTableWidgetItem("-");
+        
+        mCommitTable->setItem(0, 0, itemHash);
+        mCommitTable->setItem(0, 1, itemMsg);
+        mCommitTable->setItem(0, 2, itemAuth);
+        mCommitTable->setItem(0, 3, itemDate);
+        mCommitTable->setItem(0, 4, itemStatus);
+        mCommitTable->setItem(0, 5, itemAction);
+    }
+    
+    // Get creator and own identity for Pull button
+    RsGxsId creatorId;
+    QString repoName;
+    bool isAdmin = false;
+    std::list<RsGxsGroupId> groupIds({RsGxsGroupId(groupId.toStdString())});
+    std::vector<RsGitGroup> groups;
+    if (rsGit && rsGit->getGroups(groupIds, groups) && !groups.empty()) {
+        uint32_t flags = groups[0].mMeta.mSubscribeFlags;
+        isAdmin = IS_GROUP_ADMIN(flags);
+        creatorId = groups[0].mMeta.mAuthorId;
+        repoName = QString::fromUtf8(groups[0].mGroupName.c_str());
+    }
+    
+    RsGxsId ownId;
+    if (rsIdentity) {
+        std::list<RsGxsId> ownIds;
+        rsIdentity->getOwnIds(ownIds);
+        if (!ownIds.empty()) {
+            ownId = ownIds.front();
+        }
+    }
+    
+    // 1. Populate un-downloaded updates
+    for (int i = 0; i < (int)undownloadedUpdates.size(); ++i) {
+        const auto &update = undownloadedUpdates[i];
+        bool isUnread = (update.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD);
+        
+        QString targetSha = "";
+        if (!update.mRefUpdates.empty()) {
+            targetSha = QString::fromStdString(update.mRefUpdates.begin()->second);
+        }
+        
+        QTableWidgetItem *itemHash = new QTableWidgetItem(targetSha.left(8));
+        itemHash->setData(Qt::UserRole, targetSha);
+        
+        // Show MsgName ("New Commit: <msg>" only when unread, otherwise strip it)
+        QString msgName = QString::fromStdString(update.mMeta.mMsgName);
+        if (isUnread) {
+            if (!msgName.startsWith("New Commit:")) {
+                msgName = "New Commit: " + msgName;
+            }
+        } else {
+            if (msgName.startsWith("New Commit:")) {
+                msgName = msgName.mid(11).trimmed();
+            }
+        }
+        QTableWidgetItem *itemMsg = new QTableWidgetItem(msgName);
+        
+        // Author
+        QString author = tr("Anonymous");
+        if (!update.mMeta.mAuthorId.isNull() && rsIdentity) {
+            RsIdentityDetails idDetails;
+            if (rsIdentity->getIdDetails(update.mMeta.mAuthorId, idDetails)) {
+                author = QString::fromUtf8(idDetails.mNickname.c_str());
+            }
+        }
+        QTableWidgetItem *itemAuth = new QTableWidgetItem(author);
+        
+        // Date
+        QString dateStr = QDateTime::fromTime_t(update.mMeta.mPublishTs).toString(Qt::SystemLocaleShortDate);
+        QTableWidgetItem *itemDate = new QTableWidgetItem(dateStr);
+        
+        if (isUnread) {
             QFont font = itemHash->font();
             font.setBold(true);
             itemHash->setFont(font);
-            
-            QTableWidgetItem *itemMsg = new QTableWidgetItem(tr("Local changes (Uncommitted)"));
             itemMsg->setFont(font);
-            itemMsg->setForeground(QBrush(QColor("#d35400"))); // Orange to highlight local changes
-            
-            QTableWidgetItem *itemAuth = new QTableWidgetItem("");
-            QTableWidgetItem *itemDate = new QTableWidgetItem("");
-            
-            mCommitTable->setItem(0, 0, itemHash);
-            mCommitTable->setItem(0, 1, itemMsg);
-            mCommitTable->setItem(0, 2, itemAuth);
-            mCommitTable->setItem(0, 3, itemDate);
+            itemAuth->setFont(font);
+            itemDate->setFont(font);
         }
         
-        for (int i = 0; i < (int)commits.size(); i++) {
-            QTableWidgetItem *itemHash = new QTableWidgetItem(QString::fromStdString(commits[i].hash));
-            itemHash->setData(Qt::UserRole, QString::fromStdString(commits[i].full_hash));
-            QTableWidgetItem *itemMsg = new QTableWidgetItem(QString::fromStdString(commits[i].message));
-            QTableWidgetItem *itemAuth = new QTableWidgetItem(QString::fromStdString(commits[i].author));
-            QTableWidgetItem *itemDate = new QTableWidgetItem(QString::fromStdString(commits[i].date));
-            
-            mCommitTable->setItem(i + offset, 0, itemHash);
-            mCommitTable->setItem(i + offset, 1, itemMsg);
-            mCommitTable->setItem(i + offset, 2, itemAuth);
-            mCommitTable->setItem(i + offset, 3, itemDate);
+        int rowIdx = i + offset;
+        mCommitTable->setItem(rowIdx, 0, itemHash);
+        mCommitTable->setItem(rowIdx, 1, itemMsg);
+        mCommitTable->setItem(rowIdx, 2, itemAuth);
+        mCommitTable->setItem(rowIdx, 3, itemDate);
+        
+        // Status Column
+        QPushButton *btnStatus = new QPushButton(isUnread ? tr("Mark Read") : tr("Mark Unread"), mCommitTable);
+        if (isUnread) {
+            btnStatus->setStyleSheet("QPushButton { font-weight: bold; color: #27ae60; }");
+        } else {
+            btnStatus->setStyleSheet("QPushButton { color: #7f8c8d; }");
+        }
+        QString msgIdStr = QString::fromStdString(update.mMeta.mMsgId.toStdString());
+        connect(btnStatus, &QPushButton::clicked, [this, msgIdStr, isUnread]() {
+            onCommitReadStatusToggled(msgIdStr, isUnread);
+        });
+        mCommitTable->setCellWidget(rowIdx, 4, btnStatus);
+        
+        // Action Column: Pull Button (since it is not downloaded yet)
+        if (!creatorId.isNull() && !ownId.isNull()) {
+            QPushButton *btnPull = new QPushButton(tr("Pull"), mCommitTable);
+            btnPull->setStyleSheet("QPushButton { font-weight: bold; color: #2980b9; }");
+            QString localPath = mLocalPathEdit->text().trimmed();
+            connect(btnPull, &QPushButton::clicked, [this, groupId, creatorId, ownId, localPath, repoName]() {
+                CloneRecord rec;
+                rec.repoId = groupId;
+                rec.repoName = repoName;
+                rec.ownerId = QString::fromStdString(creatorId.toStdString());
+                rec.status = tr("Requesting secure pull tunnel...");
+                rec.time = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+                mCloneHistory.insert(mCloneHistory.begin(), rec);
+                populateClonesTable();
+                
+                if (mPackfilesTab) {
+                    ui->rightPaneTabWidget->setCurrentWidget(mPackfilesTab);
+                }
+                
+                if (!rsGit->requestPullOverTunnel(RsGxsGroupId(groupId.toStdString()), creatorId, ownId, localPath.toStdString())) {
+                    if (!mCloneHistory.empty()) {
+                        mCloneHistory[0].status = tr("Failed to initiate sync request.");
+                        populateClonesTable();
+                    }
+                }
+            });
+            mCommitTable->setCellWidget(rowIdx, 5, btnPull);
+        } else {
+            QTableWidgetItem *itemAction = new QTableWidgetItem("-");
+            mCommitTable->setItem(rowIdx, 5, itemAction);
         }
     }
+    
+    // 2. Populate downloaded commits
+    int undownloadedCount = undownloadedUpdates.size();
+    for (int i = 0; i < (int)commits.size(); i++) {
+        int rowIdx = undownloadedCount + i + offset;
+        
+        QTableWidgetItem *itemHash = new QTableWidgetItem(QString::fromStdString(commits[i].hash));
+        itemHash->setData(Qt::UserRole, QString::fromStdString(commits[i].full_hash));
+        QTableWidgetItem *itemAuth = new QTableWidgetItem(QString::fromStdString(commits[i].author));
+        QTableWidgetItem *itemDate = new QTableWidgetItem(QString::fromStdString(commits[i].date));
+        
+        // Check read/unread status
+        bool hasGxsMsg = false;
+        bool isUnread = false;
+        RsGxsMessageId gxsMsgId;
+        
+        auto itMsg = commitToMsgId.find(commits[i].full_hash);
+        if (itMsg == commitToMsgId.end()) {
+            itMsg = commitToMsgId.find(commits[i].hash);
+        }
+        if (itMsg != commitToMsgId.end()) {
+            hasGxsMsg = true;
+            gxsMsgId = itMsg->second.first;
+            isUnread = itMsg->second.second;
+        }
+        
+        if (isUnread) {
+            QFont font = itemHash->font();
+            font.setBold(true);
+            itemHash->setFont(font);
+            itemAuth->setFont(font);
+            itemDate->setFont(font);
+        }
+        
+        mCommitTable->setItem(rowIdx, 0, itemHash);
+        mCommitTable->setItem(rowIdx, 2, itemAuth);
+        mCommitTable->setItem(rowIdx, 3, itemDate);
+        
+        // Format message column (show "New Commit: <msg>" if GXS update)
+        QString textToShow = QString::fromStdString(commits[i].message);
+        auto nameIt = commitToMsgName.find(commits[i].full_hash);
+        if (nameIt == commitToMsgName.end()) {
+            nameIt = commitToMsgName.find(commits[i].hash);
+        }
+        
+        if (nameIt != commitToMsgName.end()) {
+            QString msgName = QString::fromStdString(nameIt->second);
+            if (isUnread) {
+                if (!msgName.startsWith("New Commit:")) {
+                    msgName = "New Commit: " + msgName;
+                }
+            } else {
+                if (msgName.startsWith("New Commit:")) {
+                    msgName = msgName.mid(11).trimmed();
+                }
+            }
+            QTableWidgetItem *itemMsg = new QTableWidgetItem(msgName);
+            if (isUnread) {
+                QFont font = itemMsg->font();
+                font.setBold(true);
+                itemMsg->setFont(font);
+            }
+            mCommitTable->setItem(rowIdx, 1, itemMsg);
+        } else {
+            QTableWidgetItem *itemMsg = new QTableWidgetItem(textToShow);
+            if (isUnread) {
+                QFont font = itemMsg->font();
+                font.setBold(true);
+                itemMsg->setFont(font);
+            }
+            mCommitTable->setItem(rowIdx, 1, itemMsg);
+        }
+        
+        // Status column with button or -
+        if (hasGxsMsg) {
+            QPushButton *btnStatus = new QPushButton(isUnread ? tr("Mark Read") : tr("Mark Unread"), mCommitTable);
+            if (isUnread) {
+                btnStatus->setStyleSheet("QPushButton { font-weight: bold; color: #27ae60; }");
+            } else {
+                btnStatus->setStyleSheet("QPushButton { color: #7f8c8d; }");
+            }
+            QString msgIdStr = QString::fromStdString(gxsMsgId.toStdString());
+            connect(btnStatus, &QPushButton::clicked, [this, msgIdStr, isUnread]() {
+                onCommitReadStatusToggled(msgIdStr, isUnread);
+            });
+            mCommitTable->setCellWidget(rowIdx, 4, btnStatus);
+        } else {
+            QTableWidgetItem *itemStatus = new QTableWidgetItem("-");
+            mCommitTable->setItem(rowIdx, 4, itemStatus);
+        }
+        
+        // Action column: show "Push" button if it is our unpushed local commit
+        if (isAdmin && !hasGxsMsg) {
+            QPushButton *btnPushRow = new QPushButton(tr("Push"), mCommitTable);
+            btnPushRow->setStyleSheet("QPushButton { font-weight: bold; color: #27ae60; }");
+            connect(btnPushRow, &QPushButton::clicked, this, &MainWidget::onPushClicked);
+            mCommitTable->setCellWidget(rowIdx, 5, btnPushRow);
+        } else {
+            QTableWidgetItem *itemAction = new QTableWidgetItem("-");
+            mCommitTable->setItem(rowIdx, 5, itemAction);
+        }
+    }
+    
+    // Update button states based on repository status
+    bool hasPath = !rawPath.isEmpty();
+    bool pathExists = false;
+    bool isCloned = false;
+    if (hasPath) {
+        QString cleanPath = QDir::cleanPath(rawPath);
+        pathExists = QDir(cleanPath).exists();
+        if (pathExists && GitManager::isValidRepository(cleanPath.toStdString())) {
+            isCloned = true;
+        }
+    }
+    
+    mBtnPush->setEnabled(isAdmin);
+    bool hasUndownloaded = (undownloadedUpdates.size() > 0);
+    mBtnPull->setEnabled(isCloned && hasUndownloaded);
+    mBtnClone->setEnabled(!isAdmin && !isCloned);
+    mBtnOpenFolder->setEnabled(hasPath && pathExists);
+    mBtnCommit->setEnabled(hasPath && pathExists && isAdmin && hasLocalChanges);
 }
+
+
 
 void MainWidget::populateRepoBrowser(const QString &groupId)
 {
@@ -786,7 +1274,11 @@ void MainWidget::onLocalPathChanged(const QString &text)
     if (item) {
         QString groupId = ui->treeWidget->itemId(item);
         if (!groupId.isEmpty()) {
-            saveRepoLocalPath(groupId, text);
+            QString cleanText = text.trimmed();
+            if (!cleanText.isEmpty()) {
+                cleanText = QDir::cleanPath(cleanText);
+            }
+            saveRepoLocalPath(groupId, cleanText);
             populateCommitLog(groupId);
         }
     }
@@ -803,7 +1295,7 @@ void MainWidget::onBrowseClicked()
 
     QString dir = QFileDialog::getExistingDirectory(this, tr("Select Working Directory"), "", QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
     if (!dir.isEmpty()) {
-        mLocalPathEdit->setText(dir);
+        mLocalPathEdit->setText(QDir::cleanPath(dir));
         mBtnOpenFolder->setEnabled(true);
         // save is handled by textChanged
 
@@ -857,12 +1349,56 @@ void MainWidget::onCloneClicked()
         return;
     }
 
-    std::string bareRepoPath = GitManager::getBareRepoPath(groupId.toStdString());
-    
-    if (GitManager::cloneRepository(bareRepoPath, localPath.toStdString())) {
-        QMessageBox::information(this, tr("Clone Successful"), tr("Successfully checked out bare repository to:\n") + localPath);
-    } else {
-        QMessageBox::critical(this, tr("Clone Failed"), tr("Failed to clone repository. Make sure the target folder is empty or does not exist."));
+    // Direct decentralised clone over secure GxsTunnel only
+    RsGxsId creatorId;
+    std::list<RsGxsGroupId> groupIds({RsGxsGroupId(groupId.toStdString())});
+    std::vector<RsGitGroup> groups;
+    QString repoName = groupId;
+    if (rsGit && rsGit->getGroups(groupIds, groups) && !groups.empty()) {
+        creatorId = groups[0].mMeta.mAuthorId;
+        repoName = QString::fromUtf8(groups[0].mGroupName.c_str());
+    }
+
+    if (creatorId.isNull()) {
+        QMessageBox::critical(this, tr("Clone Failed"), tr("Could not locate repository creator ID to clone from."));
+        return;
+    }
+
+    RsGxsId ownId;
+    if (rsIdentity) {
+        std::list<RsGxsId> ownIds;
+        rsIdentity->getOwnIds(ownIds);
+        if (!ownIds.empty()) {
+            ownId = ownIds.front();
+        }
+    }
+
+    if (ownId.isNull()) {
+        QMessageBox::critical(this, tr("Clone Failed"), tr("You need a local GXS identity to establish secure clone tunnels. Please create one in the identities page."));
+        return;
+    }
+
+    // Add clone request to history
+    CloneRecord rec;
+    rec.repoId = groupId;
+    rec.repoName = repoName;
+    rec.ownerId = QString::fromStdString(creatorId.toStdString());
+    rec.status = tr("Requesting secure tunnel...");
+    rec.time = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+    mCloneHistory.insert(mCloneHistory.begin(), rec);
+    populateClonesTable();
+
+    // Switch tab to Pushes / Packs
+    if (mPackfilesTab) {
+        ui->rightPaneTabWidget->setCurrentWidget(mPackfilesTab);
+    }
+
+    if (!rsGit->requestCloneOverTunnel(RsGxsGroupId(groupId.toStdString()), creatorId, ownId, localPath.toStdString())) {
+        if (!mCloneHistory.empty()) {
+            mCloneHistory[0].status = tr("Failed to initiate request.");
+            populateClonesTable();
+        }
+        QMessageBox::critical(this, tr("Clone Failed"), tr("Failed to initiate clone tunnel request."));
     }
 }
 
@@ -914,15 +1450,28 @@ void MainWidget::onPushClicked()
         populateCommitLog(groupId);
         populateRepoBrowser(groupId);
 
+        // Get the details of the latest commit to include in the GXS update message
+        std::vector<GitCommitInfo> latestCommits;
+        std::string commitAuthor = "Unknown";
+        std::string commitMsg = "Push Update";
+        std::string commitDate = "";
+        if (GitManager::getCommitLog(repoPath, latestCommits) && !latestCommits.empty()) {
+            commitAuthor = latestCommits[0].author;
+            commitMsg = latestCommits[0].message;
+            while (!commitMsg.empty() && (commitMsg.back() == '\n' || commitMsg.back() == '\r')) {
+                commitMsg.pop_back();
+            }
+            commitDate = latestCommits[0].date;
+        }
+
         RsGitUpdate update;
         update.mMeta.mGroupId = RsGxsGroupId(groupId.toStdString());
         update.mRefUpdates = refUpdates;
         
-        QStringList refNames;
-        for (auto it = refUpdates.begin(); it != refUpdates.end(); ++it) {
-            refNames << QString::fromStdString(it->first);
-        }
-        update.mMeta.mMsgName = QString("Git Push: %1").arg(refNames.join(", ")).toStdString();
+        // Format MsgName as "New Commit: <msg>"
+        update.mMeta.mMsgName = QString("New Commit: %1").arg(
+            QString::fromStdString(commitMsg)
+        ).toStdString();
 
         if (packfileData.size() <= 200000) {
             // Send inline
@@ -1008,9 +1557,93 @@ void MainWidget::onPushClicked()
     }
 }
 
+void MainWidget::refreshCurrentRepo()
+{
+    if (!ui->treeWidget || !ui->treeWidget->treeWidget()) return;
+    QTreeWidgetItem *item = ui->treeWidget->treeWidget()->currentItem();
+    if (!item) return;
+
+    QString groupId = ui->treeWidget->itemId(item);
+    if (groupId.isEmpty()) return;
+
+    populateCommitLog(groupId);
+    populateRepoBrowser(groupId);
+    populatePackfiles(groupId);
+}
+
 void MainWidget::onPullClicked()
 {
-    QMessageBox::information(this, tr("Pull"), tr("GXS synchronizes bare repositories automatically in the background. To update your working tree, open a terminal in your working directory and run 'git pull'."));
+    refreshCurrentRepo();
+
+    if (!ui->treeWidget || !ui->treeWidget->treeWidget()) return;
+    QTreeWidgetItem *item = ui->treeWidget->treeWidget()->currentItem();
+    if (!item) return;
+
+    QString groupId = ui->treeWidget->itemId(item);
+    if (groupId.isEmpty()) return;
+
+    // Check if we are owner/admin or subscriber
+    bool isAdmin = false;
+    RsGxsId creatorId;
+    QString repoName;
+    std::list<RsGxsGroupId> groupIds({RsGxsGroupId(groupId.toStdString())});
+    std::vector<RsGitGroup> groups;
+    if (rsGit && rsGit->getGroups(groupIds, groups) && !groups.empty()) {
+        uint32_t flags = groups[0].mMeta.mSubscribeFlags;
+        isAdmin = IS_GROUP_ADMIN(flags);
+        creatorId = groups[0].mMeta.mAuthorId;
+        repoName = QString::fromUtf8(groups[0].mGroupName.c_str());
+    }
+
+    if (isAdmin) {
+        QMessageBox::information(this, tr("Pull / Sync"), 
+            tr("You are the repository owner/admin. Remote changes are pushed by you, so there are no remote changes to pull. Repository status has been refreshed."));
+        return;
+    }
+
+    if (creatorId.isNull()) {
+        QMessageBox::warning(this, tr("Pull Failed"), tr("Could not find the repository owner's identity."));
+        return;
+    }
+
+    RsGxsId ownId;
+    if (rsIdentity) {
+        std::list<RsGxsId> ownIds;
+        rsIdentity->getOwnIds(ownIds);
+        if (!ownIds.empty()) {
+            ownId = ownIds.front();
+        }
+    }
+
+    if (ownId.isNull()) {
+        QMessageBox::critical(this, tr("Pull Failed"), tr("You need a local GXS identity to establish secure pull tunnels. Please create one in the identities page."));
+        return;
+    }
+
+    QString localPath = mLocalPathEdit->text().trimmed();
+
+    // Log pull request to clones/syncs history
+    CloneRecord rec;
+    rec.repoId = groupId;
+    rec.repoName = repoName;
+    rec.ownerId = QString::fromStdString(creatorId.toStdString());
+    rec.status = tr("Requesting secure pull tunnel...");
+    rec.time = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+    mCloneHistory.insert(mCloneHistory.begin(), rec);
+    populateClonesTable();
+
+    // Switch tab to Available Pushes / Clones progress
+    if (mPackfilesTab) {
+        ui->rightPaneTabWidget->setCurrentWidget(mPackfilesTab);
+    }
+
+    if (!rsGit->requestPullOverTunnel(RsGxsGroupId(groupId.toStdString()), creatorId, ownId, localPath.toStdString())) {
+        if (!mCloneHistory.empty()) {
+            mCloneHistory[0].status = tr("Failed to initiate sync request.");
+            populateClonesTable();
+        }
+        QMessageBox::critical(this, tr("Pull Failed"), tr("Failed to initiate pull tunnel request."));
+    }
 }
 
 void MainWidget::onCommitClicked()
@@ -1114,9 +1747,12 @@ void MainWidget::onCommitSelectionChanged()
     }
     
     std::string repoPath = GitManager::getBareRepoPath(groupId.toStdString());
-    QString localPath = mLocalPathEdit->text();
-    if (!localPath.isEmpty() && QDir(localPath).exists()) {
-        repoPath = localPath.toStdString();
+    QString rawPath = mLocalPathEdit->text().trimmed();
+    if (!rawPath.isEmpty()) {
+        QString localPath = QDir::cleanPath(rawPath);
+        if (QDir(localPath).exists()) {
+            repoPath = localPath.toStdString();
+        }
     }
     
     if (fullHash == "LOCAL_CHANGES") {
@@ -1140,7 +1776,8 @@ void MainWidget::onCommitSelectionChanged()
         std::vector<GitLocalChange> changes;
         if (GitManager::getLocalChanges(repoPath, changes)) {
             for (const GitLocalChange& change : changes) {
-                QStringList pathParts = QString::fromStdString(change.path).split('/');
+                QString normalizedPath = QString::fromStdString(change.path).replace('\\', '/');
+                QStringList pathParts = normalizedPath.split('/');
                 QTreeWidgetItem *parentItem = nullptr;
                 
                 for (int i = 0; i < pathParts.size(); ++i) {
@@ -1223,7 +1860,8 @@ void MainWidget::onCommitSelectionChanged()
             mChangedFilesTree->clear();
             
             for (const std::string& filePath : changedFiles) {
-                QStringList pathParts = QString::fromStdString(filePath).split('/');
+                QString normalizedPath = QString::fromStdString(filePath).replace('\\', '/');
+                QStringList pathParts = normalizedPath.split('/');
                 QTreeWidgetItem *parentItem = nullptr;
                 
                 for (int i = 0; i < pathParts.size(); ++i) {
@@ -1340,9 +1978,12 @@ void MainWidget::showDiffForFile(const QString &filePath)
     }
 
     std::string repoPath = GitManager::getBareRepoPath(groupId.toStdString());
-    QString localPath = mLocalPathEdit->text();
-    if (!localPath.isEmpty() && QDir(localPath).exists()) {
-        repoPath = localPath.toStdString();
+    QString rawPath = mLocalPathEdit->text().trimmed();
+    if (!rawPath.isEmpty()) {
+        QString localPath = QDir::cleanPath(rawPath);
+        if (QDir(localPath).exists()) {
+            repoPath = localPath.toStdString();
+        }
     }
 
     std::vector<GitDiffLine> diffLines;
@@ -1495,9 +2136,12 @@ void MainWidget::showDiffForCommit(const QString &commitHash)
     if (groupId.isEmpty()) return;
 
     std::string repoPath = GitManager::getBareRepoPath(groupId.toStdString());
-    QString localPath = mLocalPathEdit->text();
-    if (!localPath.isEmpty() && QDir(localPath).exists()) {
-        repoPath = localPath.toStdString();
+    QString rawPath = mLocalPathEdit->text().trimmed();
+    if (!rawPath.isEmpty()) {
+        QString localPath = QDir::cleanPath(rawPath);
+        if (QDir(localPath).exists()) {
+            repoPath = localPath.toStdString();
+        }
     }
 
     std::vector<GitDiffLine> diffLines;
@@ -1939,6 +2583,98 @@ void MainWidget::pollDownloadProgress()
     } else if (!activeDownloads) {
         mDownloadPollTimer->stop();
         populatePackfiles(groupId);
+    }
+}
+
+void MainWidget::populateClonesTable()
+{
+    if (!mClonesTable) return;
+    
+    mClonesTable->setRowCount(0);
+    mClonesTable->setRowCount(mCloneHistory.size());
+    
+    for (int i = 0; i < (int)mCloneHistory.size(); ++i) {
+        QTableWidgetItem *itemRepo = new QTableWidgetItem(mCloneHistory[i].repoName.isEmpty() ? mCloneHistory[i].repoId : mCloneHistory[i].repoName);
+        QTableWidgetItem *itemOwner = new QTableWidgetItem(mCloneHistory[i].ownerId);
+        QTableWidgetItem *itemStatus = new QTableWidgetItem(mCloneHistory[i].status);
+        QTableWidgetItem *itemTime = new QTableWidgetItem(mCloneHistory[i].time);
+        
+        // Highlight active clones
+        if (mCloneHistory[i].status.contains("Requesting") || mCloneHistory[i].status.contains("secured") || mCloneHistory[i].status.contains("Unpacking")) {
+            QFont font = itemStatus->font();
+            font.setBold(true);
+            itemStatus->setFont(font);
+            itemStatus->setForeground(QBrush(QColor("#2980b9"))); // Blue for in-progress
+        } else if (mCloneHistory[i].status.contains("Successful") || mCloneHistory[i].status.contains("completed")) {
+            itemStatus->setForeground(QBrush(QColor("#27ae60"))); // Green for success
+        } else if (mCloneHistory[i].status.contains("Failed") || mCloneHistory[i].status.contains("down")) {
+            itemStatus->setForeground(QBrush(QColor("#c0392b"))); // Red for failure
+        }
+        
+        mClonesTable->setItem(i, 0, itemRepo);
+        mClonesTable->setItem(i, 1, itemOwner);
+        mClonesTable->setItem(i, 2, itemStatus);
+        mClonesTable->setItem(i, 3, itemTime);
+    }
+}
+
+void MainWidget::onRepoBrowserContextMenu(const QPoint &pos)
+{
+    QListWidgetItem *item = mRepoBrowserList->itemAt(pos);
+    if (!item) return;
+    
+    QMenu contextMnu(this);
+    contextMnu.addAction(QIcon(":/images/open.png"), tr("Open File"), this, SLOT(openSelectedFile()));
+    contextMnu.exec(mRepoBrowserList->mapToGlobal(pos));
+}
+
+void MainWidget::openSelectedFile()
+{
+    QListWidgetItem *item = mRepoBrowserList->currentItem();
+    if (!item) return;
+    
+    QString selectedFile = item->text();
+    
+    QTreeWidgetItem *repoItem = ui->treeWidget->treeWidget()->currentItem();
+    if (!repoItem) return;
+    QString groupId = ui->treeWidget->itemId(repoItem);
+    if (groupId.isEmpty()) return;
+    
+    QString rawPath = mLocalPathEdit->text().trimmed();
+    QString filePath;
+    bool opened = false;
+    
+    // 1. Try to open from working directory if it exists
+    if (!rawPath.isEmpty()) {
+        QString localPath = QDir::cleanPath(rawPath);
+        if (QDir(localPath).exists()) {
+            filePath = QDir(localPath).filePath(selectedFile);
+            if (QFile::exists(filePath)) {
+                QDesktopServices::openUrl(QUrl::fromLocalFile(filePath));
+                opened = true;
+            }
+        }
+    }
+    
+    // 2. If not opened, extract from bare repository to temp folder and open
+    if (!opened) {
+        std::string barePath = GitManager::getBareRepoPath(groupId.toStdString());
+        QString tempDir = QDir::cleanPath(QDir::homePath() + "/.retroshare/retrogit_temp/previews/" + groupId);
+        QDir().mkpath(tempDir);
+        
+        // Maintain directory structure inside tempDir if file is in subdirectory
+        QFileInfo fileInfo(selectedFile);
+        if (!fileInfo.path().isEmpty() && fileInfo.path() != ".") {
+            QDir().mkpath(tempDir + "/" + fileInfo.path());
+        }
+        
+        filePath = tempDir + "/" + selectedFile;
+        
+        if (GitManager::extractFile(barePath, selectedFile.toStdString(), filePath.toStdString())) {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(filePath));
+        } else {
+            QMessageBox::critical(this, tr("Error"), tr("Failed to extract and open file from repository."));
+        }
     }
 }
 
