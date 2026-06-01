@@ -23,6 +23,7 @@
 #include "ui_MainWidget.h"
 
 #include "gui/gxs/GxsIdDetails.h"
+#include "util/HandleRichText.h"
 #include "gui/gxs/GxsIdTreeWidgetItem.h"
 #include "gui/GitUserNotify.h"
 #include "gui/settings/rsharesettings.h"
@@ -30,6 +31,7 @@
 #include "retroshare/rsgxsflags.h"
 #include "retroshare/rsservicecontrol.h"
 #include "retroshare/rsgxsifacehelper.h"
+#include "retroshare/rsreputations.h"
 #include "services/p3Git.h"
 #include "services/rsGitItems.h"
 #include "services/GitManager.h"
@@ -101,8 +103,7 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
           SLOT(groupListCustomPopupMenu(QPoint)));
 
     /* Setup Group Tree */
-    mActiveGroupsItem =
-      ui->treeWidget->addCategoryItem(tr("Repositories"), QIcon(), true);
+    mActiveGroupsItem = ui->treeWidget->treeWidget()->invisibleRootItem();
 
     /* Add the New Group button */
     QToolButton *newGroupButton = new QToolButton(this);
@@ -113,10 +114,15 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
     // Set up Right Pane (Tabs)
     QVBoxLayout *workDirLayout = new QVBoxLayout(ui->tabWidgetPage1);
     
-    QLabel *lblInfo = new QLabel(tr("<b>For Repo Owners:</b> Browse to your existing local project folder and <b>Push / Publish</b>.<br/>"
-                                    "<b>For Subscribers:</b> Browse to an empty folder and <b>Clone</b> to download the code."), ui->tabWidgetPage1);
-    lblInfo->setWordWrap(true);
-    workDirLayout->addWidget(lblInfo);
+    mLblOwnerInfo = new QLabel(tr("<b>For Repo Owners:</b> Browse to your existing local project folder and <b>Push / Publish</b>."), ui->tabWidgetPage1);
+    mLblOwnerInfo->setWordWrap(true);
+    mLblOwnerInfo->setVisible(false);
+    workDirLayout->addWidget(mLblOwnerInfo);
+
+    mLblSubscriberInfo = new QLabel(tr("<b>For Subscribers:</b> Browse to an empty folder and <b>Clone</b> to download the code."), ui->tabWidgetPage1);
+    mLblSubscriberInfo->setWordWrap(true);
+    mLblSubscriberInfo->setVisible(false);
+    workDirLayout->addWidget(mLblSubscriberInfo);
 
     QHBoxLayout *pathLayout = new QHBoxLayout();
     mLocalPathEdit = new QLineEdit(ui->tabWidgetPage1);
@@ -159,6 +165,8 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
     mBtnClone->setEnabled(false);
     mBtnOpenFolder->setEnabled(false);
     mBtnCommit->setEnabled(false);
+    mBtnBrowse->setEnabled(false);
+    mLocalPathEdit->setEnabled(false);
     
     // Repository Browser Tab
     QWidget *repoBrowserTab = new QWidget();
@@ -417,7 +425,15 @@ void MainWidget::loadGroupMeta()
             // Set unread count for each group item (this automatically sets it bold if unread > 0)
             for (const auto &meta : groupMeta) {
                 QString groupIdStr = QString::fromStdString(meta.mGroupId.toStdString());
-                QTreeWidgetItem *item = ui->treeWidget->getItemFromId(groupIdStr);
+                QTreeWidgetItem *item = nullptr;
+                QTreeWidgetItemIterator it(ui->treeWidget->treeWidget());
+                while (*it) {
+                    if (ui->treeWidget->itemId(*it) == groupIdStr) {
+                        item = *it;
+                        break;
+                    }
+                    ++it;
+                }
                 if (item) {
                     int unread = 0;
                     auto itUnread = groupUnreadCounts.find(groupIdStr);
@@ -542,6 +558,7 @@ void MainWidget::handleEvent_main_thread(std::shared_ptr<const RsEvent> event)
             break;
         case RsGitEventCode::SUBSCRIBE_STATUS_CHANGED:
             updateDisplay();
+            onTreeSelectionChanged();
             break;
         case RsGitEventCode::CLONE_STATUS_CHANGED:
         {
@@ -629,18 +646,10 @@ void MainWidget::groupListCustomPopupMenu(QPoint /*point*/)
     if (groupId.isEmpty())
         return;
 
-    int subscribeFlags = ui->treeWidget->subscribeFlags(groupId);
+    int subscribeFlags = item->data(GTW_COLUMN_DATA, Qt::UserRole + 3).toInt();
 
     QMenu contextMnu(this);
     QAction *action;
-
-    action = contextMnu.addAction(QIcon(":/images/info.png"), tr("Show Group Details"), this, SLOT(showGroupDetails()));
-    action->setEnabled(!groupId.isEmpty());
-
-    action = contextMnu.addAction(QIcon(":/images/edit.png"), tr("Edit Group Details"), this, SLOT(editGroupDetails()));
-    action->setEnabled(!groupId.isEmpty() && IS_GROUP_ADMIN(subscribeFlags));
-
-    contextMnu.addSeparator();
 
     if (!IS_GROUP_ADMIN(subscribeFlags)) {
         if (IS_GROUP_SUBSCRIBED(subscribeFlags)) {
@@ -651,6 +660,14 @@ void MainWidget::groupListCustomPopupMenu(QPoint /*point*/)
             action->setEnabled(!groupId.isEmpty());
         }
     }
+
+    contextMnu.addSeparator();
+
+    action = contextMnu.addAction(QIcon(":/images/info.png"), tr("Show Group Details"), this, SLOT(showGroupDetails()));
+    action->setEnabled(!groupId.isEmpty());
+
+    action = contextMnu.addAction(QIcon(":/images/edit.png"), tr("Edit Group Details"), this, SLOT(editGroupDetails()));
+    action->setEnabled(!groupId.isEmpty() && IS_GROUP_ADMIN(subscribeFlags));
 
     if (IS_GROUP_SUBSCRIBED(subscribeFlags)) {
         int unreadCount = 0;
@@ -770,6 +787,7 @@ void MainWidget::subscribeToGroup()
     if (rsGit) {
         if (rsGit->subscribe(RsGxsGroupId(groupId.toStdString()), true)) {
             updateDisplay();
+            onTreeSelectionChanged();
         }
     }
 }
@@ -789,6 +807,7 @@ void MainWidget::unsubscribeFromGroup()
     if (rsGit) {
         if (rsGit->subscribe(RsGxsGroupId(groupId.toStdString()), false)) {
             updateDisplay();
+            onTreeSelectionChanged();
         }
     }
 }
@@ -827,7 +846,13 @@ void MainWidget::onTreeSelectionChanged()
         mBtnPull->setEnabled(false);
         mBtnClone->setEnabled(false);
         mBtnBrowse->setVisible(true);   // always show when nothing is selected
+        mBtnBrowse->setEnabled(false);
+        mLocalPathEdit->setEnabled(false);
         mLocalPathEdit->clear();
+        mLblOwnerInfo->setVisible(false);
+        mLblSubscriberInfo->setVisible(false);
+        mCommitTable->setRowCount(0);
+        mRepoBrowserList->clear();
         mPackfilesTable->setRowCount(0);
         populateClonesTable();
         mAvailableUpdates.clear();
@@ -848,13 +873,11 @@ void MainWidget::onTreeSelectionChanged()
     bool pathExists = false;
     bool isCloned = false;
     bool isAdmin = false;
+    bool isSubscribed = false;
     
-    std::list<RsGxsGroupId> groupIds({RsGxsGroupId(groupId.toStdString())});
-    std::vector<RsGitGroup> groups;
-    if (rsGit && rsGit->getGroups(groupIds, groups) && !groups.empty()) {
-        uint32_t flags = groups[0].mMeta.mSubscribeFlags;
-        isAdmin = IS_GROUP_ADMIN(flags);
-    }
+    int subscribeFlags = item->data(GTW_COLUMN_DATA, Qt::UserRole + 3).toInt();
+    isAdmin = IS_GROUP_ADMIN(subscribeFlags);
+    isSubscribed = IS_GROUP_SUBSCRIBED(subscribeFlags);
 
     if (hasPath) {
         QString cleanPath = QDir::cleanPath(path);
@@ -866,13 +889,20 @@ void MainWidget::onTreeSelectionChanged()
     
     mBtnPush->setEnabled(isAdmin);
     mBtnPull->setEnabled(true);
-    mBtnClone->setEnabled(!isAdmin && !isCloned);
+    if (!isSubscribed) {
+        mBtnClone->setEnabled(false);
+    } else {
+        mBtnClone->setEnabled(!isAdmin && !isCloned);
+    }
     mBtnOpenFolder->setEnabled(hasPath && pathExists);
     mBtnCommit->setEnabled(hasPath && pathExists && isAdmin);
 
-    // Hide the Browse button for admins who already published the repo;
-    // they set the path once and then use Push/Commit — not Browse again.
-    mBtnBrowse->setVisible(!isAdmin);
+    mBtnBrowse->setVisible(true);
+    mBtnBrowse->setEnabled(isSubscribed || isAdmin);
+    mLocalPathEdit->setEnabled(isSubscribed || isAdmin);
+
+    mLblOwnerInfo->setVisible(isAdmin);
+    mLblSubscriberInfo->setVisible(isSubscribed && !isAdmin);
     
     populateCommitLog(groupId);
     populateRepoBrowser(groupId);
@@ -1696,7 +1726,43 @@ void MainWidget::onCommitClicked()
 
     std::string authorName = "RetroGit User";
     std::string authorEmail = "user@retroshare";
-    if (rsPeers) {
+
+    RsGxsId ownGxsId;
+    if (rsGit) {
+        std::list<RsGxsGroupId> groupIds({RsGxsGroupId(groupId.toStdString())});
+        std::vector<RsGitGroup> groups;
+        if (rsGit->getGroups(groupIds, groups) && !groups.empty()) {
+            RsGxsId authorId = groups[0].mMeta.mAuthorId;
+            if (!authorId.isNull() && rsIdentity && rsIdentity->isOwnId(authorId)) {
+                ownGxsId = authorId;
+            }
+        }
+    }
+
+    if (ownGxsId.isNull() && rsIdentity) {
+        std::vector<RsGxsId> ownIds;
+        rsIdentity->getOwnSignedIds(ownIds);
+        if (!ownIds.empty()) {
+            ownGxsId = ownIds.front();
+        } else {
+            std::vector<RsGxsId> ownPseudonIds;
+            rsIdentity->getOwnPseudonimousIds(ownPseudonIds);
+            if (!ownPseudonIds.empty()) {
+                ownGxsId = ownPseudonIds.front();
+            }
+        }
+    }
+
+    if (!ownGxsId.isNull() && rsIdentity) {
+        RsIdentityDetails details;
+        if (rsIdentity->getIdDetails(ownGxsId, details)) {
+            authorName = details.mNickname;
+            if (authorName.empty()) {
+                authorName = "RetroGit User";
+            }
+            authorEmail = authorName + "@" + ownGxsId.toStdString();
+        }
+    } else if (rsPeers) {
         authorName = rsPeers->getPeerName(rsPeers->getOwnId());
         if (authorName.empty()) {
             authorName = "RetroGit User";
@@ -2763,7 +2829,35 @@ void GxsIdTableItem::fillCallback(GxsIdDetailsType type, const RsIdentityDetails
         GxsIdDetails::GenerateCombinedPixmap(combinedPixmap, icons, iconSize);
     }
     item->mIconLabel->setPixmap(combinedPixmap);
-    item->setToolTip(GxsIdDetails::getComment(details));
+    
+    QString t = GxsIdDetails::getComment(details);
+    
+    if (rsReputations) {
+        RsReputationInfo repInfo;
+        if (rsReputations->getReputationInfo(details.mId, details.mPgpId, repInfo)) {
+            int idx = t.indexOf("<br/>Votes:");
+            if (idx != -1) {
+                t = t.left(idx);
+            }
+            t += QString("<br/>%1: <b>+%2</b> <b>-%3</b>")
+                 .arg(tr("Votes"))
+                 .arg(repInfo.mFriendsPositiveVotes)
+                 .arg(repInfo.mFriendsNegativeVotes);
+        }
+    }
+    
+    QPixmap pix;
+    if (details.mAvatar.mSize == 0 || !GxsIdDetails::loadPixmapFromData(details.mAvatar.mData, details.mAvatar.mSize, pix, GxsIdDetails::LARGE)) {
+        pix = GxsIdDetails::makeDefaultIcon(details.mId, GxsIdDetails::LARGE);
+    }
+    
+    int S = item->fontMetrics().height();
+    QString embeddedImage;
+    if (RsHtml::makeEmbeddedImage(pix.scaled(QSize(5*S, 5*S), Qt::KeepAspectRatio, Qt::SmoothTransformation).toImage(), embeddedImage, -1)) {
+        embeddedImage.insert(embeddedImage.indexOf("src="), "style=\"float:left\" ");
+        t = "<table><tr><td>" + embeddedImage + "</td><td>" + t + "</td></tr></table>";
+    }
+    item->setToolTip(t);
 }
 
 void MainWidget::onClonesTableContextMenu(const QPoint &pos)

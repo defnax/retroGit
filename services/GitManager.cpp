@@ -391,13 +391,11 @@ bool GitManager::commitChanges(const std::string& repoPath, const std::string& c
     }
 
     git_signature *sig = NULL;
-    if (git_signature_default(&sig, repo) < 0) {
-        error = git_signature_new(&sig, authorName.c_str(), authorEmail.c_str(), time(NULL), 0);
-        if (error < 0) {
-            git_tree_free(tree);
-            git_repository_free(repo);
-            return false;
-        }
+    error = git_signature_new(&sig, authorName.c_str(), authorEmail.c_str(), time(NULL), 0);
+    if (error < 0) {
+        git_tree_free(tree);
+        git_repository_free(repo);
+        return false;
     }
 
     git_oid parent_id;
