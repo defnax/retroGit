@@ -36,12 +36,13 @@ GitUserNotify::GitUserNotify(MainWidget *mainWidget, QObject *parent) :
     /* Register for Git events so the icon updates whenever new commits arrive
        or a read/unread state change is posted from the backend. */
     if (rsEvents) {
+        RsEventType gitEventType = (RsEventType)rsEvents->getDynamicEventType("GIT");
         rsEvents->registerEventsHandler(
             [this](std::shared_ptr<const RsEvent> /*event*/) {
                 RsQThreadUtils::postToObject(
                     [this]() { updateIcon(); }, this);
             },
-            mEventHandlerId, RsEventType::GIT);
+            mEventHandlerId, gitEventType);
     }
 }
 

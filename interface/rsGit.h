@@ -84,8 +84,8 @@ enum class RsGitEventCode: uint8_t
 
 struct RsGitEvent : RsEvent
 {
-    RsGitEvent()
-      : RsEvent(RsEventType::GIT),
+    RsGitEvent(RsEventType type)
+      : RsEvent(type),
       mGitEventCode(RsGitEventCode::UNKNOWN),
       mCloneSuccess(false) {}
 

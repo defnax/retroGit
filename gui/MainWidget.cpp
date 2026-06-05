@@ -317,14 +317,15 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
 
     loadGroupMeta();
 
-    /* Register for Git events using the static RsEventType::GIT */
+    /* Register for Git events using the dynamic GIT event type */
     if (rsEvents) {
+    RsEventType gitEventType = (RsEventType)rsEvents->getDynamicEventType("GIT");
     rsEvents->registerEventsHandler(
         [this](std::shared_ptr<const RsEvent> event) {
           RsQThreadUtils::postToObject(
               [=]() { handleEvent_main_thread(event); }, this);
         },
-        mEventHandlerId, RsEventType::GIT);
+        mEventHandlerId, gitEventType);
     }
 }
 

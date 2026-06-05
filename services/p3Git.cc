@@ -148,7 +148,8 @@ void p3Git::service_tick()
             }
             
             if (rsEvents) {
-                auto ev = std::make_shared<RsGitEvent>();
+                RsEventType gitEventType = (RsEventType)rsEvents->getDynamicEventType("GIT");
+                auto ev = std::make_shared<RsGitEvent>(gitEventType);
                 ev->mGitGroupId = pending.groupId;
                 ev->mGitEventCode = RsGitEventCode::NEW_POST;
                 rsEvents->postEvent(ev);
@@ -228,7 +229,8 @@ void p3Git::notifyChanges(std::vector<RsGxsNotify *> &changes)
           uint32_t pToken;
           setMessageProcessedStatus(pToken, RsGxsGrpMsgIdPair(msgChange->mGroupId, msgChange->mMsgId), true);
           if (rsEvents) {
-            auto ev = std::make_shared<RsGitEvent>();
+            RsEventType gitEventType = (RsEventType)rsEvents->getDynamicEventType("GIT");
+            auto ev = std::make_shared<RsGitEvent>(gitEventType);
             ev->mGitGroupId = msgChange->mGroupId;
             ev->mGitMsgId = msgChange->mMsgId;
             ev->mGitEventCode = RsGitEventCode::NEW_POST;
@@ -263,7 +265,8 @@ void p3Git::notifyChanges(std::vector<RsGxsNotify *> &changes)
       std::cerr << std::endl;
 
       if (rsEvents) {
-        auto ev = std::make_shared<RsGitEvent>();
+        RsEventType gitEventType = (RsEventType)rsEvents->getDynamicEventType("GIT");
+        auto ev = std::make_shared<RsGitEvent>(gitEventType);
         ev->mGitGroupId = grpChange->mGroupId;
 
         switch (grpChange->getType()) {
@@ -483,7 +486,8 @@ bool p3Git::subscribeToGroup(uint32_t &token, const RsGxsGroupId &groupId,bool s
 
     if (response && rsEvents)
     {
-        auto ev = std::make_shared<RsGitEvent>();
+        RsEventType gitEventType = (RsEventType)rsEvents->getDynamicEventType("GIT");
+        auto ev = std::make_shared<RsGitEvent>(gitEventType);
         ev->mGitGroupId = groupId;
         ev->mGitEventCode = RsGitEventCode::SUBSCRIBE_STATUS_CHANGED;
         rsEvents->postEvent(ev);
@@ -525,7 +529,8 @@ void p3Git::setMessageReadStatus(uint32_t &token, const RsGxsGrpMsgIdPair &msgId
 
     if (rsEvents)
     {
-        auto ev = std::make_shared<RsGitEvent>();
+        RsEventType gitEventType = (RsEventType)rsEvents->getDynamicEventType("GIT");
+        auto ev = std::make_shared<RsGitEvent>(gitEventType);
 
         ev->mGitMsgId = msgId.second;
         ev->mGitGroupId = msgId.first;
@@ -575,7 +580,8 @@ bool p3Git::unpackUpdate(const RsGxsGroupId &groupId, const RsGxsMessageId &msgI
         std::cout << "p3Git::unpackUpdate: Unpacking manually downloaded packfile: " << fi.path << std::endl;
         if (GitManager::unpackPackfileFromFile(repoPath, fi.path, refUpdates)) {
             if (rsEvents) {
-                auto ev = std::make_shared<RsGitEvent>();
+                RsEventType gitEventType = (RsEventType)rsEvents->getDynamicEventType("GIT");
+                auto ev = std::make_shared<RsGitEvent>(gitEventType);
                 ev->mGitGroupId = groupId;
                 ev->mGitMsgId = msgId;
                 ev->mGitEventCode = RsGitEventCode::NEW_POST;
@@ -603,7 +609,8 @@ void p3Git::setMessageProcessedStatus(uint32_t &token, const RsGxsGrpMsgIdPair &
     setMsgStatusFlags(token, msgId, status, mask);
 
     if (rsEvents) {
-        auto ev = std::make_shared<RsGitEvent>();
+        RsEventType gitEventType = (RsEventType)rsEvents->getDynamicEventType("GIT");
+        auto ev = std::make_shared<RsGitEvent>(gitEventType);
         ev->mGitGroupId = msgId.first;
         ev->mGitMsgId = msgId.second;
         ev->mGitEventCode = RsGitEventCode::POST_UPDATED;
@@ -674,7 +681,8 @@ bool p3Git::requestPullOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &to
 void p3Git::postCloneStatus(const RsGxsGroupId &groupId, const std::string &status, bool success)
 {
     if (rsEvents) {
-        auto ev = std::make_shared<RsGitEvent>();
+        RsEventType gitEventType = (RsEventType)rsEvents->getDynamicEventType("GIT");
+        auto ev = std::make_shared<RsGitEvent>(gitEventType);
         ev->mGitGroupId = groupId;
         ev->mGitEventCode = RsGitEventCode::CLONE_STATUS_CHANGED;
         ev->mCloneStatus = status;
