@@ -7,7 +7,7 @@ Distributed Git repository sharing over the GXS (Generic eXchange System) networ
 ### Install package dependencies:
 
 #### Debian / Ubuntu / Linux Mint
-	sudo apt-get install libgit2
+	sudo apt install libgit2 libgit2-dev
 
 #### Windows
 	pacman -S mingw-w64-x86_64-libgit2
