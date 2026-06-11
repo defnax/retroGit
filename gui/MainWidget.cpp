@@ -22,6 +22,7 @@
 #include "GitGroupDialog.h"
 #include "ui_MainWidget.h"
 
+#include "gui/common/RSTreeWidget.h"
 #include "gui/gxs/GxsIdDetails.h"
 #include "util/HandleRichText.h"
 #include "gui/gxs/GxsIdTreeWidgetItem.h"
@@ -328,6 +329,8 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
         },
         mEventHandlerId, gitEventType);
     }
+    
+    mFontSizeHandler.registerFontSize(ui->treeWidget->treeWidget(), 1.2f);
 }
 
 MainWidget::~MainWidget()

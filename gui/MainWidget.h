@@ -171,6 +171,8 @@ private:
     class QLabel *mDetailsBodyText;
     class QLabel *mDetailsDateLabel;
     class QTreeWidget *mChangedFilesTree;
+
+    FontSizeHandler mFontSizeHandler;
 };
 
 #endif // MAINPAGE_H
