@@ -338,10 +338,10 @@ MainWidget::~MainWidget()
     if (rsEvents)
         rsEvents->unregisterEventsHandler(mEventHandlerId);
 
-    delete ui;
-
     // save settings
     processSettings(false);
+
+    delete ui;
 }
 
 UserNotify *MainWidget::createUserNotify(QObject *parent)
@@ -364,6 +364,8 @@ void MainWidget::showEvent(QShowEvent *event)
 void MainWidget::processSettings(bool load)
 {
   Settings->beginGroup("RetrGit");
+
+  ui->treeWidget->processSettings(load);
 
   if (load) {
     // load settings
