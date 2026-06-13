@@ -39,6 +39,10 @@
 
 #include "gui/gxs/GxsIdDetails.h"
 
+#include "gui/GitWidget.h"
+#include "gui/CodeWidget.h"
+#include "gui/PushesWidget.h"
+
 class QAction;
 class QLabel;
 
@@ -72,12 +76,28 @@ public:
 
     virtual class UserNotify *createUserNotify(QObject *parent) override;
 
+    // Public Coordinator/Helper methods for sub-widgets
+    void logCloneAttempt(const QString &groupId, const QString &repoName, const QString &ownerId, const RsGxsId &ownId, const QString &localPath);
+    void logPullAttempt(const QString &groupId, const QString &repoName, const QString &ownerId, const RsGxsId &ownId, const QString &localPath);
+    void hashAndPublishPackfile(const QString &groupId, const std::string &packfileData, RsGitUpdate &update);
+    void refreshGitWidget();
+    void refreshCodeWidget();
+    void showCommitDetails(const QString &commitHash, const QString &repoPath);
+    void hideCommitDetails();
+    void showDiffForCommit(const QString &commitHash);
+    void markRepositoryAsRead();
+    void triggerTreeSelectionChanged();
+    QString getLocalPath() const;
+    QString getSelectedGroupId() const;
+
+public slots:
+    void updateDisplay();
+
 protected:
     virtual void showEvent(QShowEvent *event) override;
 
 private slots:
     void createGroup();
-    void updateDisplay();
     void selectGroupSet(int index);
     void groupListCustomPopupMenu(QPoint point);
     void showGroupDetails();
@@ -85,44 +105,22 @@ private slots:
     void subscribeToGroup();
     void unsubscribeFromGroup();
     
-    void onPushClicked();
-    void onPullClicked();
-    void onCommitClicked();
-    
-    void onBrowseClicked();
-    void onOpenFolderClicked();
-    void onCloneClicked();
     void onTreeSelectionChanged();
-    void onLocalPathChanged(const QString &text);
-    void onCommitSelectionChanged();
     void onChangedFilesContextMenu(const QPoint &pos);
     void onChangedFilesDoubleClicked(class QTreeWidgetItem *item, int column);
-    void onCommitTableContextMenu(const QPoint &pos);
     void onTabCloseRequested(int index);
-    void onRepoBrowserContextMenu(const QPoint &pos);
-    void onClonesTableContextMenu(const QPoint &pos);
-    void openSelectedFile();
-    void pollDownloadProgress();
-    void onDownloadClicked();
-    void onCancelDownloadClicked();
-    void onCommitReadStatusToggled(const QString &msgIdStr, bool markRead);
-    void markRepositoryAsRead();
 
 private:
     void showDiffForFile(const QString &filePath);
-    void showDiffForCommit(const QString &commitHash);
     void refreshCurrentRepo();
     void loadGroupMeta();
     void saveRepoLocalPath(const QString &groupId, const QString &path);
     QString loadRepoLocalPath(const QString &groupId);
-    void populateCommitLog(const QString &groupId);
-    void populateRepoBrowser(const QString &groupId);
     void insertGroupsData(const std::list<RsGroupMetaData> &gitList);
     void GroupMetaDataToGroupItemInfo(const RsGroupMetaData &groupInfo,
                                     GroupItemInfo &groupItemInfo);
     void handleEvent_main_thread(std::shared_ptr<const RsEvent> event);
     void processSettings(bool load);
-    void populatePackfiles(const QString &groupId);
 
     QTreeWidgetItem *mActiveGroupsItem;
     int mGroupSet = 0;
@@ -132,34 +130,10 @@ private:
 
     Ui::MainWidget *ui;
     
-    // UI elements for the right pane
-    class QLineEdit *mLocalPathEdit;
-    class QPushButton *mBtnBrowse;
-    class QPushButton *mBtnOpenFolder;
-    class QPushButton *mBtnPush;
-    class QPushButton *mBtnPull;
-    class QPushButton *mBtnClone;
-    class QPushButton *mBtnCommit;
-    class QTableWidget *mCommitTable;
-    class QListWidget *mRepoBrowserList;
-    class QTableWidget *mPackfilesTable;
-    class QTimer *mDownloadPollTimer;
-    std::vector<RsGitUpdate> mAvailableUpdates;
-
-    struct CloneRecord {
-        QString repoId;
-        QString repoName;
-        QString ownerId;
-        QString status;
-        QString time;
-    };
-    std::vector<CloneRecord> mCloneHistory;
-    void populateClonesTable();
-
-    class QWidget *mPackfilesTab;
-    class QTableWidget *mClonesTable;
-    class QLabel *mLblOwnerInfo;
-    class QLabel *mLblSubscriberInfo;
+    GitWidget *mGitWidget;
+    CodeWidget *mCodeWidget;
+    PushesWidget *mPushesWidget;
+    QString mCurrentCommitHash;
 
     // UI elements for commit details (left pane)
     class QWidget *mCommitDetailsWidget;
