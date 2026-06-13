@@ -33,6 +33,7 @@
 #include "retroshare/rsservicecontrol.h"
 #include "retroshare/rsgxsifacehelper.h"
 #include "retroshare/rsreputations.h"
+#include <retroshare/rsinit.h>
 #include "services/p3Git.h"
 #include "services/rsGitItems.h"
 #include "services/GitManager.h"
@@ -1111,7 +1112,7 @@ void MainWidget::populateCommitLog(const QString &groupId)
         mCommitTable->setCellWidget(rowIdx, 4, btnStatus);
         
         // Action Column: Pull Button (since it is not downloaded yet)
-        if (!creatorId.isNull() && !ownId.isNull()) {
+        if (!creatorId.isNull()) {
             QPushButton *btnPull = new QPushButton(tr("Pull"), mCommitTable);
             btnPull->setStyleSheet("QPushButton { font-weight: bold; color: #2980b9; }");
             QString localPath = mLocalPathEdit->text().trimmed();
@@ -1120,7 +1121,7 @@ void MainWidget::populateCommitLog(const QString &groupId)
                 rec.repoId = groupId;
                 rec.repoName = repoName;
                 rec.ownerId = QString::fromStdString(creatorId.toStdString());
-                rec.status = tr("Requesting secure pull tunnel...");
+                rec.status = ownId.isNull() ? tr("GXS Identity missing. Initiating offline pull...") : tr("Requesting secure pull tunnel...");
                 rec.time = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
                 mCloneHistory.insert(mCloneHistory.begin(), rec);
                 populateClonesTable();
@@ -1129,9 +1130,16 @@ void MainWidget::populateCommitLog(const QString &groupId)
                     ui->rightPaneTabWidget->setCurrentWidget(mPackfilesTab);
                 }
                 
-                if (!rsGit->requestPullOverTunnel(RsGxsGroupId(groupId.toStdString()), creatorId, ownId, localPath.toStdString())) {
+                bool success = false;
+                if (!ownId.isNull()) {
+                    success = rsGit->requestPullOverTunnel(RsGxsGroupId(groupId.toStdString()), creatorId, ownId, localPath.toStdString());
+                } else {
+                    success = rsGit->requestOfflinePull(RsGxsGroupId(groupId.toStdString()), localPath.toStdString());
+                }
+                
+                if (!success) {
                     if (!mCloneHistory.empty()) {
-                        mCloneHistory[0].status = tr("Failed to initiate sync request.");
+                        mCloneHistory[0].status = ownId.isNull() ? tr("Failed to initiate offline pull.") : tr("Failed to initiate sync request.");
                         populateClonesTable();
                     }
                 }
@@ -1430,17 +1438,12 @@ void MainWidget::onCloneClicked()
         }
     }
 
-    if (ownId.isNull()) {
-        QMessageBox::critical(this, tr("Clone Failed"), tr("You need a local GXS identity to establish secure clone tunnels. Please create one in the identities page."));
-        return;
-    }
-
     // Add clone request to history
     CloneRecord rec;
     rec.repoId = groupId;
     rec.repoName = repoName;
     rec.ownerId = QString::fromStdString(creatorId.toStdString());
-    rec.status = tr("Requesting secure tunnel...");
+    rec.status = ownId.isNull() ? tr("GXS Identity missing. Initiating offline clone...") : tr("Requesting secure tunnel...");
     rec.time = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
     mCloneHistory.insert(mCloneHistory.begin(), rec);
     populateClonesTable();
@@ -1450,12 +1453,19 @@ void MainWidget::onCloneClicked()
         ui->rightPaneTabWidget->setCurrentWidget(mPackfilesTab);
     }
 
-    if (!rsGit->requestCloneOverTunnel(RsGxsGroupId(groupId.toStdString()), creatorId, ownId, localPath.toStdString())) {
+    bool success = false;
+    if (!ownId.isNull()) {
+        success = rsGit->requestCloneOverTunnel(RsGxsGroupId(groupId.toStdString()), creatorId, ownId, localPath.toStdString());
+    } else {
+        success = rsGit->requestOfflineClone(RsGxsGroupId(groupId.toStdString()), localPath.toStdString());
+    }
+
+    if (!success) {
         if (!mCloneHistory.empty()) {
-            mCloneHistory[0].status = tr("Failed to initiate request.");
+            mCloneHistory[0].status = ownId.isNull() ? tr("Failed to initiate offline clone.") : tr("Failed to initiate request.");
             populateClonesTable();
         }
-        QMessageBox::critical(this, tr("Clone Failed"), tr("Failed to initiate clone tunnel request."));
+        QMessageBox::critical(this, tr("Clone Failed"), ownId.isNull() ? tr("Failed to initiate offline clone.") : tr("Failed to initiate clone tunnel request."));
     }
 }
 
@@ -1543,7 +1553,7 @@ void MainWidget::onPushClicked()
             }
         } else {
             // Write packfileData to a temporary file
-            QString tempDir = QDir::cleanPath(QDir::homePath() + "/.retroshare/retrogit_temp");
+            QString tempDir = QDir::cleanPath(QString::fromStdString(RsAccounts::AccountDirectory()) + "/retrogit_temp/" + groupId);
             QDir().mkpath(tempDir);
             QString tempFilePath = tempDir + QString("/pack_%1.pack").arg(QDateTime::currentMSecsSinceEpoch());
             
@@ -1672,11 +1682,6 @@ void MainWidget::onPullClicked()
         }
     }
 
-    if (ownId.isNull()) {
-        QMessageBox::critical(this, tr("Pull Failed"), tr("You need a local GXS identity to establish secure pull tunnels. Please create one in the identities page."));
-        return;
-    }
-
     QString localPath = mLocalPathEdit->text().trimmed();
 
     // Log pull request to clones/syncs history
@@ -1684,7 +1689,7 @@ void MainWidget::onPullClicked()
     rec.repoId = groupId;
     rec.repoName = repoName;
     rec.ownerId = QString::fromStdString(creatorId.toStdString());
-    rec.status = tr("Requesting secure pull tunnel...");
+    rec.status = ownId.isNull() ? tr("GXS Identity missing. Initiating offline pull...") : tr("Requesting secure pull tunnel...");
     rec.time = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
     mCloneHistory.insert(mCloneHistory.begin(), rec);
     populateClonesTable();
@@ -1694,12 +1699,19 @@ void MainWidget::onPullClicked()
         ui->rightPaneTabWidget->setCurrentWidget(mPackfilesTab);
     }
 
-    if (!rsGit->requestPullOverTunnel(RsGxsGroupId(groupId.toStdString()), creatorId, ownId, localPath.toStdString())) {
+    bool success = false;
+    if (!ownId.isNull()) {
+        success = rsGit->requestPullOverTunnel(RsGxsGroupId(groupId.toStdString()), creatorId, ownId, localPath.toStdString());
+    } else {
+        success = rsGit->requestOfflinePull(RsGxsGroupId(groupId.toStdString()), localPath.toStdString());
+    }
+
+    if (!success) {
         if (!mCloneHistory.empty()) {
-            mCloneHistory[0].status = tr("Failed to initiate sync request.");
+            mCloneHistory[0].status = ownId.isNull() ? tr("Failed to initiate offline pull.") : tr("Failed to initiate sync request.");
             populateClonesTable();
         }
-        QMessageBox::critical(this, tr("Pull Failed"), tr("Failed to initiate pull tunnel request."));
+        QMessageBox::critical(this, tr("Pull Failed"), ownId.isNull() ? tr("Failed to initiate offline pull.") : tr("Failed to initiate pull tunnel request."));
     }
 }
 
@@ -2775,7 +2787,7 @@ void MainWidget::openSelectedFile()
     // 2. If not opened, extract from bare repository to temp folder and open
     if (!opened) {
         std::string barePath = GitManager::getBareRepoPath(groupId.toStdString());
-        QString tempDir = QDir::cleanPath(QDir::homePath() + "/.retroshare/retrogit_temp/previews/" + groupId);
+        QString tempDir = QDir::cleanPath(QString::fromStdString(RsAccounts::AccountDirectory()) + "/retrogit_temp/previews/" + groupId);
         QDir().mkpath(tempDir);
         
         // Maintain directory structure inside tempDir if file is in subdirectory

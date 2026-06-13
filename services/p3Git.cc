@@ -18,9 +18,11 @@
  *                                                                             *
  *******************************************************************************/
 
+#include <algorithm>
 #include <chrono>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include "gui/RetroGitNotify.h"
 #include "p3Git.h"
@@ -145,6 +147,19 @@ void p3Git::service_tick()
             if (GitManager::unpackPackfileFromFile(repoPath, fi.path, pending.refUpdates)) {
                 uint32_t pToken;
                 setMessageProcessedStatus(pToken, RsGxsGrpMsgIdPair(pending.groupId, pending.msgId), true);
+                
+                // Update pending offline clones & pulls
+                RS_STACK_MUTEX(mRetroGitMtx);
+                for (auto &poc : mPendingOfflineClones) {
+                    if (poc.groupId == pending.groupId) {
+                        poc.pendingMsgIds.erase(pending.msgId);
+                    }
+                }
+                for (auto &pop : mPendingOfflinePulls) {
+                    if (pop.groupId == pending.groupId) {
+                        pop.pendingMsgIds.erase(pending.msgId);
+                    }
+                }
             }
             
             if (rsEvents) {
@@ -154,6 +169,58 @@ void p3Git::service_tick()
                 ev->mGitEventCode = RsGitEventCode::NEW_POST;
                 rsEvents->postEvent(ev);
             }
+        }
+    }
+
+    // Check completed offline clones
+    std::vector<PendingOfflineClone> completedClones;
+    {
+        RS_STACK_MUTEX(mRetroGitMtx);
+        for (auto it = mPendingOfflineClones.begin(); it != mPendingOfflineClones.end(); ) {
+            if (it->pendingMsgIds.empty()) {
+                completedClones.push_back(*it);
+                it = mPendingOfflineClones.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (const auto &pc : completedClones) {
+        std::string barePath = GitManager::getBareRepoPath(pc.groupId.toStdString());
+        std::cout << "p3Git: Offline clone: all packfiles downloaded. Cloning bare repo to " << pc.localPath << std::endl;
+        postCloneStatus(pc.groupId, "Offline clone: writing working tree...", false);
+        if (GitManager::cloneRepository(barePath, pc.localPath)) {
+            postCloneStatus(pc.groupId, "Offline clone completed successfully!", true);
+        } else {
+            postCloneStatus(pc.groupId, "Offline clone failed to write working tree.", false);
+        }
+    }
+
+    // Check completed offline pulls
+    std::vector<PendingOfflinePull> completedPulls;
+    {
+        RS_STACK_MUTEX(mRetroGitMtx);
+        for (auto it = mPendingOfflinePulls.begin(); it != mPendingOfflinePulls.end(); ) {
+            if (it->pendingMsgIds.empty()) {
+                completedPulls.push_back(*it);
+                it = mPendingOfflinePulls.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (const auto &pp : completedPulls) {
+        std::cout << "p3Git: Offline sync: all packfiles downloaded. Syncing working tree at " << pp.localPath << std::endl;
+        bool hasWorkingDir = !pp.localPath.empty() && GitManager::isValidRepository(pp.localPath);
+        if (hasWorkingDir) {
+            postCloneStatus(pp.groupId, "Offline sync: updating working tree...", false);
+            if (GitManager::pullRepository(pp.localPath)) {
+                postCloneStatus(pp.groupId, "Offline sync completed successfully!", true);
+            } else {
+                postCloneStatus(pp.groupId, "Offline sync failed to update working tree.", false);
+            }
+        } else {
+            postCloneStatus(pp.groupId, "Offline sync completed successfully!", true);
         }
     }
 }
@@ -618,12 +685,247 @@ void p3Git::setMessageProcessedStatus(uint32_t &token, const RsGxsGrpMsgIdPair &
     }
 }
 
+bool p3Git::requestOfflineClone(const RsGxsGroupId &groupId, const std::string &localPath)
+{
+    std::string barePath = GitManager::getBareRepoPath(groupId.toStdString());
+    if (!GitManager::isValidRepository(barePath)) {
+        if (!GitManager::initRepository(barePath, true)) {
+            std::cerr << "p3Git: Failed to initialize bare repository for offline clone: " << barePath << std::endl;
+            postCloneStatus(groupId, "Failed to initialize local bare repository.", false);
+            return false;
+        }
+    }
+
+    postCloneStatus(groupId, "Offline clone: checking GXS database...", false);
+
+    std::vector<RsGitUpdate> updates;
+    if (!getUpdates(groupId, updates)) {
+        postCloneStatus(groupId, "Offline clone: failed to retrieve updates from GXS database.", false);
+        return false;
+    }
+
+    std::sort(updates.begin(), updates.end(), [](const RsGitUpdate &a, const RsGitUpdate &b) {
+        return a.mMeta.mPublishTs < b.mMeta.mPublishTs;
+    });
+
+    std::set<RsGxsMessageId> pendingMsgIds;
+    bool hasUnprocessedFiles = false;
+
+    for (auto &update : updates) {
+        bool isUnprocessed = (update.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED);
+        if (!isUnprocessed) continue;
+
+        if (!update.mPackfileData.empty()) {
+            if (GitManager::unpackPackfile(barePath, update.mPackfileData, update.mRefUpdates)) {
+                uint32_t pToken;
+                setMessageProcessedStatus(pToken, RsGxsGrpMsgIdPair(groupId, update.mMeta.mMsgId), true);
+            } else {
+                std::cerr << "p3Git: Offline clone: failed to unpack inline packfile for msg " << update.mMeta.mMsgId.toStdString() << std::endl;
+            }
+        }
+        else if (!update.mFiles.empty()) {
+            const RsGxsFile &file = update.mFiles[0];
+            FileInfo info;
+            if (rsFiles && rsFiles->alreadyHaveFile(file.mHash, info)) {
+                if (GitManager::unpackPackfileFromFile(barePath, info.path, update.mRefUpdates)) {
+                    uint32_t pToken;
+                    setMessageProcessedStatus(pToken, RsGxsGrpMsgIdPair(groupId, update.mMeta.mMsgId), true);
+                } else {
+                    std::cerr << "p3Git: Offline clone: failed to unpack packfile from file " << info.path << " for msg " << update.mMeta.mMsgId.toStdString() << std::endl;
+                }
+            } else {
+                hasUnprocessedFiles = true;
+                pendingMsgIds.insert(update.mMeta.mMsgId);
+
+                // Request the file from remote peers who have it
+                if (rsFiles) {
+                    FileInfo fileInfo;
+                    rsFiles->FileDetails(file.mHash, RS_FILE_HINTS_REMOTE, fileInfo);
+                    std::list<RsPeerId> sources;
+                    for (const auto &peer : fileInfo.peers) {
+                        sources.push_back(peer.peerId);
+                    }
+                    TransferRequestFlags flags = RS_FILE_REQ_ANONYMOUS_ROUTING;
+                    rsFiles->FileRequest(file.mName, file.mHash, file.mSize, "", flags, sources);
+                }
+
+                // Add to mPendingPackfiles
+                RS_STACK_MUTEX(mRetroGitMtx);
+                bool alreadyPending = false;
+                for (const auto &p : mPendingPackfiles) {
+                    if (p.fileHash == file.mHash && p.groupId == groupId) {
+                        alreadyPending = true;
+                        break;
+                    }
+                }
+                if (!alreadyPending) {
+                    PendingPackfile pending;
+                    pending.groupId = groupId;
+                    pending.msgId = update.mMeta.mMsgId;
+                    pending.fileHash = file.mHash;
+                    pending.refUpdates = update.mRefUpdates;
+                    mPendingPackfiles.push_back(pending);
+                }
+            }
+        }
+    }
+
+    if (!hasUnprocessedFiles) {
+        postCloneStatus(groupId, "Offline clone: writing working tree...", false);
+        if (GitManager::cloneRepository(barePath, localPath)) {
+            postCloneStatus(groupId, "Offline clone completed successfully!", true);
+            return true;
+        } else {
+            postCloneStatus(groupId, "Offline clone failed to write working tree.", false);
+            return false;
+        }
+    } else {
+        RS_STACK_MUTEX(mRetroGitMtx);
+        PendingOfflineClone poc;
+        poc.groupId = groupId;
+        poc.localPath = localPath;
+        poc.pendingMsgIds = pendingMsgIds;
+
+        bool exists = false;
+        for (const auto &c : mPendingOfflineClones) {
+            if (c.groupId == groupId) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists) {
+            mPendingOfflineClones.push_back(poc);
+        }
+        postCloneStatus(groupId, "Offline clone: downloading required packfiles...", false);
+        return true;
+    }
+}
+
+bool p3Git::requestOfflinePull(const RsGxsGroupId &groupId, const std::string &localPath)
+{
+    std::string barePath = GitManager::getBareRepoPath(groupId.toStdString());
+    if (!GitManager::isValidRepository(barePath)) {
+        std::cerr << "p3Git: Offline pull failed: local repository not initialized." << std::endl;
+        postCloneStatus(groupId, "Offline pull failed: local repository not initialized.", false);
+        return false;
+    }
+
+    postCloneStatus(groupId, "Offline sync: checking GXS database...", false);
+
+    std::vector<RsGitUpdate> updates;
+    if (!getUpdates(groupId, updates)) {
+        postCloneStatus(groupId, "Offline sync: failed to retrieve updates from GXS database.", false);
+        return false;
+    }
+
+    std::sort(updates.begin(), updates.end(), [](const RsGitUpdate &a, const RsGitUpdate &b) {
+        return a.mMeta.mPublishTs < b.mMeta.mPublishTs;
+    });
+
+    std::set<RsGxsMessageId> pendingMsgIds;
+    bool hasUnprocessedFiles = false;
+
+    for (auto &update : updates) {
+        bool isUnprocessed = (update.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED);
+        if (!isUnprocessed) continue;
+
+        if (!update.mPackfileData.empty()) {
+            if (GitManager::unpackPackfile(barePath, update.mPackfileData, update.mRefUpdates)) {
+                uint32_t pToken;
+                setMessageProcessedStatus(pToken, RsGxsGrpMsgIdPair(groupId, update.mMeta.mMsgId), true);
+            } else {
+                std::cerr << "p3Git: Offline sync: failed to unpack inline packfile for msg " << update.mMeta.mMsgId.toStdString() << std::endl;
+            }
+        }
+        else if (!update.mFiles.empty()) {
+            const RsGxsFile &file = update.mFiles[0];
+            FileInfo info;
+            if (rsFiles && rsFiles->alreadyHaveFile(file.mHash, info)) {
+                if (GitManager::unpackPackfileFromFile(barePath, info.path, update.mRefUpdates)) {
+                    uint32_t pToken;
+                    setMessageProcessedStatus(pToken, RsGxsGrpMsgIdPair(groupId, update.mMeta.mMsgId), true);
+                } else {
+                    std::cerr << "p3Git: Offline sync: failed to unpack packfile from file " << info.path << " for msg " << update.mMeta.mMsgId.toStdString() << std::endl;
+                }
+            } else {
+                hasUnprocessedFiles = true;
+                pendingMsgIds.insert(update.mMeta.mMsgId);
+
+                // Request the file from remote peers who have it
+                if (rsFiles) {
+                    FileInfo fileInfo;
+                    rsFiles->FileDetails(file.mHash, RS_FILE_HINTS_REMOTE, fileInfo);
+                    std::list<RsPeerId> sources;
+                    for (const auto &peer : fileInfo.peers) {
+                        sources.push_back(peer.peerId);
+                    }
+                    TransferRequestFlags flags = RS_FILE_REQ_ANONYMOUS_ROUTING;
+                    rsFiles->FileRequest(file.mName, file.mHash, file.mSize, "", flags, sources);
+                }
+
+                // Add to mPendingPackfiles
+                RS_STACK_MUTEX(mRetroGitMtx);
+                bool alreadyPending = false;
+                for (const auto &p : mPendingPackfiles) {
+                    if (p.fileHash == file.mHash && p.groupId == groupId) {
+                        alreadyPending = true;
+                        break;
+                    }
+                }
+                if (!alreadyPending) {
+                    PendingPackfile pending;
+                    pending.groupId = groupId;
+                    pending.msgId = update.mMeta.mMsgId;
+                    pending.fileHash = file.mHash;
+                    pending.refUpdates = update.mRefUpdates;
+                    mPendingPackfiles.push_back(pending);
+                }
+            }
+        }
+    }
+
+    if (!hasUnprocessedFiles) {
+        bool hasWorkingDir = !localPath.empty() && GitManager::isValidRepository(localPath);
+        if (hasWorkingDir) {
+            postCloneStatus(groupId, "Offline sync: updating working tree...", false);
+            if (GitManager::pullRepository(localPath)) {
+                postCloneStatus(groupId, "Offline sync completed successfully!", true);
+                return true;
+            } else {
+                postCloneStatus(groupId, "Offline sync failed to update working tree.", false);
+                return false;
+            }
+        } else {
+            postCloneStatus(groupId, "Offline sync completed successfully!", true);
+            return true;
+        }
+    } else {
+        RS_STACK_MUTEX(mRetroGitMtx);
+        PendingOfflinePull pop;
+        pop.groupId = groupId;
+        pop.localPath = localPath;
+        pop.pendingMsgIds = pendingMsgIds;
+
+        bool exists = false;
+        for (const auto &p : mPendingOfflinePulls) {
+            if (p.groupId == groupId) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists) {
+            mPendingOfflinePulls.push_back(pop);
+        }
+        postCloneStatus(groupId, "Offline sync: downloading required packfiles...", false);
+        return true;
+    }
+}
+
 bool p3Git::requestCloneOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &toId, const RsGxsId &ownId, const std::string &localPath)
 {
     if (!mGxsTunnels) {
-        std::cerr << "p3Git: requestCloneOverTunnel failed. mGxsTunnels is NULL" << std::endl;
-        postCloneStatus(groupId, "GxsTunnel service not available.", false);
-        return false;
+        std::cerr << "p3Git: requestCloneOverTunnel failed. mGxsTunnels is NULL. Falling back to offline clone..." << std::endl;
+        return requestOfflineClone(groupId, localPath);
     }
 
     RsGxsTunnelId tunnelId;
@@ -642,18 +944,16 @@ bool p3Git::requestCloneOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &t
         std::cout << "p3Git: Clone tunnel requested. Tunnel ID: " << tunnelId << std::endl;
         return true;
     } else {
-        std::cerr << "p3Git: requestSecuredTunnel failed, error code: " << error_code << std::endl;
-        postCloneStatus(groupId, "Failed to request secure tunnel to peer.", false);
-        return false;
+        std::cerr << "p3Git: requestSecuredTunnel failed, error code: " << error_code << ". Falling back to offline clone..." << std::endl;
+        return requestOfflineClone(groupId, localPath);
     }
 }
 
 bool p3Git::requestPullOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &toId, const RsGxsId &ownId, const std::string &localPath)
 {
     if (!mGxsTunnels) {
-        std::cerr << "p3Git: requestPullOverTunnel failed. mGxsTunnels is NULL" << std::endl;
-        postCloneStatus(groupId, "GxsTunnel service not available.", false);
-        return false;
+        std::cerr << "p3Git: requestPullOverTunnel failed. mGxsTunnels is NULL. Falling back to offline pull..." << std::endl;
+        return requestOfflinePull(groupId, localPath);
     }
 
     RsGxsTunnelId tunnelId;
@@ -672,9 +972,8 @@ bool p3Git::requestPullOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &to
         std::cout << "p3Git: Pull tunnel requested. Tunnel ID: " << tunnelId << std::endl;
         return true;
     } else {
-        std::cerr << "p3Git: requestSecuredTunnel failed, error code: " << error_code << std::endl;
-        postCloneStatus(groupId, "Failed to request secure tunnel to peer.", false);
-        return false;
+        std::cerr << "p3Git: requestSecuredTunnel failed, error code: " << error_code << ". Falling back to offline pull..." << std::endl;
+        return requestOfflinePull(groupId, localPath);
     }
 }
 
@@ -694,17 +993,23 @@ void p3Git::postCloneStatus(const RsGxsGroupId &groupId, const std::string &stat
 void p3Git::notifyTunnelStatus(const RsGxsTunnelId& tunnel_id, uint32_t tunnel_status)
 {
     RsGxsGroupId groupId;
+    std::string localPath;
     bool isPull = false;
+    bool found = false;
     {
         RS_STACK_MUTEX(mRetroGitMtx);
         auto it = mPendingClones.find(tunnel_id);
         if (it != mPendingClones.end()) {
             groupId = it->second.groupId;
+            localPath = it->second.localPath;
+            found = true;
         } else {
             auto it2 = mPendingPulls.find(tunnel_id);
             if (it2 != mPendingPulls.end()) {
                 groupId = it2->second.groupId;
+                localPath = it2->second.localPath;
                 isPull = true;
+                found = true;
             }
         }
     }
@@ -729,12 +1034,28 @@ void p3Git::notifyTunnelStatus(const RsGxsTunnelId& tunnel_id, uint32_t tunnel_s
              tunnel_status == RsGxsTunnelService::RS_GXS_TUNNEL_STATUS_TUNNEL_DN)
     {
         std::cout << "p3Git: Tunnel went down/closed (tunnel_id=" << tunnel_id << ")" << std::endl;
-        postCloneStatus(groupId, "Secure tunnel went down.", false);
-        {
-            RS_STACK_MUTEX(mRetroGitMtx);
-            mPendingClones.erase(tunnel_id);
-            mPendingPulls.erase(tunnel_id);
-            mTunnelToGxsIdMap.erase(tunnel_id);
+        if (found) {
+            std::cout << "p3Git: Tunnel went down. Falling back to offline method for group: " << groupId.toStdString() << std::endl;
+            postCloneStatus(groupId, "Tunnel disconnected. Falling back to offline sync...", false);
+            {
+                RS_STACK_MUTEX(mRetroGitMtx);
+                mPendingClones.erase(tunnel_id);
+                mPendingPulls.erase(tunnel_id);
+                mTunnelToGxsIdMap.erase(tunnel_id);
+            }
+            if (isPull) {
+                requestOfflinePull(groupId, localPath);
+            } else {
+                requestOfflineClone(groupId, localPath);
+            }
+        } else {
+            postCloneStatus(groupId, "Secure tunnel went down.", false);
+            {
+                RS_STACK_MUTEX(mRetroGitMtx);
+                mPendingClones.erase(tunnel_id);
+                mPendingPulls.erase(tunnel_id);
+                mTunnelToGxsIdMap.erase(tunnel_id);
+            }
         }
     }
 }
