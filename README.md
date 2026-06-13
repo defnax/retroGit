@@ -18,7 +18,7 @@ Distributed Git repository sharing over the GXS (Generic eXchange System) networ
 put/clone `RetroGit` to `RetroShare/plugins/` recommend
 
 	cd ${YOUR_DIR}/RetroShare/plugins/RetroGit/
-	qmake ..
+	qmake 
 	make 
 
 Copy your RetroGit.dll to "Data/extensions6" (Windows)

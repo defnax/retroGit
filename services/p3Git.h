@@ -20,6 +20,7 @@
 
 #include <QVariantMap>
 #include <list>
+#include <set>
 #include <string>
 
 #include "gxs/rsgenexchange.h"
@@ -83,6 +84,9 @@ public:
     virtual bool requestCloneOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &toId, const RsGxsId &ownId, const std::string &localPath) override;
     virtual bool requestPullOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &toId, const RsGxsId &ownId, const std::string &localPath) override;
 
+    virtual bool requestOfflineClone(const RsGxsGroupId &groupId, const std::string &localPath) override;
+    virtual bool requestOfflinePull(const RsGxsGroupId &groupId, const std::string &localPath) override;
+
     virtual bool getGitStatistics(GxsServiceStatistic &stats) override;
 
     // RsGxsTunnelClientService methods
@@ -110,6 +114,18 @@ private:
         std::string localPath;
     };
 
+    struct PendingOfflineClone {
+        RsGxsGroupId groupId;
+        std::string localPath;
+        std::set<RsGxsMessageId> pendingMsgIds;
+    };
+
+    struct PendingOfflinePull {
+        RsGxsGroupId groupId;
+        std::string localPath;
+        std::set<RsGxsMessageId> pendingMsgIds;
+    };
+
     void postCloneStatus(const RsGxsGroupId &groupId, const std::string &status, bool success);
 
     RsMutex mRetroGitMtx;
@@ -121,4 +137,7 @@ private:
     std::map<RsGxsTunnelId, PendingClone> mPendingClones;
     std::map<RsGxsTunnelId, PendingPull> mPendingPulls;
     std::map<RsGxsTunnelId, RsGxsId> mTunnelToGxsIdMap;
+
+    std::vector<PendingOfflineClone> mPendingOfflineClones;
+    std::vector<PendingOfflinePull> mPendingOfflinePulls;
 };

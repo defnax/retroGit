@@ -106,6 +106,9 @@ public:
     virtual bool requestCloneOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &toId, const RsGxsId &ownId, const std::string &localPath) = 0;
     virtual bool requestPullOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &toId, const RsGxsId &ownId, const std::string &localPath) = 0;
 
+    virtual bool requestOfflineClone(const RsGxsGroupId &groupId, const std::string &localPath) = 0;
+    virtual bool requestOfflinePull(const RsGxsGroupId &groupId, const std::string &localPath) = 0;
+
     /**
     * @brief Create a new RetroGit group/repository.
     * @param[out] token A token to track the progress of the creation.
