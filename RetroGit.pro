@@ -57,6 +57,7 @@ SOURCES = RetroGitPlugin.cpp               \
           gui/RetroGitNotify.cpp \
           gui/GitGroupDialog.cpp \
           gui/GitCommitDialog.cpp \
+          gui/GitBranchDialog.cpp \
           gui/GitUserNotify.cpp \
           gui/GitWidget.cpp \
           gui/CodeWidget.cpp \
@@ -71,6 +72,7 @@ HEADERS = RetroGitPlugin.h                 \
           gui/RetroGitNotify.h \
           gui/GitGroupDialog.h \
           gui/GitCommitDialog.h \
+          gui/GitBranchDialog.h \
           gui/GitUserNotify.h \
           gui/GitWidget.h \
           gui/CodeWidget.h \

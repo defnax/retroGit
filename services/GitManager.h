@@ -89,14 +89,29 @@ public:
     static bool commitChanges(const std::string& repoPath, const std::string& commitMessage, const std::string& authorName, const std::string& authorEmail);
 
     /**
+     * @brief Create a new branch pointing to a source branch.
+     */
+    static bool createBranch(const std::string& repoPath, const std::string& branchName, const std::string& sourceBranch);
+
+    /**
      * @brief Retrieve the commit log from the repository.
      */
     static bool getCommitLog(const std::string& repoPath, std::vector<GitCommitInfo>& commits);
 
     /**
-     * @brief Retrieve a flat list of all files in the HEAD commit tree.
+     * @brief Retrieve a flat list of all files in the HEAD commit tree (or selected refName).
      */
-    static bool getRepoFiles(const std::string& repoPath, std::vector<std::string>& files);
+    static bool getRepoFiles(const std::string& repoPath, std::vector<std::string>& files, const std::string& refName = "");
+
+    /**
+     * @brief Retrieve the list of all local branches and the current branch name.
+     */
+    static bool getBranches(const std::string& repoPath, std::vector<std::string>& branches, std::string& currentBranch);
+
+    /**
+     * @brief Retrieve the list of all tags.
+     */
+    static bool getTags(const std::string& repoPath, std::vector<std::string>& tags);
 
     /**
      * @brief Retrieve detailed info about a specific commit, including author, title, body, date and changed files.
@@ -136,9 +151,9 @@ public:
     static bool getLocalChanges(const std::string& repoPath, std::vector<GitLocalChange>& changes);
 
     /**
-     * @brief Extract a file from the repository's HEAD tree to a destination path.
+     * @brief Extract a file from the repository's HEAD tree (or selected refName) to a destination path.
      */
-    static bool extractFile(const std::string& repoPath, const std::string& relativePath, const std::string& destPath);
+    static bool extractFile(const std::string& repoPath, const std::string& relativePath, const std::string& destPath, const std::string& refName = "");
 };
 
 #endif // GITMANAGER_H

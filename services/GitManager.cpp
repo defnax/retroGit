@@ -306,25 +306,35 @@ static int tree_walk_cb(const char *root, const git_tree_entry *entry, void *pay
     return 0;
 }
 
-bool GitManager::getRepoFiles(const std::string& repoPath, std::vector<std::string>& files)
+bool GitManager::getRepoFiles(const std::string& repoPath, std::vector<std::string>& files, const std::string& refName)
 {
     std::string normPath = normalizePath(repoPath);
     git_repository *repo = nullptr;
     if (git_repository_open(&repo, normPath.c_str()) != 0) return false;
 
-    git_oid head_oid;
-    if (git_reference_name_to_id(&head_oid, repo, "HEAD") != 0) {
-        // Fallback: try to resolve refs/heads/master or refs/heads/main if HEAD is not resolved
-        if (git_reference_name_to_id(&head_oid, repo, "refs/heads/master") != 0) {
-            if (git_reference_name_to_id(&head_oid, repo, "refs/heads/main") != 0) {
-                git_repository_free(repo);
-                return true;
+    git_oid target_oid;
+    std::string targetRef = refName.empty() ? "HEAD" : refName;
+
+    // First try to resolve reference name directly (like refs/heads/branch or refs/tags/tag or HEAD)
+    if (git_reference_name_to_id(&target_oid, repo, targetRef.c_str()) != 0) {
+        // If it was a short branch/tag name, try refs/heads/ and refs/tags/
+        if (git_reference_name_to_id(&target_oid, repo, ("refs/heads/" + targetRef).c_str()) != 0) {
+            if (git_reference_name_to_id(&target_oid, repo, ("refs/tags/" + targetRef).c_str()) != 0) {
+                // Fallback to HEAD
+                if (git_reference_name_to_id(&target_oid, repo, "HEAD") != 0) {
+                    if (git_reference_name_to_id(&target_oid, repo, "refs/heads/master") != 0) {
+                        if (git_reference_name_to_id(&target_oid, repo, "refs/heads/main") != 0) {
+                            git_repository_free(repo);
+                            return true;
+                        }
+                    }
+                }
             }
         }
     }
 
     git_commit *commit = nullptr;
-    if (git_commit_lookup(&commit, repo, &head_oid) != 0) {
+    if (git_commit_lookup(&commit, repo, &target_oid) != 0) {
         git_repository_free(repo);
         return false;
     }
@@ -722,24 +732,35 @@ bool GitManager::getLocalChanges(const std::string& repoPath, std::vector<GitLoc
     return success;
 }
 
-bool GitManager::extractFile(const std::string& repoPath, const std::string& relativePath, const std::string& destPath)
+bool GitManager::extractFile(const std::string& repoPath, const std::string& relativePath, const std::string& destPath, const std::string& refName)
 {
     std::string normPath = normalizePath(repoPath);
     git_repository *repo = nullptr;
     if (git_repository_open(&repo, normPath.c_str()) != 0) return false;
 
-    git_oid head_oid;
-    if (git_reference_name_to_id(&head_oid, repo, "HEAD") != 0) {
-        if (git_reference_name_to_id(&head_oid, repo, "refs/heads/master") != 0) {
-            if (git_reference_name_to_id(&head_oid, repo, "refs/heads/main") != 0) {
-                git_repository_free(repo);
-                return false;
+    git_oid target_oid;
+    std::string targetRef = refName.empty() ? "HEAD" : refName;
+
+    // First try to resolve reference name directly (like refs/heads/branch or refs/tags/tag or HEAD)
+    if (git_reference_name_to_id(&target_oid, repo, targetRef.c_str()) != 0) {
+        // If it was a short branch/tag name, try refs/heads/ and refs/tags/
+        if (git_reference_name_to_id(&target_oid, repo, ("refs/heads/" + targetRef).c_str()) != 0) {
+            if (git_reference_name_to_id(&target_oid, repo, ("refs/tags/" + targetRef).c_str()) != 0) {
+                // Fallback to HEAD
+                if (git_reference_name_to_id(&target_oid, repo, "HEAD") != 0) {
+                    if (git_reference_name_to_id(&target_oid, repo, "refs/heads/master") != 0) {
+                        if (git_reference_name_to_id(&target_oid, repo, "refs/heads/main") != 0) {
+                            git_repository_free(repo);
+                            return false;
+                        }
+                    }
+                }
             }
         }
     }
 
     git_commit *commit = nullptr;
-    if (git_commit_lookup(&commit, repo, &head_oid) != 0) {
+    if (git_commit_lookup(&commit, repo, &target_oid) != 0) {
         git_repository_free(repo);
         return false;
     }
@@ -878,3 +899,133 @@ bool GitManager::pullRepository(const std::string& localPath)
     git_repository_free(repo);
     return true;
 }
+
+bool GitManager::getBranches(const std::string& repoPath, std::vector<std::string>& branches, std::string& currentBranch)
+{
+    std::string normPath = normalizePath(repoPath);
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normPath.c_str()) != 0) return false;
+
+    // 1. Get current active branch name
+    currentBranch = "master"; // default fallback
+    git_reference *head_ref = nullptr;
+    if (git_reference_lookup(&head_ref, repo, "HEAD") == 0) {
+        if (git_reference_type(head_ref) == GIT_REF_SYMBOLIC) {
+            const char *target = git_reference_symbolic_target(head_ref);
+            if (target) {
+                std::string targetStr(target);
+                if (targetStr.rfind("refs/heads/", 0) == 0) {
+                    currentBranch = targetStr.substr(11);
+                }
+            }
+        } else {
+            const char *shorthand = git_reference_shorthand(head_ref);
+            if (shorthand) {
+                currentBranch = shorthand;
+            }
+        }
+        git_reference_free(head_ref);
+    }
+
+    // 2. Iterate local branches
+    git_branch_iterator *iter = nullptr;
+    if (git_branch_iterator_new(&iter, repo, GIT_BRANCH_LOCAL) == 0) {
+        git_reference *ref = nullptr;
+        git_branch_t type;
+        while (git_branch_next(&ref, &type, iter) == 0) {
+            const char *branch_name = nullptr;
+            if (git_branch_name(&branch_name, ref) == 0) {
+                branches.push_back(branch_name);
+            }
+            git_reference_free(ref);
+        }
+        git_branch_iterator_free(iter);
+    }
+
+    git_repository_free(repo);
+    return true;
+}
+
+bool GitManager::getTags(const std::string& repoPath, std::vector<std::string>& tags)
+{
+    std::string normPath = normalizePath(repoPath);
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normPath.c_str()) != 0) return false;
+
+    git_strarray tag_names;
+    if (git_tag_list(&tag_names, repo) == 0) {
+        for (size_t i = 0; i < tag_names.count; ++i) {
+            if (tag_names.strings[i]) {
+                tags.push_back(tag_names.strings[i]);
+            }
+        }
+        git_strarray_dispose(&tag_names);
+    }
+
+    git_repository_free(repo);
+    return true;
+}
+
+bool GitManager::createBranch(const std::string& repoPath, const std::string& branchName, const std::string& sourceBranch)
+{
+    std::string normPath = normalizePath(repoPath);
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normPath.c_str()) != 0) {
+        std::cerr << "createBranch: Failed to open repo" << std::endl;
+        return false;
+    }
+
+    // 1. Resolve the source branch to a commit target object
+    std::string sourceRef = sourceBranch;
+    if (sourceRef.rfind("refs/heads/", 0) != 0) {
+        sourceRef = "refs/heads/" + sourceRef;
+    }
+
+    git_reference *ref = nullptr;
+    if (git_reference_lookup(&ref, repo, sourceRef.c_str()) != 0) {
+        if (git_reference_lookup(&ref, repo, sourceBranch.c_str()) != 0) {
+            if (git_reference_lookup(&ref, repo, "HEAD") != 0) {
+                std::cerr << "createBranch: Failed to lookup source ref " << sourceBranch << std::endl;
+                git_repository_free(repo);
+                return false;
+            }
+        }
+    }
+
+    git_commit *commit = nullptr;
+    if (git_reference_peel((git_object **)&commit, ref, GIT_OBJECT_COMMIT) != 0) {
+        std::cerr << "createBranch: Failed to peel reference to commit" << std::endl;
+        git_reference_free(ref);
+        git_repository_free(repo);
+        return false;
+    }
+    git_reference_free(ref);
+
+    // 2. Create the new branch reference pointing to the commit
+    git_reference *new_branch_ref = nullptr;
+    int error = git_branch_create(&new_branch_ref, repo, branchName.c_str(), commit, 0); // 0 means do not overwrite
+
+    if (error < 0) {
+        const git_error *e = git_error_last();
+        std::cerr << "createBranch: Failed to create branch " << branchName << ": " 
+                  << (e ? e->message : "Unknown error") << std::endl;
+        git_commit_free(commit);
+        git_repository_free(repo);
+        return false;
+    }
+    git_reference_free(new_branch_ref);
+    git_commit_free(commit);
+
+    // 3. Switch HEAD to the new branch
+    std::string newBranchRef = "refs/heads/" + branchName;
+    if (git_repository_set_head(repo, newBranchRef.c_str()) != 0) {
+        const git_error *e = git_error_last();
+        std::cerr << "createBranch: Failed to set HEAD to " << newBranchRef << ": "
+                  << (e ? e->message : "Unknown error") << std::endl;
+    }
+
+    git_repository_free(repo);
+    return true;
+}
+
+

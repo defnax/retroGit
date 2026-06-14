@@ -21,6 +21,7 @@
 #include "CodeWidget.h"
 #include "ui_CodeWidget.h"
 #include "MainWidget.h"
+#include "GitBranchDialog.h"
 #include "services/GitManager.h"
 #include <QDir>
 #include <QPushButton>
@@ -29,6 +30,8 @@
 #include <QUrl>
 #include <QMessageBox>
 #include <retroshare/rsinit.h>
+
+extern RsGit *rsGit;
 
 CodeWidget::CodeWidget(MainWidget *mainWidget, QWidget *parent)
     : QWidget(parent)
@@ -41,6 +44,11 @@ CodeWidget::CodeWidget(MainWidget *mainWidget, QWidget *parent)
     connect(ui->mRepoBrowserList, &QListWidget::customContextMenuRequested, this, &CodeWidget::onRepoBrowserContextMenu);
     connect(ui->mRepoBrowserList, &QListWidget::itemDoubleClicked, this, &CodeWidget::openSelectedFile);
     connect(ui->mBtnOpenFolder, &QPushButton::clicked, this, &CodeWidget::onOpenFolderClicked);
+    connect(ui->mBtnCreateBranch, &QPushButton::clicked, this, &CodeWidget::onCreateBranchClicked);
+    connect(ui->mBranchCombo, &QComboBox::currentTextChanged, this, &CodeWidget::onBranchComboChanged);
+
+    int iconSize = qMax(fontMetrics().height(), 24);
+    ui->mBranchCombo->setIconSize(QSize(iconSize, iconSize));
 
     clear();
 }
@@ -54,7 +62,18 @@ void CodeWidget::clear()
 {
     ui->mRepoBrowserList->clear();
     ui->mBtnOpenFolder->setEnabled(false);
+    ui->mBtnCreateBranch->setEnabled(false);
+    ui->mBtnCreateBranch->setVisible(false);
+
+
+    ui->mBranchCombo->blockSignals(true);
+    ui->mBranchCombo->clear();
+    ui->mBranchCombo->blockSignals(false);
+
+    ui->mBranchCountLabel->setText("0 Branches");
+    ui->mTagCountLabel->setText("0 Tags");
     mGroupId.clear();
+    mSelectedBranchOrTag.clear();
 }
 
 void CodeWidget::setGroupId(const QString &groupId)
@@ -72,10 +91,85 @@ void CodeWidget::refresh()
 {
     if (mGroupId.isEmpty()) return;
 
+    // Check if user is Admin of the repository
+    bool isAdmin = false;
+    std::list<RsGxsGroupId> groupIds({RsGxsGroupId(mGroupId.toStdString())});
+    std::vector<RsGitGroup> groups;
+    if (rsGit && rsGit->getGroups(groupIds, groups) && !groups.empty()) {
+        uint32_t flags = groups[0].mMeta.mSubscribeFlags;
+        isAdmin = IS_GROUP_ADMIN(flags);
+    }
+
     QString rawPath = mMainWidget->getLocalPath();
     ui->mBtnOpenFolder->setEnabled(!rawPath.isEmpty() && QDir(rawPath).exists());
+    ui->mBtnCreateBranch->setEnabled(isAdmin);
+    ui->mBtnCreateBranch->setVisible(isAdmin);
 
-    populateRepoBrowser();
+
+
+    // 1. Fetch branches and tags from bare repository
+    std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
+    std::vector<std::string> branches;
+    std::string currentBranch;
+    std::vector<std::string> tags;
+
+    // Load icons
+    int iconSize = qMax(fontMetrics().height(), 24);
+    QPixmap branchPixmap(":/images/git-branch-2.png");
+    QPixmap tagPixmap(":/images/tag.png");
+    ui->mBranchCountIcon->setPixmap(branchPixmap.scaled(iconSize, iconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    ui->mTagCountIcon->setPixmap(tagPixmap.scaled(iconSize, iconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+
+    // Disable signals during combo repopulation to prevent multiple refreshes
+    ui->mBranchCombo->blockSignals(true);
+    QString previousSelected = ui->mBranchCombo->currentText();
+    ui->mBranchCombo->clear();
+
+    if (GitManager::getBranches(bareRepoPath, branches, currentBranch)) {
+        ui->mBranchCountLabel->setText(tr("%1 Branches").arg(branches.size()));
+
+        // Add branches to combo
+        for (const std::string& branch : branches) {
+            ui->mBranchCombo->addItem(QIcon(":/images/git-branch-2.png"), QString::fromStdString(branch));
+        }
+    } else {
+        ui->mBranchCountLabel->setText(tr("0 Branches"));
+    }
+
+    if (GitManager::getTags(bareRepoPath, tags)) {
+        ui->mTagCountLabel->setText(tr("%1 Tags").arg(tags.size()));
+
+        // Add tags to combo
+        for (const std::string& tag : tags) {
+            ui->mBranchCombo->addItem(QIcon(":/images/tag_.png"), QString::fromStdString(tag));
+        }
+    } else {
+        ui->mTagCountLabel->setText(tr("0 Tags"));
+    }
+
+
+    // Restore selection or select default active branch
+    int selectIdx = -1;
+    if (!previousSelected.isEmpty()) {
+        selectIdx = ui->mBranchCombo->findText(previousSelected);
+    }
+    if (selectIdx == -1 && !currentBranch.empty()) {
+        selectIdx = ui->mBranchCombo->findText(QString::fromStdString(currentBranch));
+    }
+    if (selectIdx == -1 && ui->mBranchCombo->count() > 0) {
+        selectIdx = 0;
+    }
+
+    if (selectIdx != -1) {
+        ui->mBranchCombo->setCurrentIndex(selectIdx);
+        mSelectedBranchOrTag = ui->mBranchCombo->currentText();
+    } else {
+        mSelectedBranchOrTag.clear();
+    }
+    ui->mBranchCombo->blockSignals(false);
+
+    // 2. Populate file list for selected branch/tag
+    populateRepoBrowser(mSelectedBranchOrTag);
 }
 
 void CodeWidget::handleGitEvent(const RsGitEvent *e)
@@ -143,7 +237,7 @@ void CodeWidget::openSelectedFile()
 
         filePath = tempDir + "/" + selectedFile;
 
-        if (GitManager::extractFile(barePath, selectedFile.toStdString(), filePath.toStdString())) {
+        if (GitManager::extractFile(barePath, selectedFile.toStdString(), filePath.toStdString(), mSelectedBranchOrTag.toStdString())) {
             QDesktopServices::openUrl(QUrl::fromLocalFile(filePath));
         } else {
             QMessageBox::critical(this, tr("Error"), tr("Failed to extract and open file from repository."));
@@ -151,7 +245,7 @@ void CodeWidget::openSelectedFile()
     }
 }
 
-void CodeWidget::populateRepoBrowser()
+void CodeWidget::populateRepoBrowser(const QString &branchOrTag)
 {
     ui->mRepoBrowserList->clear();
     if (mGroupId.isEmpty()) return;
@@ -159,9 +253,57 @@ void CodeWidget::populateRepoBrowser()
     std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
     std::vector<std::string> files;
 
-    if (GitManager::getRepoFiles(bareRepoPath, files)) {
+    if (GitManager::getRepoFiles(bareRepoPath, files, branchOrTag.toStdString())) {
         for (const std::string& file : files) {
             ui->mRepoBrowserList->addItem(QString::fromStdString(file));
         }
     }
 }
+
+void CodeWidget::onBranchComboChanged(const QString &text)
+{
+    if (text.isEmpty()) return;
+    mSelectedBranchOrTag = text;
+    populateRepoBrowser(mSelectedBranchOrTag);
+}
+
+void CodeWidget::onCreateBranchClicked()
+{
+    if (mGroupId.isEmpty()) return;
+
+    // 1. Fetch current branches and active branch
+    std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
+    std::vector<std::string> branches;
+    std::string currentBranch;
+
+    if (!GitManager::getBranches(bareRepoPath, branches, currentBranch)) {
+        QMessageBox::critical(this, tr("Error"), tr("Failed to read repository branches."));
+        return;
+    }
+
+    QStringList qBranches;
+    for (const std::string& b : branches) {
+        qBranches.append(QString::fromStdString(b));
+    }
+
+    // 2. Open GitBranchDialog
+    GitBranchDialog dlg(qBranches, QString::fromStdString(currentBranch), this);
+    if (dlg.exec() == QDialog::Accepted) {
+        QString newBranchName = dlg.getBranchName();
+        QString sourceBranchName = dlg.getSourceBranch();
+
+        if (newBranchName.isEmpty()) {
+            QMessageBox::warning(this, tr("Warning"), tr("Branch name cannot be empty."));
+            return;
+        }
+
+        // 3. Create the new branch and switch HEAD to it
+        if (GitManager::createBranch(bareRepoPath, newBranchName.toStdString(), sourceBranchName.toStdString())) {
+            QMessageBox::information(this, tr("Success"), tr("Branch '%1' created successfully.").arg(newBranchName));
+            refresh();
+        } else {
+            QMessageBox::critical(this, tr("Error"), tr("Failed to create branch."));
+        }
+    }
+}
+
