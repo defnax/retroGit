@@ -57,7 +57,10 @@ SOURCES = RetroGitPlugin.cpp               \
           gui/RetroGitNotify.cpp \
           gui/GitGroupDialog.cpp \
           gui/GitCommitDialog.cpp \
-          gui/GitUserNotify.cpp
+          gui/GitUserNotify.cpp \
+          gui/GitWidget.cpp \
+          gui/CodeWidget.cpp \
+          gui/PushesWidget.cpp
 
 HEADERS = RetroGitPlugin.h                 \
           services/p3Git.h            \
@@ -68,9 +71,15 @@ HEADERS = RetroGitPlugin.h                 \
           gui/RetroGitNotify.h \
           gui/GitGroupDialog.h \
           gui/GitCommitDialog.h \
-          gui/GitUserNotify.h
+          gui/GitUserNotify.h \
+          gui/GitWidget.h \
+          gui/CodeWidget.h \
+          gui/PushesWidget.h
 
 FORMS += \
           gui/MainWidget.ui \
+          gui/GitWidget.ui \
+          gui/CodeWidget.ui \
+          gui/PushesWidget.ui \
 
 RESOURCES = gui/images.qrc
