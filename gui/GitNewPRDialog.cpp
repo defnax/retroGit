@@ -1,5 +1,5 @@
 /*******************************************************************************
- * gui/GitBranchDialog.cpp                                                     *
+ * gui/GitNewPRDialog.cpp                                                      *
  *                                                                             *
  * Copyright (C) 2026 RetroShare Team <retroshare.project@gmail.com>           *
  *                                                                             *
@@ -18,28 +18,29 @@
  *                                                                             *
  ********************************************************************************/
 
-#include "GitBranchDialog.h"
+#include "GitNewPRDialog.h"
 #include <QVBoxLayout>
 #include <QFormLayout>
 #include <QDialogButtonBox>
 #include <QLabel>
 #include <QLineEdit>
+#include <QTextEdit>
 #include <QComboBox>
 #include <QPushButton>
 #include <QFrame>
 
-GitBranchDialog::GitBranchDialog(const QStringList& branches, const QString& currentBranch, QWidget *parent)
+GitNewPRDialog::GitNewPRDialog(const QStringList& branches, const QString& currentBranch, QWidget *parent)
     : QDialog(parent)
 {
-    setWindowTitle(tr("Create a branch"));
-    resize(400, 220);
+    setWindowTitle(tr("Open a pull request"));
+    resize(480, 320);
 
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(12);
     mainLayout->setContentsMargins(16, 16, 16, 16);
 
     // Title label
-    QLabel *titleLabel = new QLabel(tr("Create a branch"), this);
+    QLabel *titleLabel = new QLabel(tr("Open a pull request"), this);
     titleLabel->setStyleSheet("font-size: 16px; font-weight: bold; color: #24292f;");
     mainLayout->addWidget(titleLabel);
 
@@ -54,38 +55,60 @@ GitBranchDialog::GitBranchDialog(const QStringList& branches, const QString& cur
     QFormLayout *formLayout = new QFormLayout();
     formLayout->setSpacing(8);
 
-    mBranchNameEdit = new QLineEdit(this);
-    mBranchNameEdit->setPlaceholderText(tr("Enter new branch name..."));
-    mBranchNameEdit->setStyleSheet("QLineEdit { border: 1px solid #d0d7de; border-radius: 6px; padding: 6px; font-size: 13px; }"
-                                  "QLineEdit:focus { border: 1px solid #0969da; }");
+    mTitleEdit = new QLineEdit(this);
+    mTitleEdit->setPlaceholderText(tr("Title"));
+    mTitleEdit->setStyleSheet("QLineEdit { border: 1px solid #d0d7de; border-radius: 6px; padding: 6px; font-size: 13px; }"
+                             "QLineEdit:focus { border: 1px solid #0969da; }");
     
-    QLabel *branchNameLabel = new QLabel(tr("New branch name"), this);
-    branchNameLabel->setStyleSheet("font-weight: bold; color: #24292f;");
-    formLayout->addRow(branchNameLabel, mBranchNameEdit);
+    QLabel *titleTagLabel = new QLabel(tr("Title"), this);
+    titleTagLabel->setStyleSheet("font-weight: bold; color: #24292f;");
+    formLayout->addRow(titleTagLabel, mTitleEdit);
 
+    mDescEdit = new QTextEdit(this);
+    mDescEdit->setPlaceholderText(tr("Write a description for this pull request..."));
+    mDescEdit->setStyleSheet("QTextEdit { border: 1px solid #d0d7de; border-radius: 6px; padding: 6px; font-size: 13px; }"
+                            "QTextEdit:focus { border: 1px solid #0969da; }");
+    
+    QLabel *descTagLabel = new QLabel(tr("Description"), this);
+    descTagLabel->setStyleSheet("font-weight: bold; color: #24292f;");
+    formLayout->addRow(descTagLabel, mDescEdit);
+
+    // Source / Target dropdowns
     mSourceCombo = new QComboBox(this);
     mSourceCombo->setStyleSheet("QComboBox { border: 1px solid #d0d7de; border-radius: 6px; padding: 6px 12px; font-size: 13px; background-color: #f6f8fa; }"
                                 "QComboBox::drop-down { border: none; }");
     
-    // Add branches with icons
+    mTargetCombo = new QComboBox(this);
+    mTargetCombo->setStyleSheet("QComboBox { border: 1px solid #d0d7de; border-radius: 6px; padding: 6px 12px; font-size: 13px; background-color: #f6f8fa; }"
+                                "QComboBox::drop-down { border: none; }");
+
     for (const QString& branch : branches) {
         mSourceCombo->addItem(QIcon(":/images/git-branch.png"), branch);
-    }
-    
-    // Select current branch as source
-    int idx = mSourceCombo->findText(currentBranch);
-    if (idx != -1) {
-        mSourceCombo->setCurrentIndex(idx);
+        mTargetCombo->addItem(QIcon(":/images/git-branch.png"), branch);
     }
 
-    QLabel *sourceLabel = new QLabel(tr("Source"), this);
+    // Set defaults
+    int idxSrc = mSourceCombo->findText(currentBranch);
+    if (idxSrc != -1) {
+        mSourceCombo->setCurrentIndex(idxSrc);
+    }
+    
+    // Choose master/main for target if available
+    int idxTgt = mTargetCombo->findText("master");
+    if (idxTgt == -1) idxTgt = mTargetCombo->findText("main");
+    if (idxTgt != -1) {
+        mTargetCombo->setCurrentIndex(idxTgt);
+    }
+
+    QLabel *sourceLabel = new QLabel(tr("Compare (Source)"), this);
     sourceLabel->setStyleSheet("font-weight: bold; color: #24292f;");
     formLayout->addRow(sourceLabel, mSourceCombo);
 
-    mainLayout->addLayout(formLayout);
+    QLabel *targetLabel = new QLabel(tr("Base (Target)"), this);
+    targetLabel->setStyleSheet("font-weight: bold; color: #24292f;");
+    formLayout->addRow(targetLabel, mTargetCombo);
 
-    // Spacing
-    mainLayout->addStretch();
+    mainLayout->addLayout(formLayout);
 
     // Buttons
     QDialogButtonBox *buttonBox = new QDialogButtonBox(
@@ -93,7 +116,7 @@ GitBranchDialog::GitBranchDialog(const QStringList& branches, const QString& cur
         Qt::Horizontal, this);
 
     QPushButton *okButton = buttonBox->button(QDialogButtonBox::Ok);
-    okButton->setText(tr("Create new branch"));
+    okButton->setText(tr("Create pull request"));
     okButton->setStyleSheet("QPushButton { background-color: #2da44e; color: white; border-radius: 6px; padding: 6px 12px; font-weight: bold; border: 1px solid rgba(27, 31, 36, 0.15); }"
                             "QPushButton:hover { background-color: #2c974b; }"
                             "QPushButton:pressed { background-color: #298e46; }");
@@ -110,12 +133,22 @@ GitBranchDialog::GitBranchDialog(const QStringList& branches, const QString& cur
     connect(buttonBox, SIGNAL(rejected()), this, SLOT(reject()));
 }
 
-QString GitBranchDialog::getBranchName() const
+QString GitNewPRDialog::getTitle() const
 {
-    return mBranchNameEdit->text().trimmed();
+    return mTitleEdit->text().trimmed();
 }
 
-QString GitBranchDialog::getSourceBranch() const
+QString GitNewPRDialog::getDescription() const
+{
+    return mDescEdit->toPlainText().trimmed();
+}
+
+QString GitNewPRDialog::getSourceBranch() const
 {
     return mSourceCombo->currentText();
+}
+
+QString GitNewPRDialog::getTargetBranch() const
+{
+    return mTargetCombo->currentText();
 }

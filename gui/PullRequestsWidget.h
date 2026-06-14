@@ -1,5 +1,5 @@
 /*******************************************************************************
- * gui/CodeWidget.h                                                            *
+ * gui/PullRequestsWidget.h                                                    *
  *                                                                             *
  * Copyright (C) 2026 RetroShare Team <retroshare.project@gmail.com>           *
  *                                                                             *
@@ -16,49 +16,43 @@
  * You should have received a copy of the GNU Affero General Public License    *
  * along with this program. If not, see <https://www.gnu.org/licenses/>.       *
  *                                                                             *
- *******************************************************************************/
+ ********************************************************************************/
 
-#ifndef CODEWIDGET_H
-#define CODEWIDGET_H
+#ifndef PULLREQUESTSWIDGET_H
+#define PULLREQUESTSWIDGET_H
 
 #include <QWidget>
 #include <QString>
+#include <vector>
 #include "interface/rsGit.h"
 
 namespace Ui {
-class CodeWidget;
+class PullRequestsWidget;
 }
 
 class MainWidget;
 
-class CodeWidget : public QWidget
+class PullRequestsWidget : public QWidget
 {
     Q_OBJECT
 
 public:
-    explicit CodeWidget(MainWidget *mainWidget, QWidget *parent = nullptr);
-    ~CodeWidget();
+    explicit PullRequestsWidget(const QString &groupId, MainWidget *mainWidget, QWidget *parent = nullptr);
+    ~PullRequestsWidget();
 
-    void setGroupId(const QString &groupId);
-    void handleGitEvent(const RsGitEvent *e);
-    void clear();
     void refresh();
 
 private slots:
-    void onOpenFolderClicked();
-    void openSelectedFile();
-    void onRepoBrowserContextMenu(const QPoint &pos);
-    void onBranchComboChanged(const QString &text);
-    void onCreateBranchClicked();
-    void onPullRequestsClicked();
+    void onNewPRClicked();
+    void onFilterTextChanged(const QString &text);
+    void onMergePRClicked(const QString &msgIdStr, const QString &sourceBranch, const QString &targetBranch);
 
 private:
-    void populateRepoBrowser(const QString &branchOrTag = "");
+    void populatePRList();
 
-    Ui::CodeWidget *ui;
+    Ui::PullRequestsWidget *ui;
     MainWidget *mMainWidget;
     QString mGroupId;
-    QString mSelectedBranchOrTag;
 };
 
-#endif // CODEWIDGET_H
+#endif // PULLREQUESTSWIDGET_H

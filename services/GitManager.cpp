@@ -1028,4 +1028,47 @@ bool GitManager::createBranch(const std::string& repoPath, const std::string& br
     return true;
 }
 
+bool GitManager::mergeBranch(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch)
+{
+    std::string normPath = normalizePath(repoPath);
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normPath.c_str()) != 0) return false;
+
+    // Resolve source commit
+    std::string sourceRef = "refs/heads/" + sourceBranch;
+    git_oid source_oid;
+    if (git_reference_name_to_id(&source_oid, repo, sourceRef.c_str()) != 0) {
+        // Try direct lookup
+        if (git_reference_name_to_id(&source_oid, repo, sourceBranch.c_str()) != 0) {
+            git_repository_free(repo);
+            return false;
+        }
+    }
+
+    // Resolve target branch reference
+    std::string targetRef = "refs/heads/" + targetBranch;
+    git_reference *target_ref_obj = nullptr;
+    if (git_reference_lookup(&target_ref_obj, repo, targetRef.c_str()) != 0) {
+        git_repository_free(repo);
+        return false;
+    }
+
+    // Fast-forward or update reference
+    git_reference *new_ref = nullptr;
+    int error = git_reference_set_target(&new_ref, target_ref_obj, &source_oid, "Merge branch");
+    git_reference_free(target_ref_obj);
+
+    if (error < 0) {
+        const git_error *e = git_error_last();
+        std::cerr << "mergeBranch failed: " << (e ? e->message : "Unknown error") << std::endl;
+        git_repository_free(repo);
+        return false;
+    }
+
+    git_reference_free(new_ref);
+    git_repository_free(repo);
+    return true;
+}
+
+
 

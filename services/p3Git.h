@@ -70,6 +70,7 @@ public:
     virtual bool getGroups(const std::list<RsGxsGroupId> &groupIds, std::vector<RsGitGroup> &groups) override;
 
     virtual bool getUpdates(const RsGxsGroupId &groupId, std::vector<RsGitUpdate> &updates) override;
+    virtual bool getPullRequests(const RsGxsGroupId &groupId, std::vector<RsGitPullRequest> &pullRequests) override;
     virtual bool unpackUpdate(const RsGxsGroupId &groupId, const RsGxsMessageId &msgId, const RsFileHash &fileHash, const std::map<std::string, std::string> &refUpdates) override;
 
     virtual bool setMessageProcessedStatus(const RsGxsGrpMsgIdPair &msgId, bool processed) override;

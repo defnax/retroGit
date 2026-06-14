@@ -19,6 +19,7 @@
  *******************************************************************************/
 
 #include "MainWidget.h"
+#include "PullRequestsWidget.h"
 #include "GitGroupDialog.h"
 #include "ui_MainWidget.h"
 
@@ -493,6 +494,13 @@ void MainWidget::handleEvent_main_thread(std::shared_ptr<const RsEvent> event)
     if (mGitWidget) mGitWidget->handleGitEvent(e);
     if (mCodeWidget) mCodeWidget->handleGitEvent(e);
     if (mPushesWidget) mPushesWidget->handleGitEvent(e);
+
+    for (int i = 3; i < ui->rightPaneTabWidget->count(); ++i) {
+        PullRequestsWidget *prWidget = qobject_cast<PullRequestsWidget*>(ui->rightPaneTabWidget->widget(i));
+        if (prWidget) {
+            prWidget->refresh();
+        }
+    }
 }
 
 void MainWidget::groupListCustomPopupMenu(QPoint /*point*/)
@@ -563,13 +571,25 @@ void MainWidget::markRepositoryAsRead()
         return;
 
     RsThread::async([this, groupId]() {
-        std::vector<RsGitUpdate> updates;
-        if (rsGit && rsGit->getUpdates(RsGxsGroupId(groupId.toStdString()), updates)) {
-            for (const auto &update : updates) {
-                if (update.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) {
-                    rsGit->setMessageReadStatus(RsGxsGrpMsgIdPair(RsGxsGroupId(groupId.toStdString()), update.mMeta.mMsgId), true);
+        if (rsGit) {
+            std::vector<RsGitUpdate> updates;
+            if (rsGit->getUpdates(RsGxsGroupId(groupId.toStdString()), updates)) {
+                for (const auto &update : updates) {
+                    if (update.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) {
+                        rsGit->setMessageReadStatus(RsGxsGrpMsgIdPair(RsGxsGroupId(groupId.toStdString()), update.mMeta.mMsgId), true);
+                    }
                 }
             }
+
+            std::vector<RsGitPullRequest> pullRequests;
+            if (rsGit->getPullRequests(RsGxsGroupId(groupId.toStdString()), pullRequests)) {
+                for (const auto &pr : pullRequests) {
+                    if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) {
+                        rsGit->setMessageReadStatus(RsGxsGrpMsgIdPair(RsGxsGroupId(groupId.toStdString()), pr.mMeta.mMsgId), true);
+                    }
+                }
+            }
+
             RsQThreadUtils::postToObject([this]() {
                 refreshCurrentRepo();
                 loadGroupMeta();
@@ -1426,6 +1446,36 @@ void GxsIdTableItem::fillCallback(GxsIdDetailsType type, const RsIdentityDetails
     }
     item->setToolTip(t);
 }
+
+void MainWidget::showPullRequests(const QString &groupId)
+{
+    QString tabTitle = tr("Pull Requests");
+    int tabIndex = -1;
+    for (int i = 3; i < ui->rightPaneTabWidget->count(); ++i) {
+        PullRequestsWidget *prWidget = qobject_cast<PullRequestsWidget*>(ui->rightPaneTabWidget->widget(i));
+        if (prWidget) {
+            tabIndex = i;
+            break;
+        }
+    }
+
+    if (tabIndex != -1) {
+        ui->rightPaneTabWidget->setCurrentIndex(tabIndex);
+    } else {
+        PullRequestsWidget *prWidget = new PullRequestsWidget(groupId, this, ui->rightPaneTabWidget);
+        int newIndex = ui->rightPaneTabWidget->addTab(prWidget, QIcon(":/images/git-pull-request.png"), tabTitle);
+        ui->rightPaneTabWidget->setCurrentIndex(newIndex);
+    }
+
+    // Hide close buttons for the first three tabs
+    QTabBar *bar = ui->rightPaneTabWidget->findChild<QTabBar*>();
+    if (bar) {
+        bar->setTabButton(0, QTabBar::RightSide, nullptr);
+        bar->setTabButton(1, QTabBar::RightSide, nullptr);
+        bar->setTabButton(2, QTabBar::RightSide, nullptr);
+    }
+}
+
 
 
 

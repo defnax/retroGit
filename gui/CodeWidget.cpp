@@ -45,10 +45,17 @@ CodeWidget::CodeWidget(MainWidget *mainWidget, QWidget *parent)
     connect(ui->mRepoBrowserList, &QListWidget::itemDoubleClicked, this, &CodeWidget::openSelectedFile);
     connect(ui->mBtnOpenFolder, &QPushButton::clicked, this, &CodeWidget::onOpenFolderClicked);
     connect(ui->mBtnCreateBranch, &QPushButton::clicked, this, &CodeWidget::onCreateBranchClicked);
+    connect(ui->mBtnPullRequests, &QPushButton::clicked, this, &CodeWidget::onPullRequestsClicked);
     connect(ui->mBranchCombo, &QComboBox::currentTextChanged, this, &CodeWidget::onBranchComboChanged);
 
     int iconSize = qMax(fontMetrics().height(), 24);
     ui->mBranchCombo->setIconSize(QSize(iconSize, iconSize));
+
+    QIcon prIcon(":/images/git-pull-request.png");
+    ui->mBtnPullRequests->setIcon(prIcon);
+    ui->mBtnPullRequests->setIconSize(QSize(iconSize, iconSize));
+    ui->mBtnPullRequests->setStyleSheet("QPushButton { border: none; background-color: transparent; padding: 4px 8px; font-weight: bold; color: #24292f; }"
+                                       "QPushButton:hover { background-color: #f3f4f6; border-radius: 6px; }");
 
     clear();
 }
@@ -64,11 +71,13 @@ void CodeWidget::clear()
     ui->mBtnOpenFolder->setEnabled(false);
     ui->mBtnCreateBranch->setEnabled(false);
     ui->mBtnCreateBranch->setVisible(false);
-
+    ui->mBtnPullRequests->setText(tr("Pull requests (0)"));
+    ui->mBtnPullRequests->setEnabled(false);
 
     ui->mBranchCombo->blockSignals(true);
     ui->mBranchCombo->clear();
     ui->mBranchCombo->blockSignals(false);
+
 
     ui->mBranchCountLabel->setText("0 Branches");
     ui->mTagCountLabel->setText("0 Tags");
@@ -104,6 +113,20 @@ void CodeWidget::refresh()
     ui->mBtnOpenFolder->setEnabled(!rawPath.isEmpty() && QDir(rawPath).exists());
     ui->mBtnCreateBranch->setEnabled(isAdmin);
     ui->mBtnCreateBranch->setVisible(isAdmin);
+    ui->mBtnPullRequests->setEnabled(true);
+
+    // Fetch count of open pull requests
+    int openPRCount = 0;
+    std::vector<RsGitPullRequest> pullRequests;
+    if (rsGit && rsGit->getPullRequests(RsGxsGroupId(mGroupId.toStdString()), pullRequests)) {
+        for (const auto &pr : pullRequests) {
+            if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) {
+                openPRCount++;
+            }
+        }
+    }
+    ui->mBtnPullRequests->setText(tr("Pull requests (%1)").arg(openPRCount));
+
 
 
 
@@ -141,7 +164,7 @@ void CodeWidget::refresh()
 
         // Add tags to combo
         for (const std::string& tag : tags) {
-            ui->mBranchCombo->addItem(QIcon(":/images/tag_.png"), QString::fromStdString(tag));
+            ui->mBranchCombo->addItem(QIcon(":/images/tag.png"), QString::fromStdString(tag));
         }
     } else {
         ui->mTagCountLabel->setText(tr("0 Tags"));
@@ -306,4 +329,11 @@ void CodeWidget::onCreateBranchClicked()
         }
     }
 }
+
+void CodeWidget::onPullRequestsClicked()
+{
+    if (mGroupId.isEmpty()) return;
+    mMainWidget->showPullRequests(mGroupId);
+}
+
 

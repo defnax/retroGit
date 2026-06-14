@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>PullRequestsWidget</class>
+ <widget class="QWidget" name="PullRequestsWidget">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>600</width>
+    <height>400</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Pull Requests</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <property name="spacing">
+    <number>12</number>
+   </property>
+   <property name="leftMargin">
+    <number>16</number>
+   </property>
+   <property name="topMargin">
+    <number>16</number>
+   </property>
+   <property name="rightMargin">
+    <number>16</number>
+   </property>
+   <property name="bottomMargin">
+    <number>16</number>
+   </property>
+   <item>
+    <layout class="QHBoxLayout" name="topRowLayout">
+     <item>
+      <widget class="QLabel" name="mLblTitle">
+       <property name="text">
+        <string>Pull Requests</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="horizontalSpacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="mBtnNewPR">
+       <property name="text">
+        <string>New pull request</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="filterRowLayout">
+     <item>
+      <widget class="QLineEdit" name="mSearchEdit">
+       <property name="placeholderText">
+        <string>is:pr is:open</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="mLblOpenCount">
+       <property name="text">
+        <string>0 Open</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="mLblClosedCount">
+       <property name="text">
+        <string>0 Closed</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="mPRTable"/>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -70,6 +70,13 @@
        </widget>
       </item>
       <item>
+       <widget class="QPushButton" name="mBtnPullRequests">
+        <property name="text">
+         <string>Pull requests (0)</string>
+        </property>
+       </widget>
+      </item>
+      <item>
        <spacer name="horizontalSpacer">
         <property name="orientation">
          <enum>Qt::Horizontal</enum>

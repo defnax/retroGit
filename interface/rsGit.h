@@ -140,6 +140,11 @@ public:
     virtual bool getUpdates(const RsGxsGroupId &groupId, std::vector<RsGitUpdate> &updates) = 0;
 
     /**
+     * @brief Retrieve all pull requests for a group.
+     */
+    virtual bool getPullRequests(const RsGxsGroupId &groupId, std::vector<RsGitPullRequest> &pullRequests) = 0;
+
+    /**
      * @brief Manually unpack a downloaded packfile and update refs.
      */
     virtual bool unpackUpdate(const RsGxsGroupId &groupId, const RsGxsMessageId &msgId, const RsFileHash &fileHash, const std::map<std::string, std::string> &refUpdates) = 0;

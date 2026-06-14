@@ -639,6 +639,39 @@ bool p3Git::getUpdates(const RsGxsGroupId &groupId, std::vector<RsGitUpdate> &up
     return false;
 }
 
+bool p3Git::getPullRequests(const RsGxsGroupId &groupId, std::vector<RsGitPullRequest> &pullRequests)
+{
+    uint32_t token;
+    RsTokReqOptions opts;
+    opts.mReqType = GXS_REQUEST_TYPE_MSG_DATA;
+    std::list<RsGxsGroupId> groupIds = { groupId };
+    if (!requestMsgInfo(token, opts, groupIds) || waitToken(token) != RsTokenService::COMPLETE) {
+        return false;
+    }
+    std::map<RsGxsGroupId, std::vector<RsGitMsgItem*> > msgItems;
+    if (getMsgDataT<RsGitMsgItem>(token, msgItems)) {
+        auto &vec = msgItems[groupId];
+        for (auto *gitMsg : vec) {
+            if (gitMsg && gitMsg->mGitMsgType == 2) { // PULL_REQUEST
+                RsGitPullRequest pr;
+                pr.mMeta = gitMsg->meta;
+                pr.mTitle = gitMsg->mTitle;
+                pr.mDescription = gitMsg->mDescription;
+                pr.mTargetBranch = gitMsg->mTargetBranch;
+                pr.mSourceBranch = gitMsg->mSourceBranch;
+                pr.mPackfileData = gitMsg->mPackfileData;
+                pr.mStatus = gitMsg->mStatus;
+                pr.mFiles = gitMsg->mFiles;
+                pullRequests.push_back(pr);
+            }
+            delete gitMsg;
+        }
+        return true;
+    }
+    return false;
+}
+
+
 bool p3Git::unpackUpdate(const RsGxsGroupId &groupId, const RsGxsMessageId &msgId, const RsFileHash &fileHash, const std::map<std::string, std::string> &refUpdates)
 {
     std::string repoPath = GitManager::getBareRepoPath(groupId.toStdString());

@@ -94,6 +94,11 @@ public:
     static bool createBranch(const std::string& repoPath, const std::string& branchName, const std::string& sourceBranch);
 
     /**
+     * @brief Merge a source branch into a target branch (fast-forward reference update).
+     */
+    static bool mergeBranch(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch);
+
+    /**
      * @brief Retrieve the commit log from the repository.
      */
     static bool getCommitLog(const std::string& repoPath, std::vector<GitCommitInfo>& commits);

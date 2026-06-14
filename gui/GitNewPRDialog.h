@@ -1,5 +1,5 @@
 /*******************************************************************************
- * gui/CodeWidget.h                                                            *
+ * gui/GitNewPRDialog.h                                                        *
  *                                                                             *
  * Copyright (C) 2026 RetroShare Team <retroshare.project@gmail.com>           *
  *                                                                             *
@@ -16,49 +16,34 @@
  * You should have received a copy of the GNU Affero General Public License    *
  * along with this program. If not, see <https://www.gnu.org/licenses/>.       *
  *                                                                             *
- *******************************************************************************/
+ ********************************************************************************/
 
-#ifndef CODEWIDGET_H
-#define CODEWIDGET_H
+#ifndef GITNEWPRDIALOG_H
+#define GITNEWPRDIALOG_H
 
-#include <QWidget>
-#include <QString>
-#include "interface/rsGit.h"
+#include <QDialog>
+#include <QStringList>
 
-namespace Ui {
-class CodeWidget;
-}
+class QLineEdit;
+class QTextEdit;
+class QComboBox;
 
-class MainWidget;
-
-class CodeWidget : public QWidget
+class GitNewPRDialog : public QDialog
 {
     Q_OBJECT
-
 public:
-    explicit CodeWidget(MainWidget *mainWidget, QWidget *parent = nullptr);
-    ~CodeWidget();
+    explicit GitNewPRDialog(const QStringList& branches, const QString& currentBranch, QWidget *parent = nullptr);
 
-    void setGroupId(const QString &groupId);
-    void handleGitEvent(const RsGitEvent *e);
-    void clear();
-    void refresh();
-
-private slots:
-    void onOpenFolderClicked();
-    void openSelectedFile();
-    void onRepoBrowserContextMenu(const QPoint &pos);
-    void onBranchComboChanged(const QString &text);
-    void onCreateBranchClicked();
-    void onPullRequestsClicked();
+    QString getTitle() const;
+    QString getDescription() const;
+    QString getSourceBranch() const;
+    QString getTargetBranch() const;
 
 private:
-    void populateRepoBrowser(const QString &branchOrTag = "");
-
-    Ui::CodeWidget *ui;
-    MainWidget *mMainWidget;
-    QString mGroupId;
-    QString mSelectedBranchOrTag;
+    QLineEdit *mTitleEdit;
+    QTextEdit *mDescEdit;
+    QComboBox *mSourceCombo;
+    QComboBox *mTargetCombo;
 };
 
-#endif // CODEWIDGET_H
+#endif // GITNEWPRDIALOG_H

@@ -85,6 +85,7 @@ public:
     void showCommitDetails(const QString &commitHash, const QString &repoPath);
     void hideCommitDetails();
     void showDiffForCommit(const QString &commitHash);
+    void showPullRequests(const QString &groupId);
     void markRepositoryAsRead();
     void triggerTreeSelectionChanged();
     QString getLocalPath() const;
