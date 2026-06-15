@@ -214,7 +214,7 @@ bool GitManager::createPackfile(const std::string& repoPath, std::string& outPac
     return error == 0;
 }
 
-bool GitManager::getCommitLog(const std::string &repoPath, std::vector<GitCommitInfo> &commits) {
+bool GitManager::getCommitLog(const std::string &repoPath, std::vector<GitCommitInfo> &commits, const std::string& branchOrTag) {
     std::string normPath = normalizePath(repoPath);
     git_repository *repo = nullptr;
     if (git_repository_open(&repo, normPath.c_str()) != 0) {
@@ -229,18 +229,39 @@ bool GitManager::getCommitLog(const std::string &repoPath, std::vector<GitCommit
 
     git_revwalk_sorting(walker, GIT_SORT_TIME);
     
-    // Push HEAD to start walking
-    if (git_revwalk_push_head(walker) != 0) {
-        // Fallback: try to push refs/heads/master or refs/heads/main if HEAD is not resolved
-        git_oid branch_oid;
-        if (git_reference_name_to_id(&branch_oid, repo, "refs/heads/master") == 0) {
-            git_revwalk_push(walker, &branch_oid);
-        } else if (git_reference_name_to_id(&branch_oid, repo, "refs/heads/main") == 0) {
-            git_revwalk_push(walker, &branch_oid);
+    bool pushed = false;
+    if (!branchOrTag.empty()) {
+        git_oid oid;
+        std::string refName = branchOrTag;
+        if (refName.rfind("refs/", 0) != 0) {
+            if (git_reference_name_to_id(&oid, repo, ("refs/heads/" + refName).c_str()) == 0) {
+                if (git_revwalk_push(walker, &oid) == 0) pushed = true;
+            } else if (git_reference_name_to_id(&oid, repo, ("refs/tags/" + refName).c_str()) == 0) {
+                if (git_revwalk_push(walker, &oid) == 0) pushed = true;
+            } else if (git_reference_name_to_id(&oid, repo, ("refs/remotes/origin/" + refName).c_str()) == 0) {
+                if (git_revwalk_push(walker, &oid) == 0) pushed = true;
+            }
         } else {
-            git_revwalk_free(walker);
-            git_repository_free(repo);
-            return true;
+            if (git_reference_name_to_id(&oid, repo, refName.c_str()) == 0) {
+                if (git_revwalk_push(walker, &oid) == 0) pushed = true;
+            }
+        }
+    }
+
+    if (!pushed) {
+        // Push HEAD to start walking
+        if (git_revwalk_push_head(walker) != 0) {
+            // Fallback: try to push refs/heads/master or refs/heads/main if HEAD is not resolved
+            git_oid branch_oid;
+            if (git_reference_name_to_id(&branch_oid, repo, "refs/heads/master") == 0) {
+                git_revwalk_push(walker, &branch_oid);
+            } else if (git_reference_name_to_id(&branch_oid, repo, "refs/heads/main") == 0) {
+                git_revwalk_push(walker, &branch_oid);
+            } else {
+                git_revwalk_free(walker);
+                git_repository_free(repo);
+                return true;
+            }
         }
     }
 
@@ -270,6 +291,41 @@ bool GitManager::getCommitLog(const std::string &repoPath, std::vector<GitCommit
             commits.push_back(info);
             git_commit_free(commit);
         }
+    }
+
+    git_revwalk_free(walker);
+    git_repository_free(repo);
+    return true;
+}
+
+bool GitManager::getAllCommitShas(const std::string& repoPath, std::set<std::string>& shas)
+{
+    std::string normPath = normalizePath(repoPath);
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normPath.c_str()) != 0) {
+        return false;
+    }
+
+    git_revwalk *walker = nullptr;
+    if (git_revwalk_new(&walker, repo) != 0) {
+        git_repository_free(repo);
+        return false;
+    }
+
+    git_revwalk_sorting(walker, GIT_SORT_TIME);
+
+    // Push all refs under refs/* to walk everything
+    if (git_revwalk_push_glob(walker, "refs/*") != 0) {
+        git_revwalk_free(walker);
+        git_repository_free(repo);
+        return true; // Return true as repo might be empty/has no refs yet
+    }
+
+    git_oid oid;
+    char oid_str[GIT_OID_HEXSZ + 1];
+    while (git_revwalk_next(&oid, walker) == 0) {
+        git_oid_tostr(oid_str, sizeof(oid_str), &oid);
+        shas.insert(std::string(oid_str));
     }
 
     git_revwalk_free(walker);
@@ -354,7 +410,7 @@ bool GitManager::getRepoFiles(const std::string& repoPath, std::vector<std::stri
     return true;
 }
 
-bool GitManager::commitChanges(const std::string& repoPath, const std::string& commitMessage, const std::string& authorName, const std::string& authorEmail)
+bool GitManager::commitChanges(const std::string& repoPath, const std::string& commitMessage, const std::string& authorName, const std::string& authorEmail, const std::string& targetBranch)
 {
     std::string normPath = normalizePath(repoPath);
     git_repository *repo = NULL;
@@ -413,7 +469,24 @@ bool GitManager::commitChanges(const std::string& repoPath, const std::string& c
     int parent_count = 0;
     const git_commit *parents[1] = { NULL };
 
-    if (git_reference_name_to_id(&parent_id, repo, "HEAD") == 0) {
+    std::string refName = targetBranch.empty() ? "HEAD" : ("refs/heads/" + targetBranch);
+    git_oid target_branch_oid;
+    
+    // Check if local branch reference exists
+    if (git_reference_name_to_id(&target_branch_oid, repo, refName.c_str()) != 0) {
+        // Local branch does not exist! Let's check if the remote-tracking branch exists
+        std::string remoteRefName = "refs/remotes/origin/" + targetBranch;
+        git_oid remote_branch_oid;
+        if (git_reference_name_to_id(&remote_branch_oid, repo, remoteRefName.c_str()) == 0) {
+            // Yes! Let's create the local branch reference pointing to the remote OID
+            git_reference *new_ref = nullptr;
+            if (git_reference_create(&new_ref, repo, refName.c_str(), &remote_branch_oid, 0, nullptr) == 0) {
+                git_reference_free(new_ref);
+            }
+        }
+    }
+
+    if (git_reference_name_to_id(&parent_id, repo, refName.c_str()) == 0) {
         if (git_commit_lookup(&parent, repo, &parent_id) == 0) {
             parents[0] = parent;
             parent_count = 1;
@@ -424,7 +497,7 @@ bool GitManager::commitChanges(const std::string& repoPath, const std::string& c
     error = git_commit_create(
         &commit_id,
         repo,
-        "HEAD",
+        refName.c_str(),
         sig,
         sig,
         NULL,
@@ -440,6 +513,49 @@ bool GitManager::commitChanges(const std::string& repoPath, const std::string& c
     git_repository_free(repo);
 
     return error == 0;
+}
+
+bool GitManager::discardLocalChanges(const std::string& repoPath)
+{
+    std::string normPath = normalizePath(repoPath);
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normPath.c_str()) != 0) {
+        return false;
+    }
+
+    git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
+    opts.checkout_strategy = GIT_CHECKOUT_FORCE | GIT_CHECKOUT_RECREATE_MISSING;
+
+    int err = git_checkout_head(repo, &opts);
+    git_repository_free(repo);
+    return err == 0;
+}
+
+bool GitManager::checkoutBranch(const std::string& repoPath, const std::string& branchName)
+{
+    std::string normPath = normalizePath(repoPath);
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normPath.c_str()) != 0) {
+        return false;
+    }
+
+    std::string refName = "refs/heads/" + branchName;
+    git_reference *ref = nullptr;
+    if (git_reference_lookup(&ref, repo, refName.c_str()) != 0) {
+        git_repository_free(repo);
+        return false;
+    }
+    git_reference_free(ref);
+
+    int err = git_repository_set_head(repo, refName.c_str());
+    if (err == 0) {
+        git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
+        opts.checkout_strategy = GIT_CHECKOUT_SAFE;
+        err = git_checkout_head(repo, &opts);
+    }
+
+    git_repository_free(repo);
+    return err == 0;
 }
 
 bool GitManager::getCommitDetails(const std::string& repoPath, const std::string& commitHash,
@@ -1066,6 +1182,237 @@ bool GitManager::mergeBranch(const std::string& repoPath, const std::string& sou
     }
 
     git_reference_free(new_ref);
+    git_repository_free(repo);
+    return true;
+}
+
+bool GitManager::getCommitsBetweenBranches(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch, std::vector<GitCommitInfo>& commits)
+{
+    std::string normPath = normalizePath(repoPath);
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normPath.c_str()) != 0) {
+        return false;
+    }
+
+    git_revwalk *walker = nullptr;
+    if (git_revwalk_new(&walker, repo) != 0) {
+        git_repository_free(repo);
+        return false;
+    }
+
+    git_revwalk_sorting(walker, GIT_SORT_TIME);
+
+    git_oid target_oid;
+    git_oid source_oid;
+
+    std::string targetRef = "refs/heads/" + targetBranch;
+    if (git_reference_name_to_id(&target_oid, repo, targetRef.c_str()) != 0) {
+        if (git_reference_name_to_id(&target_oid, repo, targetBranch.c_str()) != 0) {
+            git_revwalk_free(walker);
+            git_repository_free(repo);
+            return false;
+        }
+    }
+
+    std::string sourceRef = "refs/heads/" + sourceBranch;
+    if (git_reference_name_to_id(&source_oid, repo, sourceRef.c_str()) != 0) {
+        if (git_reference_name_to_id(&source_oid, repo, sourceBranch.c_str()) != 0) {
+            git_revwalk_free(walker);
+            git_repository_free(repo);
+            return false;
+        }
+    }
+
+    git_revwalk_push(walker, &source_oid);
+    git_revwalk_hide(walker, &target_oid);
+
+    git_oid oid;
+    while (git_revwalk_next(&oid, walker) == 0 && commits.size() < 100) {
+        git_commit *commit = nullptr;
+        if (git_commit_lookup(&commit, repo, &oid) == 0) {
+            GitCommitInfo info;
+            char oid_str[GIT_OID_HEXSZ + 1];
+            git_oid_tostr(oid_str, sizeof(oid_str), &oid);
+            info.hash = std::string(oid_str, 8); // Short hash
+            info.full_hash = std::string(oid_str);
+            
+            const char *summary = git_commit_summary(commit);
+            info.message = summary ? summary : "";
+            
+            const git_signature *sig = git_commit_author(commit);
+            if (sig) {
+                info.author = sig->name ? sig->name : "";
+                
+                std::time_t t = sig->when.time;
+                char buf[64];
+                std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", std::localtime(&t));
+                info.date = buf;
+            }
+            
+            commits.push_back(info);
+            git_commit_free(commit);
+        }
+    }
+
+    git_revwalk_free(walker);
+    git_repository_free(repo);
+    return true;
+}
+
+bool GitManager::getPRChangedFiles(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch, std::vector<std::string>& changedFiles)
+{
+    std::cerr << "RetroGit [DEBUG]: getPRChangedFiles started. RepoPath: " << repoPath << ", source: " << sourceBranch << ", target: " << targetBranch << std::endl;
+    std::string normPath = normalizePath(repoPath);
+    git_repository *repo = nullptr;
+    int err = git_repository_open(&repo, normPath.c_str());
+    if (err != 0) {
+        std::cerr << "RetroGit [ERROR]: getPRChangedFiles failed to open repo, err=" << err << std::endl;
+        return false;
+    }
+
+    git_oid target_oid;
+    git_oid source_oid;
+
+    std::string targetRef = "refs/heads/" + targetBranch;
+    if (git_reference_name_to_id(&target_oid, repo, targetRef.c_str()) != 0) {
+        if (git_reference_name_to_id(&target_oid, repo, targetBranch.c_str()) != 0) {
+            std::cerr << "RetroGit [ERROR]: getPRChangedFiles failed to find target ref " << targetBranch << std::endl;
+            git_repository_free(repo);
+            return false;
+        }
+    }
+
+    std::string sourceRef = "refs/heads/" + sourceBranch;
+    if (git_reference_name_to_id(&source_oid, repo, sourceRef.c_str()) != 0) {
+        if (git_reference_name_to_id(&source_oid, repo, sourceBranch.c_str()) != 0) {
+            std::cerr << "RetroGit [ERROR]: getPRChangedFiles failed to find source ref " << sourceBranch << std::endl;
+            git_repository_free(repo);
+            return false;
+        }
+    }
+
+    char target_hex[GIT_OID_HEXSZ + 1];
+    char source_hex[GIT_OID_HEXSZ + 1];
+    git_oid_tostr(target_hex, sizeof(target_hex), &target_oid);
+    git_oid_tostr(source_hex, sizeof(source_hex), &source_oid);
+    std::cerr << "RetroGit [DEBUG]: target_oid=" << target_hex << ", source_oid=" << source_hex << std::endl;
+
+    git_oid merge_base_oid;
+    if (git_merge_base(&merge_base_oid, repo, &target_oid, &source_oid) != 0) {
+        std::cerr << "RetroGit [DEBUG]: git_merge_base failed, using target_oid as fallback base" << std::endl;
+        merge_base_oid = target_oid;
+    } else {
+        char base_hex[GIT_OID_HEXSZ + 1];
+        git_oid_tostr(base_hex, sizeof(base_hex), &merge_base_oid);
+        std::cerr << "RetroGit [DEBUG]: merge_base_oid=" << base_hex << std::endl;
+    }
+
+    git_commit *base_commit = nullptr;
+    git_tree *base_tree = nullptr;
+    if (git_commit_lookup(&base_commit, repo, &merge_base_oid) == 0) {
+        git_commit_tree(&base_tree, base_commit);
+    } else {
+        std::cerr << "RetroGit [WARNING]: base commit lookup failed for OID" << std::endl;
+    }
+
+    git_commit *source_commit = nullptr;
+    git_tree *source_tree = nullptr;
+    if (git_commit_lookup(&source_commit, repo, &source_oid) == 0) {
+        git_commit_tree(&source_tree, source_commit);
+    } else {
+        std::cerr << "RetroGit [WARNING]: source commit lookup failed for OID" << std::endl;
+    }
+
+    git_diff *diff = nullptr;
+    err = git_diff_tree_to_tree(&diff, repo, base_tree, source_tree, nullptr);
+    if (err == 0) {
+        size_t num_deltas = git_diff_num_deltas(diff);
+        std::cerr << "RetroGit [DEBUG]: git_diff_tree_to_tree succeeded, num_deltas=" << num_deltas << std::endl;
+        for (size_t i = 0; i < num_deltas; ++i) {
+            const git_diff_delta *delta = git_diff_get_delta(diff, i);
+            if (delta) {
+                std::string path = delta->new_file.path ? delta->new_file.path : "";
+                if (path.empty() && delta->old_file.path) {
+                    path = delta->old_file.path;
+                }
+                if (!path.empty()) {
+                    changedFiles.push_back(path);
+                }
+            }
+        }
+        git_diff_free(diff);
+    }
+
+    if (base_tree) git_tree_free(base_tree);
+    if (base_commit) git_commit_free(base_commit);
+    if (source_tree) git_tree_free(source_tree);
+    if (source_commit) git_commit_free(source_commit);
+    git_repository_free(repo);
+    return true;
+}
+
+bool GitManager::getPRFileDiff(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch, const std::string& relativePath, std::vector<GitDiffLine>& diffLines)
+{
+    std::string normPath = normalizePath(repoPath);
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normPath.c_str()) != 0) {
+        return false;
+    }
+
+    git_oid target_oid;
+    git_oid source_oid;
+
+    std::string targetRef = "refs/heads/" + targetBranch;
+    if (git_reference_name_to_id(&target_oid, repo, targetRef.c_str()) != 0) {
+        if (git_reference_name_to_id(&target_oid, repo, targetBranch.c_str()) != 0) {
+            git_repository_free(repo);
+            return false;
+        }
+    }
+
+    std::string sourceRef = "refs/heads/" + sourceBranch;
+    if (git_reference_name_to_id(&source_oid, repo, sourceRef.c_str()) != 0) {
+        if (git_reference_name_to_id(&source_oid, repo, sourceBranch.c_str()) != 0) {
+            git_repository_free(repo);
+            return false;
+        }
+    }
+
+    git_oid merge_base_oid;
+    if (git_merge_base(&merge_base_oid, repo, &target_oid, &source_oid) != 0) {
+        merge_base_oid = target_oid;
+    }
+
+    git_commit *base_commit = nullptr;
+    git_tree *base_tree = nullptr;
+    if (git_commit_lookup(&base_commit, repo, &merge_base_oid) == 0) {
+        git_commit_tree(&base_tree, base_commit);
+    }
+
+    git_commit *source_commit = nullptr;
+    git_tree *source_tree = nullptr;
+    if (git_commit_lookup(&source_commit, repo, &source_oid) == 0) {
+        git_commit_tree(&source_tree, source_commit);
+    }
+
+    git_diff *diff = nullptr;
+    git_diff_options opts = GIT_DIFF_OPTIONS_INIT;
+    opts.context_lines = 3;
+    opts.pathspec.count = 1;
+    char *paths[1] = { const_cast<char*>(relativePath.c_str()) };
+    opts.pathspec.strings = paths;
+
+    if (git_diff_tree_to_tree(&diff, repo, base_tree, source_tree, &opts) == 0) {
+        DiffCallbackPayload payload;
+        payload.lines = &diffLines;
+        git_diff_print(diff, GIT_DIFF_FORMAT_PATCH, file_diff_line_cb, &payload);
+        git_diff_free(diff);
+    }
+
+    if (base_tree) git_tree_free(base_tree);
+    if (base_commit) git_commit_free(base_commit);
+    if (source_tree) git_tree_free(source_tree);
+    if (source_commit) git_commit_free(source_commit);
     git_repository_free(repo);
     return true;
 }

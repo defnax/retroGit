@@ -1,5 +1,5 @@
 /*******************************************************************************
- * gui/CodeWidget.h                                                            *
+ * gui/PullRequestDetailsWidget.h                                              *
  *                                                                             *
  * Copyright (C) 2026 RetroShare Team <retroshare.project@gmail.com>           *
  *                                                                             *
@@ -16,50 +16,49 @@
  * You should have received a copy of the GNU Affero General Public License    *
  * along with this program. If not, see <https://www.gnu.org/licenses/>.       *
  *                                                                             *
- *******************************************************************************/
+ ********************************************************************************/
 
-#ifndef CODEWIDGET_H
-#define CODEWIDGET_H
+#ifndef PULLREQUESTDETAILSWIDGET_H
+#define PULLREQUESTDETAILSWIDGET_H
 
 #include <QWidget>
 #include <QString>
 #include "interface/rsGit.h"
 
 namespace Ui {
-class CodeWidget;
+class PullRequestDetailsWidget;
 }
 
 class MainWidget;
 
-class CodeWidget : public QWidget
+class PullRequestDetailsWidget : public QWidget
 {
     Q_OBJECT
 
 public:
-    explicit CodeWidget(MainWidget *mainWidget, QWidget *parent = nullptr);
-    ~CodeWidget();
+    explicit PullRequestDetailsWidget(const QString &groupId, const RsGxsMessageId &msgId, MainWidget *mainWidget, QWidget *parent = nullptr);
+    ~PullRequestDetailsWidget();
 
-    void setGroupId(const QString &groupId);
-    void handleGitEvent(const RsGitEvent *e);
-    void clear();
     void refresh();
-    QString getSelectedBranchOrTag() const { return mSelectedBranchOrTag; }
+    const RsGxsMessageId& getMsgId() const { return mMsgId; }
 
 private slots:
-    void onOpenFolderClicked();
-    void openSelectedFile();
-    void onRepoBrowserContextMenu(const QPoint &pos);
-    void onBranchComboChanged(const QString &text);
-    void onCreateBranchClicked();
-    void onPullRequestsClicked();
+    void onMergeClicked();
+    void onFileSelectionChanged();
 
 private:
-    void populateRepoBrowser(const QString &branchOrTag = "");
+    void loadPRDetails();
+    void populateConversationTab();
+    void populateFilesChangedTab();
+    bool selectFirstFileItem(class QTreeWidgetItem *item);
 
-    Ui::CodeWidget *ui;
+    Ui::PullRequestDetailsWidget *ui;
     MainWidget *mMainWidget;
     QString mGroupId;
-    QString mSelectedBranchOrTag;
+    RsGxsMessageId mMsgId;
+
+    RsGitPullRequest mPR;
+    bool mLoaded;
 };
 
-#endif // CODEWIDGET_H
+#endif // PULLREQUESTDETAILSWIDGET_H

@@ -25,6 +25,7 @@
 #include "gui/settings/rsharesettings.h"
 #include "gui/common/FilesDefs.h"
 #include "GitCommitDialog.h"
+#include "CodeWidget.h"
 
 #include <QFileDialog>
 #include <QDir>
@@ -303,12 +304,52 @@ void GitWidget::onCommitClicked()
     RsIdentityDetails details;
     if (rsIdentity && rsIdentity->getIdDetails(ownId, details)) {
         authorName = details.mNickname;
+        authorEmail = details.mNickname + "@" + ownId.toStdString();
     }
 
-    GitCommitDialog diag(QString::fromStdString(authorName), QString::fromStdString(authorEmail), this);
+    // 1. Fetch branches from bare repository (source of truth for the project)
+    std::string barePath = GitManager::getBareRepoPath(mGroupId.toStdString());
+    std::vector<std::string> branches;
+    std::string currentBranch;
+    GitManager::getBranches(barePath, branches, currentBranch);
+
+    // 2. Fetch current active branch from the local working directory
+    std::vector<std::string> localBranches;
+    std::string localCurrentBranch;
+    GitManager::getBranches(localPath.toStdString(), localBranches, localCurrentBranch);
+    if (!localCurrentBranch.empty()) {
+        currentBranch = localCurrentBranch;
+    }
+
+    QStringList qBranches;
+    for (const auto& b : branches) {
+        qBranches.append(QString::fromStdString(b));
+    }
+    // Also include any local-only branches if they exist
+    for (const auto& b : localBranches) {
+        QString qb = QString::fromStdString(b);
+        if (!qBranches.contains(qb)) {
+            qBranches.append(qb);
+        }
+    }
+
+    GitCommitDialog diag(QString::fromStdString(authorName), QString::fromStdString(authorEmail),
+                         ownId, qBranches, QString::fromStdString(currentBranch), this);
     if (diag.exec() == QDialog::Accepted) {
         QString msg = diag.getCommitMessage();
-        if (GitManager::commitChanges(localPath.toStdString(), msg.toStdString(), authorName, authorEmail)) {
+        QString name = diag.getAuthorName();
+        QString email = diag.getAuthorEmail();
+        QString targetBranch = diag.getTargetBranch();
+
+        if (GitManager::commitChanges(localPath.toStdString(), msg.toStdString(),
+                                      name.toStdString(), email.toStdString(),
+                                      targetBranch.toStdString())) {
+            
+            // If the user selected a different branch than they were currently on, checkout that branch!
+            if (!targetBranch.isEmpty() && targetBranch.toStdString() != localCurrentBranch) {
+                GitManager::checkoutBranch(localPath.toStdString(), targetBranch.toStdString());
+            }
+
             QMessageBox::information(this, tr("Commit Successful"), tr("Local changes committed successfully."));
             refresh();
             mMainWidget->updateDisplay();
@@ -420,19 +461,44 @@ void GitWidget::onCommitTableContextMenu(const QPoint &pos)
     QTableWidgetItem *item = ui->mCommitTable->itemAt(pos);
     if (!item) return;
 
+    int row = item->row();
+    QTableWidgetItem *hashItem = ui->mCommitTable->item(row, 0);
+    if (!hashItem) return;
+
+    QString fullHash = hashItem->data(Qt::UserRole).toString();
+    if (fullHash.isEmpty()) fullHash = hashItem->text();
+
     QMenu menu(this);
-    QAction *actionDiff = menu.addAction(tr("Show Commit Diff"));
-    QAction *actionMarkRead = menu.addAction(tr("Mark Repository As Read"));
+    QAction *actionDiff = nullptr;
+    QAction *actionDiscard = nullptr;
+    QAction *actionMarkRead = nullptr;
+
+    if (fullHash == "LOCAL_CHANGES") {
+        actionDiff = menu.addAction(tr("Show Diff of Local Changes"));
+        actionDiscard = menu.addAction(tr("Discard Changes"));
+    } else {
+        actionDiff = menu.addAction(tr("Show Commit Diff"));
+        actionMarkRead = menu.addAction(tr("Mark Repository As Read"));
+    }
 
     QAction *selected = menu.exec(ui->mCommitTable->mapToGlobal(pos));
+    if (!selected) return;
+
     if (selected == actionDiff) {
-        int row = item->row();
-        QTableWidgetItem *hashItem = ui->mCommitTable->item(row, 0);
-        if (hashItem) {
-            QString fullHash = hashItem->data(Qt::UserRole).toString();
-            if (fullHash.isEmpty()) fullHash = hashItem->text();
-            if (fullHash != "LOCAL_CHANGES") {
-                mMainWidget->showDiffForCommit(fullHash);
+        mMainWidget->showDiffForCommit(fullHash);
+    } else if (selected == actionDiscard) {
+        QString localPath = ui->mLocalPathEdit->text().trimmed();
+        if (!localPath.isEmpty()) {
+            if (QMessageBox::question(this, tr("Discard Changes"),
+                                      tr("Are you sure you want to discard all local uncommitted changes? This action cannot be undone."),
+                                      QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
+                if (GitManager::discardLocalChanges(localPath.toStdString())) {
+                    QMessageBox::information(this, tr("Success"), tr("Local uncommitted changes discarded successfully."));
+                    refresh();
+                    mMainWidget->updateDisplay();
+                } else {
+                    QMessageBox::critical(this, tr("Error"), tr("Failed to discard local changes. Check file permissions."));
+                }
             }
         }
     } else if (selected == actionMarkRead) {
@@ -464,8 +530,16 @@ void GitWidget::populateCommitLog()
         }
     }
 
+    std::string selectedBranch = "";
+    if (mMainWidget) {
+        CodeWidget *codeWidget = mMainWidget->getCodeWidget();
+        if (codeWidget) {
+            selectedBranch = codeWidget->getSelectedBranchOrTag().toStdString();
+        }
+    }
+
     std::vector<GitCommitInfo> commits;
-    bool gotLog = GitManager::getCommitLog(repoPath, commits);
+    bool gotLog = GitManager::getCommitLog(repoPath, commits, selectedBranch);
 
     std::vector<GitLocalChange> localChanges;
     bool hasLocalChanges = false;
@@ -485,6 +559,13 @@ void GitWidget::populateCommitLog()
         rsGit->getUpdates(RsGxsGroupId(mGroupId.toStdString()), updates);
     }
 
+    std::set<std::string> allRepoCommitShas;
+    std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
+    GitManager::getAllCommitShas(bareRepoPath, allRepoCommitShas);
+    if (repoPath != bareRepoPath) {
+        GitManager::getAllCommitShas(repoPath, allRepoCommitShas);
+    }
+
     std::vector<RsGitUpdate> undownloadedUpdates;
     std::set<std::string> unreadCommitShas;
     std::map<std::string, std::pair<RsGxsMessageId, bool>> commitToMsgId;
@@ -501,7 +582,7 @@ void GitWidget::populateCommitLog()
             if (isUnread) {
                 unreadCommitShas.insert(pair.second);
             }
-            if (localCommitShas.count(pair.second)) {
+            if (localCommitShas.count(pair.second) || allRepoCommitShas.count(pair.second)) {
                 isDownloaded = true;
             }
         }

@@ -8,6 +8,7 @@
 		<file>images/git-branch-2.png</file>
 		<file>images/tag.png</file>
 		<file>images/git-pull-request.png</file>
+		<file>images/git-pull-request-green.png</file>
 		<file>images/git-merge.png</file>
     </qresource>
 </RCC>

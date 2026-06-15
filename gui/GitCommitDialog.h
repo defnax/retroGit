@@ -22,25 +22,38 @@
 #define GITCOMMITDIALOG_H
 
 #include <QDialog>
+#include <QStringList>
+#include "interface/rsGit.h"
 
 class QLineEdit;
 class QTextEdit;
 class QLabel;
+class QComboBox;
+class GxsIdChooser;
 
 class GitCommitDialog : public QDialog
 {
     Q_OBJECT
 public:
-    explicit GitCommitDialog(const QString& defaultAuthor, const QString& defaultEmail, QWidget *parent = nullptr);
+    explicit GitCommitDialog(const QString& defaultAuthor, const QString& defaultEmail,
+                             const RsGxsId& defaultOwnId,
+                             const QStringList& branches, const QString& currentBranch,
+                             QWidget *parent = nullptr);
 
     QString getCommitMessage() const;
     QString getAuthorName() const;
     QString getAuthorEmail() const;
+    QString getTargetBranch() const;
+
+private slots:
+    void onIdentityChanged(int index = -1);
 
 private:
+    GxsIdChooser *mIdChooser;
     QLineEdit *mAuthorEdit;
     QLineEdit *mEmailEdit;
     QLabel *mDateLabel;
+    QComboBox *mBranchCombo;
     QTextEdit *mMsgEdit;
 };
 

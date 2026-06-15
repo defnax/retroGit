@@ -86,10 +86,13 @@ public:
     void hideCommitDetails();
     void showDiffForCommit(const QString &commitHash);
     void showPullRequests(const QString &groupId);
+    void showPullRequestDetails(const QString &groupId, const RsGxsMessageId &msgId);
     void markRepositoryAsRead();
     void triggerTreeSelectionChanged();
     QString getLocalPath() const;
     QString getSelectedGroupId() const;
+    class GitWidget* getGitWidget() const { return mGitWidget; }
+    class CodeWidget* getCodeWidget() const { return mCodeWidget; }
 
 public slots:
     void updateDisplay();

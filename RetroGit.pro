@@ -63,6 +63,7 @@ SOURCES = RetroGitPlugin.cpp               \
           gui/GitWidget.cpp \
           gui/CodeWidget.cpp \
           gui/PullRequestsWidget.cpp \
+          gui/PullRequestDetailsWidget.cpp \
           gui/PushesWidget.cpp
 
 HEADERS = RetroGitPlugin.h                 \
@@ -80,6 +81,7 @@ HEADERS = RetroGitPlugin.h                 \
           gui/GitWidget.h \
           gui/CodeWidget.h \
           gui/PullRequestsWidget.h \
+          gui/PullRequestDetailsWidget.h \
           gui/PushesWidget.h
 
 FORMS += \
@@ -87,6 +89,7 @@ FORMS += \
           gui/GitWidget.ui \
           gui/CodeWidget.ui \
           gui/PullRequestsWidget.ui \
+          gui/PullRequestDetailsWidget.ui \
           gui/PushesWidget.ui \
 
 RESOURCES = gui/images.qrc

@@ -20,6 +20,8 @@
 
 #include "MainWidget.h"
 #include "PullRequestsWidget.h"
+#include "PullRequestDetailsWidget.h"
+#include "GitCommitDialog.h"
 #include "GitGroupDialog.h"
 #include "ui_MainWidget.h"
 
@@ -499,6 +501,10 @@ void MainWidget::handleEvent_main_thread(std::shared_ptr<const RsEvent> event)
         PullRequestsWidget *prWidget = qobject_cast<PullRequestsWidget*>(ui->rightPaneTabWidget->widget(i));
         if (prWidget) {
             prWidget->refresh();
+        }
+        PullRequestDetailsWidget *prdWidget = qobject_cast<PullRequestDetailsWidget*>(ui->rightPaneTabWidget->widget(i));
+        if (prdWidget) {
+            prdWidget->refresh();
         }
     }
 }
@@ -1464,6 +1470,35 @@ void MainWidget::showPullRequests(const QString &groupId)
     } else {
         PullRequestsWidget *prWidget = new PullRequestsWidget(groupId, this, ui->rightPaneTabWidget);
         int newIndex = ui->rightPaneTabWidget->addTab(prWidget, QIcon(":/images/git-pull-request.png"), tabTitle);
+        ui->rightPaneTabWidget->setCurrentIndex(newIndex);
+    }
+
+    // Hide close buttons for the first three tabs
+    QTabBar *bar = ui->rightPaneTabWidget->findChild<QTabBar*>();
+    if (bar) {
+        bar->setTabButton(0, QTabBar::RightSide, nullptr);
+        bar->setTabButton(1, QTabBar::RightSide, nullptr);
+        bar->setTabButton(2, QTabBar::RightSide, nullptr);
+    }
+}
+
+void MainWidget::showPullRequestDetails(const QString &groupId, const RsGxsMessageId &msgId)
+{
+    QString tabTitle = tr("PR: %1").arg(QString::fromStdString(msgId.toStdString().substr(0, 8)));
+    int tabIndex = -1;
+    for (int i = 3; i < ui->rightPaneTabWidget->count(); ++i) {
+        PullRequestDetailsWidget *prdWidget = qobject_cast<PullRequestDetailsWidget*>(ui->rightPaneTabWidget->widget(i));
+        if (prdWidget && prdWidget->getMsgId() == msgId) {
+            tabIndex = i;
+            break;
+        }
+    }
+
+    if (tabIndex != -1) {
+        ui->rightPaneTabWidget->setCurrentIndex(tabIndex);
+    } else {
+        PullRequestDetailsWidget *prdWidget = new PullRequestDetailsWidget(groupId, msgId, this, ui->rightPaneTabWidget);
+        int newIndex = ui->rightPaneTabWidget->addTab(prdWidget, QIcon(":/images/git-pull-request.png"), tabTitle);
         ui->rightPaneTabWidget->setCurrentIndex(newIndex);
     }
 

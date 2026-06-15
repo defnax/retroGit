@@ -24,6 +24,7 @@
 #include <string>
 #include <map>
 #include <vector>
+#include <set>
 #include <git2.h>
 
 struct GitCommitInfo {
@@ -86,7 +87,17 @@ public:
     /**
      * @brief Commit all changes in the working directory.
      */
-    static bool commitChanges(const std::string& repoPath, const std::string& commitMessage, const std::string& authorName, const std::string& authorEmail);
+    static bool commitChanges(const std::string& repoPath, const std::string& commitMessage, const std::string& authorName, const std::string& authorEmail, const std::string& targetBranch = "");
+
+    /**
+     * @brief Discard all local changes in the working directory.
+     */
+    static bool discardLocalChanges(const std::string& repoPath);
+
+    /**
+     * @brief Check out a local branch.
+     */
+    static bool checkoutBranch(const std::string& repoPath, const std::string& branchName);
 
     /**
      * @brief Create a new branch pointing to a source branch.
@@ -101,7 +112,12 @@ public:
     /**
      * @brief Retrieve the commit log from the repository.
      */
-    static bool getCommitLog(const std::string& repoPath, std::vector<GitCommitInfo>& commits);
+    static bool getCommitLog(const std::string& repoPath, std::vector<GitCommitInfo>& commits, const std::string& branchOrTag = "");
+
+    /**
+     * @brief Retrieve all commit SHAs present in the repository (across all references).
+     */
+    static bool getAllCommitShas(const std::string& repoPath, std::set<std::string>& shas);
 
     /**
      * @brief Retrieve a flat list of all files in the HEAD commit tree (or selected refName).
@@ -159,6 +175,21 @@ public:
      * @brief Extract a file from the repository's HEAD tree (or selected refName) to a destination path.
      */
     static bool extractFile(const std::string& repoPath, const std::string& relativePath, const std::string& destPath, const std::string& refName = "");
+
+    /**
+     * @brief Retrieve commits between source branch and target branch.
+     */
+    static bool getCommitsBetweenBranches(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch, std::vector<GitCommitInfo>& commits);
+
+    /**
+     * @brief Retrieve list of changed files between source branch and target branch.
+     */
+    static bool getPRChangedFiles(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch, std::vector<std::string>& changedFiles);
+
+    /**
+     * @brief Retrieve patch diff lines for a file between source branch and target branch.
+     */
+    static bool getPRFileDiff(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch, const std::string& relativePath, std::vector<GitDiffLine>& diffLines);
 };
 
 #endif // GITMANAGER_H

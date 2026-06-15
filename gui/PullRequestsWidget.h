@@ -45,7 +45,8 @@ public:
 private slots:
     void onNewPRClicked();
     void onFilterTextChanged(const QString &text);
-    void onMergePRClicked(const QString &msgIdStr, const QString &sourceBranch, const QString &targetBranch);
+    void onRowDoubleClicked(int row, int column);
+    void onViewPRDetailsClicked(const QString &msgIdStr);
 
 private:
     void populatePRList();

@@ -81,6 +81,7 @@ PullRequestsWidget::PullRequestsWidget(const QString &groupId, MainWidget *mainW
 
     connect(ui->mBtnNewPR, &QPushButton::clicked, this, &PullRequestsWidget::onNewPRClicked);
     connect(ui->mSearchEdit, &QLineEdit::textChanged, this, &PullRequestsWidget::onFilterTextChanged);
+    connect(ui->mPRTable, &QTableWidget::cellDoubleClicked, this, &PullRequestsWidget::onRowDoubleClicked);
 
     refresh();
 }
@@ -149,24 +150,22 @@ void PullRequestsWidget::onFilterTextChanged(const QString &text)
     populatePRList();
 }
 
-void PullRequestsWidget::onMergePRClicked(const QString &msgIdStr, const QString &sourceBranch, const QString &targetBranch)
+void PullRequestsWidget::onRowDoubleClicked(int row, int column)
 {
-    std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
-    
-    // Perform fast-forward merge in bare repository
-    if (GitManager::mergeBranch(bareRepoPath, sourceBranch.toStdString(), targetBranch.toStdString())) {
-        // Mark PR as processed in GXS exchange
-        RsGxsMessageId msgId(msgIdStr.toStdString());
-        uint32_t token;
-        if (rsGit) {
-            rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(RsGxsGroupId(mGroupId.toStdString()), msgId), true);
+    Q_UNUSED(column);
+    QTableWidgetItem *item = ui->mPRTable->item(row, 0);
+    if (item) {
+        QString msgIdStr = item->data(Qt::UserRole).toString();
+        if (!msgIdStr.isEmpty()) {
+            onViewPRDetailsClicked(msgIdStr);
         }
-        
-        QMessageBox::information(this, tr("Success"), tr("Pull request merged successfully."));
-        refresh();
-    } else {
-        QMessageBox::critical(this, tr("Error"), tr("Merge failed. Ensure branches exist and are compatible."));
     }
+}
+
+void PullRequestsWidget::onViewPRDetailsClicked(const QString &msgIdStr)
+{
+    RsGxsMessageId msgId(msgIdStr.toStdString());
+    mMainWidget->showPullRequestDetails(mGroupId, msgId);
 }
 
 void PullRequestsWidget::populatePRList()
@@ -250,14 +249,21 @@ void PullRequestsWidget::populatePRList()
 
         // Column 0: Status Icon
         QTableWidgetItem *itemIcon = new QTableWidgetItem();
-        if (isOpen) {
-            itemIcon->setIcon(QIcon(":/images/git-pull-request.png"));
-            itemIcon->setToolTip(tr("Open pull request"));
-        } else {
-            itemIcon->setIcon(QIcon(":/images/git-merge.png"));
-            itemIcon->setToolTip(tr("Merged pull request"));
-        }
+        QString msgIdStr = QString::fromStdString(pr.mMeta.mMsgId.toStdString());
+        itemIcon->setData(Qt::UserRole, msgIdStr);
+        itemIcon->setToolTip(isOpen ? tr("Open pull request") : tr("Merged pull request"));
         ui->mPRTable->setItem(i, 0, itemIcon);
+
+        QLabel *lblIcon = new QLabel(ui->mPRTable);
+        QString iconPath = isOpen ? ":/images/git-pull-request-green.png" : ":/images/git-merge.png";
+        QPixmap pixmap(iconPath);
+        int iconSize = 28;
+        lblIcon->setPixmap(pixmap.scaled(iconSize, iconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        lblIcon->setAlignment(Qt::AlignCenter);
+        lblIcon->setStyleSheet("background-color: transparent;");
+        lblIcon->setAttribute(Qt::WA_TransparentForMouseEvents);
+        lblIcon->setToolTip(isOpen ? tr("Open pull request") : tr("Merged pull request"));
+        ui->mPRTable->setCellWidget(i, 0, lblIcon);
 
         // Column 1: Info (Title & description metadata)
         QString titleStr = QString::fromStdString(pr.mTitle);
@@ -268,7 +274,7 @@ void PullRequestsWidget::populatePRList()
             .arg(QString::fromStdString(pr.mSourceBranch))
             .arg(QString::fromStdString(pr.mTargetBranch));
 
-        QTableWidgetItem *itemInfo = new QTableWidgetItem(titleStr + "\n" + detailsStr);
+        QTableWidgetItem *itemInfo = new QTableWidgetItem("  " + titleStr + "\n  " + detailsStr);
         QFont font = itemInfo->font();
         font.setBold(isOpen);
         itemInfo->setFont(font);
@@ -284,34 +290,31 @@ void PullRequestsWidget::populatePRList()
         }
 
         // Column 3: Actions
-        if (isOpen && isAdmin) {
+        {
             QWidget *container = new QWidget(ui->mPRTable);
             QHBoxLayout *layout = new QHBoxLayout(container);
             layout->setContentsMargins(0, 0, 0, 0);
             layout->setAlignment(Qt::AlignCenter);
 
-            QPushButton *btnMerge = new QPushButton(tr("Merge"), container);
-            btnMerge->setStyleSheet("QPushButton { background-color: #2da44e; color: white; border-radius: 6px; padding: 4px 12px; font-weight: bold; min-height: 26px; max-height: 26px; }"
-                                    "QPushButton:hover { background-color: #2c974b; }"
-                                    "QPushButton:pressed { background-color: #298e46; }");
+            QPushButton *btnAction = new QPushButton(container);
+            if (isOpen && isAdmin) {
+                btnAction->setText(tr("Merge"));
+                btnAction->setStyleSheet("QPushButton { background-color: #2da44e; color: white; border-radius: 6px; padding: 4px 12px; font-weight: bold; min-height: 26px; max-height: 26px; }"
+                                        "QPushButton:hover { background-color: #2c974b; }"
+                                        "QPushButton:pressed { background-color: #298e46; }");
+            } else {
+                btnAction->setText(isOpen ? tr("View") : tr("View"));
+                btnAction->setStyleSheet("QPushButton { background-color: #f6f8fa; color: #24292f; border-radius: 6px; padding: 4px 12px; border: 1px solid rgba(27, 31, 36, 0.15); min-height: 26px; max-height: 26px; }"
+                                        "QPushButton:hover { background-color: #f3f4f6; }"
+                                        "QPushButton:pressed { background-color: #ebecf0; }");
+            }
             
-            QString msgIdStr = QString::fromStdString(pr.mMeta.mMsgId.toStdString());
-            QString src = QString::fromStdString(pr.mSourceBranch);
-            QString tgt = QString::fromStdString(pr.mTargetBranch);
-            
-            connect(btnMerge, &QPushButton::clicked, [this, msgIdStr, src, tgt]() {
-                onMergePRClicked(msgIdStr, src, tgt);
+            connect(btnAction, &QPushButton::clicked, [this, msgIdStr]() {
+                onViewPRDetailsClicked(msgIdStr);
             });
             
-            layout->addWidget(btnMerge);
+            layout->addWidget(btnAction);
             ui->mPRTable->setCellWidget(i, 3, container);
-        } else {
-            QTableWidgetItem *itemAction = new QTableWidgetItem(isOpen ? tr("Pending Admin") : tr("Merged"));
-            itemAction->setTextAlignment(Qt::AlignCenter);
-            if (!isOpen) {
-                itemAction->setForeground(QBrush(QColor("#8250df")));
-            }
-            ui->mPRTable->setItem(i, 3, itemAction);
         }
     }
 }

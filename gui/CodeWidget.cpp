@@ -193,6 +193,10 @@ void CodeWidget::refresh()
 
     // 2. Populate file list for selected branch/tag
     populateRepoBrowser(mSelectedBranchOrTag);
+
+    if (mMainWidget) {
+        mMainWidget->refreshGitWidget();
+    }
 }
 
 void CodeWidget::handleGitEvent(const RsGitEvent *e)
@@ -288,6 +292,10 @@ void CodeWidget::onBranchComboChanged(const QString &text)
     if (text.isEmpty()) return;
     mSelectedBranchOrTag = text;
     populateRepoBrowser(mSelectedBranchOrTag);
+
+    if (mMainWidget) {
+        mMainWidget->refreshGitWidget();
+    }
 }
 
 void CodeWidget::onCreateBranchClicked()
