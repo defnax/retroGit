@@ -44,6 +44,7 @@ public:
 
 private slots:
     void onMergeClicked();
+    void onCloseClicked();
     void onFileSelectionChanged();
 
 private:

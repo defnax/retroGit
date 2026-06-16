@@ -244,6 +244,13 @@
                 </property>
                </widget>
               </item>
+              <item>
+               <widget class="QPushButton" name="mBtnClose">
+                <property name="text">
+                 <string>Close pull request</string>
+                </property>
+               </widget>
+              </item>
              </layout>
             </widget>
            </item>

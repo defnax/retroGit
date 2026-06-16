@@ -110,6 +110,12 @@ public:
     static bool mergeBranch(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch);
 
     /**
+     * @brief Check if a source branch has already been merged into a target branch.
+     */
+    static bool isBranchMerged(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch);
+
+
+    /**
      * @brief Retrieve the commit log from the repository.
      */
     static bool getCommitLog(const std::string& repoPath, std::vector<GitCommitInfo>& commits, const std::string& branchOrTag = "");
@@ -165,6 +171,12 @@ public:
      * @brief Create a packfile from the local repository and return ref updates.
      */
     static bool createPackfile(const std::string &repoPath, std::string &packfileData, std::map<std::string, std::string> &refUpdates);
+
+    /**
+     * @brief Create a packfile for a specific reference (branch).
+     */
+    static bool createPackfileForRef(const std::string& repoPath, const std::string& refName, std::string& outPackfileData, std::map<std::string, std::string>& outRefUpdates);
+
 
     /**
      * @brief Retrieve uncommitted changes in the repository.

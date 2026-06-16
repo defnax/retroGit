@@ -119,8 +119,22 @@ void CodeWidget::refresh()
     int openPRCount = 0;
     std::vector<RsGitPullRequest> pullRequests;
     if (rsGit && rsGit->getPullRequests(RsGxsGroupId(mGroupId.toStdString()), pullRequests)) {
+        std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
         for (const auto &pr : pullRequests) {
-            if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) {
+            bool isOpen = (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) && (pr.mStatus == 0);
+            if (isOpen) {
+                if (GitManager::isBranchMerged(bareRepoPath, pr.mSourceBranch, pr.mTargetBranch)) {
+                    isOpen = false;
+                    // Automatically mark as processed locally
+                    uint32_t token;
+                    rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(RsGxsGroupId(mGroupId.toStdString()), pr.mMeta.mMsgId), true);
+                }
+            } else if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) {
+                // Automatically mark as processed locally if status is Closed or Merged
+                uint32_t token;
+                rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(RsGxsGroupId(mGroupId.toStdString()), pr.mMeta.mMsgId), true);
+            }
+            if (isOpen) {
                 openPRCount++;
             }
         }

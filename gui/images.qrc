@@ -9,6 +9,8 @@
 		<file>images/tag.png</file>
 		<file>images/git-pull-request.png</file>
 		<file>images/git-pull-request-green.png</file>
+		<file>images/git-pull-request-closed.png</file>
 		<file>images/git-merge.png</file>
+		<file>images/git-merge-pink.png</file>
     </qresource>
 </RCC>

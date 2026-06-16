@@ -472,12 +472,47 @@ void MainWidget::handleEvent_main_thread(std::shared_ptr<const RsEvent> event)
             if (rsGit && rsGit->getGroups(groupIds, groups) && !groups.empty()) {
                 uint32_t flags = groups[0].mMeta.mSubscribeFlags;
                 isAdmin = IS_GROUP_ADMIN(flags);
-                
-                if (!isAdmin) {
-                    QString repoName = QString::fromUtf8(groups[0].mGroupName.c_str());
-                    QMessageBox::information(this, tr("New Updates Available"),
-                        tr("The repository '%1' has new commits published by the owner. Please pull/sync to update your local files.").arg(repoName));
+            }
+
+            bool prMerged = false;
+            bool prClosed = false;
+            // Check if any open/unprocessed pull request has been merged or closed
+            std::vector<RsGitPullRequest> pullRequests;
+            if (rsGit && rsGit->getPullRequests(e->mGitGroupId, pullRequests)) {
+                std::string bareRepoPath = GitManager::getBareRepoPath(e->mGitGroupId.toStdString());
+                for (auto &pr : pullRequests) {
+                    bool isUnprocessed = (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED);
+                    if (isUnprocessed) {
+                        if (GitManager::isBranchMerged(bareRepoPath, pr.mSourceBranch, pr.mTargetBranch) || pr.mStatus == 2) {
+                            // Automatically mark as processed locally
+                            uint32_t token;
+                            rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(e->mGitGroupId, pr.mMeta.mMsgId), true);
+                            prMerged = true;
+                            
+                            // Notify user about the merge
+                            QString prTitle = QString::fromStdString(pr.mTitle);
+                            QMessageBox::information(this, tr("Pull Request Merged"),
+                                tr("Pull request '%1' has been merged into branch '%2'!").arg(prTitle).arg(QString::fromStdString(pr.mTargetBranch)));
+                        }
+                        else if (pr.mStatus == 1) {
+                            // Automatically mark as processed locally
+                            uint32_t token;
+                            rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(e->mGitGroupId, pr.mMeta.mMsgId), true);
+                            prClosed = true;
+                            
+                            // Notify user about the closure
+                            QString prTitle = QString::fromStdString(pr.mTitle);
+                            QMessageBox::information(this, tr("Pull Request Closed"),
+                                tr("Pull request '%1' has been closed!").arg(prTitle));
+                        }
+                    }
                 }
+            }
+
+            if (!isAdmin && !prMerged && !prClosed && !groups.empty()) {
+                QString repoName = QString::fromUtf8(groups[0].mGroupName.c_str());
+                QMessageBox::information(this, tr("New Updates Available"),
+                    tr("The repository '%1' has new commits published by the owner. Please pull/sync to update your local files.").arg(repoName));
             }
             break;
         }

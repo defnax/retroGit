@@ -39,6 +39,8 @@
 #include <retroshare/rsinit.h>
 
 extern RsGit *rsGit;
+#include <retroshare/rsidentity.h>
+extern RsIdentity *rsIdentity;
 
 PullRequestDetailsWidget::PullRequestDetailsWidget(const QString &groupId, const RsGxsMessageId &msgId, MainWidget *mainWidget, QWidget *parent)
     : QWidget(parent)
@@ -71,6 +73,7 @@ PullRequestDetailsWidget::PullRequestDetailsWidget(const QString &groupId, const
 
     // Connections
     connect(ui->mBtnMerge, &QPushButton::clicked, this, &PullRequestDetailsWidget::onMergeClicked);
+    connect(ui->mBtnClose, &QPushButton::clicked, this, &PullRequestDetailsWidget::onCloseClicked);
     connect(ui->mFilesTree, &QTreeWidget::itemSelectionChanged, this, &PullRequestDetailsWidget::onFileSelectionChanged);
 
     refresh();
@@ -106,13 +109,33 @@ void PullRequestDetailsWidget::refresh()
     ui->mLblTitle->setText(QString::fromStdString(mPR.mTitle));
     
     // Status Badge
-    bool isOpen = (mPR.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED);
+    bool isOpen = (mPR.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) && (mPR.mStatus == 0);
+    if (isOpen) {
+        std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
+        if (GitManager::isBranchMerged(bareRepoPath, mPR.mSourceBranch, mPR.mTargetBranch)) {
+            isOpen = false;
+            if (rsGit) {
+                uint32_t token;
+                rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(RsGxsGroupId(mGroupId.toStdString()), mMsgId), true);
+            }
+        }
+    } else if (mPR.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) {
+        if (rsGit) {
+            uint32_t token;
+            rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(RsGxsGroupId(mGroupId.toStdString()), mMsgId), true);
+        }
+    }
     if (isOpen) {
         ui->mLblStatus->setText(tr(" Open "));
         ui->mLblStatus->setStyleSheet("background-color: #2da44e; color: white; border-radius: 12px; font-weight: bold; font-size: 12px; padding: 4px 10px;");
     } else {
-        ui->mLblStatus->setText(tr(" Merged "));
-        ui->mLblStatus->setStyleSheet("background-color: #8250df; color: white; border-radius: 12px; font-weight: bold; font-size: 12px; padding: 4px 10px;");
+        if (mPR.mStatus == 1) {
+            ui->mLblStatus->setText(tr(" Closed "));
+            ui->mLblStatus->setStyleSheet("background-color: #cf222e; color: white; border-radius: 12px; font-weight: bold; font-size: 12px; padding: 4px 10px;");
+        } else {
+            ui->mLblStatus->setText(tr(" Merged "));
+            ui->mLblStatus->setStyleSheet("background-color: #8250df; color: white; border-radius: 12px; font-weight: bold; font-size: 12px; padding: 4px 10px;");
+        }
     }
 
     QString descMetaStr = tr("<b>%1</b> wants to merge into <code>%2</code> from <code>%3</code>")
@@ -153,7 +176,13 @@ void PullRequestDetailsWidget::populateConversationTab()
     }
 
     // C. Merge Status Panel
-    bool isOpen = (mPR.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED);
+    bool isOpen = (mPR.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) && (mPR.mStatus == 0);
+    if (isOpen) {
+        std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
+        if (GitManager::isBranchMerged(bareRepoPath, mPR.mSourceBranch, mPR.mTargetBranch)) {
+            isOpen = false;
+        }
+    }
     
     // Check if user is admin
     bool isAdmin = false;
@@ -162,6 +191,22 @@ void PullRequestDetailsWidget::populateConversationTab()
     if (rsGit && rsGit->getGroups(groupIds, groups) && !groups.empty()) {
         uint32_t flags = groups[0].mMeta.mSubscribeFlags;
         isAdmin = IS_GROUP_ADMIN(flags);
+    }
+
+    // Check if user can close the pull request
+    bool canClose = false;
+    if (isOpen) {
+        if (isAdmin) {
+            canClose = true;
+        } else if (rsIdentity && rsIdentity->isOwnId(mPR.mMeta.mAuthorId)) {
+            canClose = true;
+        }
+    }
+    ui->mBtnClose->setVisible(canClose);
+    if (canClose) {
+        ui->mBtnClose->setStyleSheet("QPushButton { background-color: #f6f8fa; color: #cf222e; border-radius: 6px; padding: 6px 16px; font-weight: bold; border: 1px solid rgba(27, 31, 36, 0.15); }"
+                                    "QPushButton:hover { background-color: #f3f4f6; }"
+                                    "QPushButton:pressed { background-color: #e5e7eb; }");
     }
 
     int badgeSize = 24;
@@ -182,10 +227,16 @@ void PullRequestDetailsWidget::populateConversationTab()
             ui->mBtnMerge->setVisible(false);
         }
     } else {
-        ui->mMergePanel->setStyleSheet("QFrame#mMergePanel { border: 1px solid #d0d7de; border-radius: 6px; background-color: #fbe8ff; }");
-        ui->mLblMergeIcon->setPixmap(QIcon(":/images/git-merge.png").pixmap(badgeSize, badgeSize));
-        ui->mLblMergeStatus->setText(tr("<span style='color: #8250df; font-weight: bold;'>Pull request successfully merged.</span><br>Changes are now integrated into the target branch."));
         ui->mBtnMerge->setVisible(false);
+        if (mPR.mStatus == 1) {
+            ui->mMergePanel->setStyleSheet("QFrame#mMergePanel { border: 1px solid #ffc1c0; border-radius: 6px; background-color: #ffebe9; }");
+            ui->mLblMergeIcon->setPixmap(QIcon(":/images/git-pull-request-closed.png").pixmap(badgeSize, badgeSize));
+            ui->mLblMergeStatus->setText(tr("<span style='color: #cf222e; font-weight: bold;'>Pull request successfully closed.</span><br>Changes were not merged."));
+        } else {
+            ui->mMergePanel->setStyleSheet("QFrame#mMergePanel { border: 1px solid #d0d7de; border-radius: 6px; background-color: #fbe8ff; }");
+            ui->mLblMergeIcon->setPixmap(QIcon(":/images/git-merge-pink.png").pixmap(badgeSize, badgeSize));
+            ui->mLblMergeStatus->setText(tr("<span style='color: #8250df; font-weight: bold;'>Pull request successfully merged.</span><br>Changes are now integrated into the target branch."));
+        }
     }
 }
 
@@ -272,9 +323,31 @@ void PullRequestDetailsWidget::onMergeClicked()
         uint32_t token;
         if (rsGit) {
             rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(RsGxsGroupId(mGroupId.toStdString()), mMsgId), true);
+            uint32_t statusToken;
+            rsGit->closePullRequest(statusToken, RsGxsGroupId(mGroupId.toStdString()), mMsgId, 2);
         }
 
-        QMessageBox::information(this, tr("Success"), tr("Pull request merged successfully."));
+        // Publish the merged commits as a repository update to the GXS network
+        std::string packfileData;
+        std::map<std::string, std::string> refUpdates;
+        if (GitManager::createPackfileForRef(bareRepoPath, mPR.mTargetBranch, packfileData, refUpdates)) {
+            RsGitUpdate update;
+            update.mMeta.mGroupId = RsGxsGroupId(mGroupId.toStdString());
+            update.mRefUpdates = refUpdates;
+            update.mMeta.mMsgName = QString("Merge PR: %1").arg(QString::fromStdString(mPR.mTitle)).toStdString();
+
+            if (packfileData.size() <= 200000) {
+                update.mPackfileData = packfileData;
+                uint32_t publishToken;
+                if (rsGit) {
+                    rsGit->publishGitUpdate(publishToken, update);
+                }
+            } else if (mMainWidget) {
+                mMainWidget->hashAndPublishPackfile(mGroupId, packfileData, update);
+            }
+        }
+
+        QMessageBox::information(this, tr("Success"), tr("Pull request merged successfully and updates published to the network."));
 
         // Automatically pull the merged changes into the local working directory if configured
         if (mMainWidget) {
@@ -375,4 +448,23 @@ void PullRequestDetailsWidget::onFileSelectionChanged()
 
     html += "</body></html>";
     ui->mDiffBrowser->setHtml(html);
+}
+
+void PullRequestDetailsWidget::onCloseClicked()
+{
+    if (QMessageBox::question(this, tr("Close Pull Request"),
+                              tr("Are you sure you want to close this pull request?"),
+                              QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) {
+        return;
+    }
+
+    uint32_t token;
+    if (rsGit && rsGit->closePullRequest(token, RsGxsGroupId(mGroupId.toStdString()), mMsgId, 1)) {
+        rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(RsGxsGroupId(mGroupId.toStdString()), mMsgId), true);
+        QMessageBox::information(this, tr("Success"), tr("Pull request closed successfully."));
+        mLoaded = false; // Force reload
+        refresh();
+    } else {
+        QMessageBox::critical(this, tr("Error"), tr("Failed to close pull request."));
+    }
 }

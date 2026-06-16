@@ -547,6 +547,30 @@ bool p3Git::publishPullRequest(uint32_t &token, RsGitPullRequest &pr)
     return true;
 }
 
+bool p3Git::closePullRequest(uint32_t &token, const RsGxsGroupId &groupId, const RsGxsMessageId &msgId, uint32_t status)
+{
+    RsGitMsgItem *msgItem = new RsGitMsgItem();
+    msgItem->meta.mGroupId = groupId;
+    msgItem->meta.mParentId = msgId;
+    
+    msgItem->meta.mThreadId.clear();
+    
+    if (rsIdentity) {
+        std::list<RsGxsId> ownIds;
+        rsIdentity->getOwnIds(ownIds);
+        if (!ownIds.empty()) {
+            msgItem->meta.mAuthorId = ownIds.front();
+        }
+    }
+    
+    msgItem->mGitMsgType = 3; // PULL_REQUEST_STATUS_UPDATE
+    msgItem->mStatus = status; // 1 = Closed
+    msgItem->meta.mMsgName = "PR Status Update";
+    
+    this->publishMsg(token, msgItem);
+    return true;
+}
+
 bool p3Git::subscribeToGroup(uint32_t &token, const RsGxsGroupId &groupId,bool subscribe_flag)
 {
     bool response = RsGenExchange::subscribeToGroup(token, groupId, subscribe_flag);
@@ -651,6 +675,18 @@ bool p3Git::getPullRequests(const RsGxsGroupId &groupId, std::vector<RsGitPullRe
     std::map<RsGxsGroupId, std::vector<RsGitMsgItem*> > msgItems;
     if (getMsgDataT<RsGitMsgItem>(token, msgItems)) {
         auto &vec = msgItems[groupId];
+        
+        // Map to store status updates: key is ParentId (PR's MsgId), value is status (e.g. 1 = Closed)
+        std::map<RsGxsMessageId, uint32_t> statusUpdates;
+        
+        // First pass: collect status updates
+        for (auto *gitMsg : vec) {
+            if (gitMsg && gitMsg->mGitMsgType == 3) { // STATUS_UPDATE
+                statusUpdates[gitMsg->meta.mParentId] = gitMsg->mStatus;
+            }
+        }
+        
+        // Second pass: build pull requests
         for (auto *gitMsg : vec) {
             if (gitMsg && gitMsg->mGitMsgType == 2) { // PULL_REQUEST
                 RsGitPullRequest pr;
@@ -662,6 +698,12 @@ bool p3Git::getPullRequests(const RsGxsGroupId &groupId, std::vector<RsGitPullRe
                 pr.mPackfileData = gitMsg->mPackfileData;
                 pr.mStatus = gitMsg->mStatus;
                 pr.mFiles = gitMsg->mFiles;
+                
+                // Override status if there is an update message on GXS
+                if (statusUpdates.count(pr.mMeta.mMsgId)) {
+                    pr.mStatus = statusUpdates[pr.mMeta.mMsgId];
+                }
+                
                 pullRequests.push_back(pr);
             }
             delete gitMsg;

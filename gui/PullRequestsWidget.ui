@@ -69,20 +69,20 @@
        </property>
       </widget>
      </item>
-     <item>
-      <widget class="QLabel" name="mLblOpenCount">
-       <property name="text">
-        <string>0 Open</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QLabel" name="mLblClosedCount">
-       <property name="text">
-        <string>0 Closed</string>
-       </property>
-      </widget>
-     </item>
+      <item>
+       <widget class="QPushButton" name="mBtnOpenFilter">
+        <property name="text">
+         <string>0 Open</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="mBtnClosedFilter">
+        <property name="text">
+         <string>0 Closed</string>
+        </property>
+       </widget>
+      </item>
     </layout>
    </item>
    <item>

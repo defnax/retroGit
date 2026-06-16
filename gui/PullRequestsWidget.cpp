@@ -60,9 +60,9 @@ PullRequestsWidget::PullRequestsWidget(const QString &groupId, MainWidget *mainW
     ui->mSearchEdit->setStyleSheet("QLineEdit { border: 1px solid #d0d7de; border-radius: 6px; padding: 6px; font-size: 13px; }"
                                   "QLineEdit:focus { border: 1px solid #0969da; }");
 
-    // Count labels styling
-    ui->mLblOpenCount->setStyleSheet("font-weight: bold; color: #24292f; margin-left: 10px;");
-    ui->mLblClosedCount->setStyleSheet("color: #57606a; margin-left: 10px;");
+    // Configure filter buttons
+    ui->mBtnOpenFilter->setFlat(true);
+    ui->mBtnClosedFilter->setFlat(true);
 
     // Configure PR Table to look like GitHub list
     ui->mPRTable->setColumnCount(4);
@@ -82,6 +82,8 @@ PullRequestsWidget::PullRequestsWidget(const QString &groupId, MainWidget *mainW
     connect(ui->mBtnNewPR, &QPushButton::clicked, this, &PullRequestsWidget::onNewPRClicked);
     connect(ui->mSearchEdit, &QLineEdit::textChanged, this, &PullRequestsWidget::onFilterTextChanged);
     connect(ui->mPRTable, &QTableWidget::cellDoubleClicked, this, &PullRequestsWidget::onRowDoubleClicked);
+    connect(ui->mBtnOpenFilter, &QPushButton::clicked, this, &PullRequestsWidget::onOpenFilterClicked);
+    connect(ui->mBtnClosedFilter, &QPushButton::clicked, this, &PullRequestsWidget::onClosedFilterClicked);
 
     refresh();
 }
@@ -175,8 +177,8 @@ void PullRequestsWidget::populatePRList()
 
     std::vector<RsGitPullRequest> pullRequests;
     if (!rsGit || !rsGit->getPullRequests(RsGxsGroupId(mGroupId.toStdString()), pullRequests)) {
-        ui->mLblOpenCount->setText("0 Open");
-        ui->mLblClosedCount->setText("0 Closed");
+        ui->mBtnOpenFilter->setText("0 Open");
+        ui->mBtnClosedFilter->setText("0 Closed / Merged");
         return;
     }
 
@@ -217,7 +219,22 @@ void PullRequestsWidget::populatePRList()
     std::vector<RsGitPullRequest> filteredPRs;
 
     for (const auto &pr : pullRequests) {
-        bool isOpen = (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED);
+        bool isOpen = (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) && (pr.mStatus == 0);
+        if (isOpen) {
+            std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
+            if (GitManager::isBranchMerged(bareRepoPath, pr.mSourceBranch, pr.mTargetBranch)) {
+                isOpen = false;
+                if (rsGit) {
+                    uint32_t token;
+                    rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(RsGxsGroupId(mGroupId.toStdString()), pr.mMeta.mMsgId), true);
+                }
+            }
+        } else if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) {
+            if (rsGit) {
+                uint32_t token;
+                rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(RsGxsGroupId(mGroupId.toStdString()), pr.mMeta.mMsgId), true);
+            }
+        }
         
         if (isOpen) {
             openCount++;
@@ -238,31 +255,38 @@ void PullRequestsWidget::populatePRList()
         filteredPRs.push_back(pr);
     }
 
-    ui->mLblOpenCount->setText(tr("%1 Open").arg(openCount));
-    ui->mLblClosedCount->setText(tr("%1 Closed / Merged").arg(closedCount));
+    ui->mBtnOpenFilter->setText(tr("%1 Open").arg(openCount));
+    ui->mBtnClosedFilter->setText(tr("%1 Closed / Merged").arg(closedCount));
+    updateFilterButtons(showOpenOnly, showClosedOnly);
 
     ui->mPRTable->setRowCount(filteredPRs.size());
 
     for (int i = 0; i < (int)filteredPRs.size(); i++) {
         const auto &pr = filteredPRs[i];
-        bool isOpen = (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED);
+        bool isOpen = (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) && (pr.mStatus == 0);
+        if (isOpen) {
+            std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
+            if (GitManager::isBranchMerged(bareRepoPath, pr.mSourceBranch, pr.mTargetBranch)) {
+                isOpen = false;
+            }
+        }
 
         // Column 0: Status Icon
         QTableWidgetItem *itemIcon = new QTableWidgetItem();
         QString msgIdStr = QString::fromStdString(pr.mMeta.mMsgId.toStdString());
         itemIcon->setData(Qt::UserRole, msgIdStr);
-        itemIcon->setToolTip(isOpen ? tr("Open pull request") : tr("Merged pull request"));
+        itemIcon->setToolTip(isOpen ? tr("Open pull request") : (pr.mStatus == 1 ? tr("Closed pull request") : tr("Merged pull request")));
         ui->mPRTable->setItem(i, 0, itemIcon);
 
         QLabel *lblIcon = new QLabel(ui->mPRTable);
-        QString iconPath = isOpen ? ":/images/git-pull-request-green.png" : ":/images/git-merge.png";
+        QString iconPath = isOpen ? ":/images/git-pull-request-green.png" : (pr.mStatus == 1 ? ":/images/git-pull-request-closed.png" : ":/images/git-merge-pink.png");
         QPixmap pixmap(iconPath);
         int iconSize = 28;
         lblIcon->setPixmap(pixmap.scaled(iconSize, iconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
         lblIcon->setAlignment(Qt::AlignCenter);
         lblIcon->setStyleSheet("background-color: transparent;");
         lblIcon->setAttribute(Qt::WA_TransparentForMouseEvents);
-        lblIcon->setToolTip(isOpen ? tr("Open pull request") : tr("Merged pull request"));
+        lblIcon->setToolTip(isOpen ? tr("Open pull request") : (pr.mStatus == 1 ? tr("Closed pull request") : tr("Merged pull request")));
         ui->mPRTable->setCellWidget(i, 0, lblIcon);
 
         // Column 1: Info (Title & description metadata)
@@ -316,5 +340,37 @@ void PullRequestsWidget::populatePRList()
             layout->addWidget(btnAction);
             ui->mPRTable->setCellWidget(i, 3, container);
         }
+    }
+}
+
+void PullRequestsWidget::onOpenFilterClicked()
+{
+    ui->mSearchEdit->setText("is:open");
+    populatePRList();
+}
+
+void PullRequestsWidget::onClosedFilterClicked()
+{
+    ui->mSearchEdit->setText("is:closed");
+    populatePRList();
+}
+
+void PullRequestsWidget::updateFilterButtons(bool showOpenOnly, bool showClosedOnly)
+{
+    if (showOpenOnly) {
+        ui->mBtnOpenFilter->setStyleSheet("QPushButton { color: #2da44e; font-weight: bold; border: none; padding: 4px 8px; background: transparent; }"
+                                           "QPushButton:hover { background-color: #f3f4f6; border-radius: 4px; }");
+        ui->mBtnClosedFilter->setStyleSheet("QPushButton { color: #57606a; border: none; padding: 4px 8px; background: transparent; }"
+                                             "QPushButton:hover { background-color: #f3f4f6; border-radius: 4px; }");
+    } else if (showClosedOnly) {
+        ui->mBtnOpenFilter->setStyleSheet("QPushButton { color: #57606a; border: none; padding: 4px 8px; background: transparent; }"
+                                           "QPushButton:hover { background-color: #f3f4f6; border-radius: 4px; }");
+        ui->mBtnClosedFilter->setStyleSheet("QPushButton { color: #8250df; font-weight: bold; border: none; padding: 4px 8px; background: transparent; }"
+                                             "QPushButton:hover { background-color: #f3f4f6; border-radius: 4px; }");
+    } else {
+        ui->mBtnOpenFilter->setStyleSheet("QPushButton { color: #57606a; border: none; padding: 4px 8px; background: transparent; }"
+                                           "QPushButton:hover { background-color: #f3f4f6; border-radius: 4px; }");
+        ui->mBtnClosedFilter->setStyleSheet("QPushButton { color: #57606a; border: none; padding: 4px 8px; background: transparent; }"
+                                             "QPushButton:hover { background-color: #f3f4f6; border-radius: 4px; }");
     }
 }
