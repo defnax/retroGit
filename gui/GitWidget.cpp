@@ -651,16 +651,27 @@ void GitWidget::populateCommitLog()
 
     for (const auto &update : updates) {
         bool isUnread = (update.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD);
-        bool isDownloaded = false;
+        // An update is considered downloaded only when ALL its ref SHAs exist locally.
+        // This prevents updates with mixed old+new branch refs from being hidden.
+        bool isDownloaded = !update.mRefUpdates.empty();
         for (const auto &pair : update.mRefUpdates) {
-            commitToMsgId[pair.second] = {update.mMeta.mMsgId, isUnread};
-            commitToMsgName[pair.second] = update.mMeta.mMsgName;
-            commitToAuthorId[pair.second] = update.mMeta.mAuthorId;
+            // Never overwrite an UNREAD entry with a READ entry for the same commit SHA.
+            // This prevents a later READ GXS update (containing an unchanged branch ref) from
+            // hiding the unread notification of the original push that introduced this commit.
+            auto existingIt = commitToMsgId.find(pair.second);
+            bool shouldUpdate = (existingIt == commitToMsgId.end()) ||  // no entry yet
+                                isUnread ||                              // new entry is unread (always wins)
+                                !existingIt->second.second;              // existing is also read (safe to overwrite)
+            if (shouldUpdate) {
+                commitToMsgId[pair.second] = {update.mMeta.mMsgId, isUnread};
+                commitToMsgName[pair.second] = update.mMeta.mMsgName;
+                commitToAuthorId[pair.second] = update.mMeta.mAuthorId;
+            }
             if (isUnread) {
                 unreadCommitShas.insert(pair.second);
             }
-            if (localCommitShas.count(pair.second) || allRepoCommitShas.count(pair.second)) {
-                isDownloaded = true;
+            if (!localCommitShas.count(pair.second) && !allRepoCommitShas.count(pair.second)) {
+                isDownloaded = false;
             }
         }
         if (!isDownloaded) {

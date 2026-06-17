@@ -509,7 +509,33 @@ void MainWidget::handleEvent_main_thread(std::shared_ptr<const RsEvent> event)
                 }
             }
 
-            if (!isAdmin && !prMerged && !prClosed && !groups.empty()) {
+            bool hasUndownloaded = true;
+            if (!updatedGroupId.isEmpty()) {
+                QString localPath = loadRepoLocalPath(updatedGroupId).trimmed();
+                if (!localPath.isEmpty()) {
+                    QString cleanPath = QDir::cleanPath(localPath);
+                    if (QDir(cleanPath).exists() && GitManager::isValidRepository(cleanPath.toStdString())) {
+                        std::vector<RsGitUpdate> updates;
+                        if (rsGit && rsGit->getUpdates(e->mGitGroupId, updates)) {
+                            std::set<std::string> localCommitShas;
+                            GitManager::getAllCommitShas(cleanPath.toStdString(), localCommitShas);
+                            
+                            hasUndownloaded = false;
+                            for (const auto &update : updates) {
+                                for (const auto &pair : update.mRefUpdates) {
+                                    if (localCommitShas.count(pair.second) == 0) {
+                                        hasUndownloaded = true;
+                                        break;
+                                    }
+                                }
+                                if (hasUndownloaded) break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!isAdmin && !prMerged && !prClosed && !groups.empty() && hasUndownloaded) {
                 QString repoName = QString::fromUtf8(groups[0].mGroupName.c_str());
                 QMessageBox::information(this, tr("New Updates Available"),
                     tr("The repository '%1' has new commits published by the owner. Please pull/sync to update your local files.").arg(repoName));

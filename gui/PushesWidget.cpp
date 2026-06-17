@@ -122,11 +122,19 @@ void PushesWidget::handleGitEvent(const RsGitEvent *e)
         populateClonesTable();
 
         if (e->mCloneSuccess) {
-            QMessageBox::information(this, tr("Clone Successful"), tr("Successfully cloned decentral repository."));
+            if (status.contains("sync", Qt::CaseInsensitive)) {
+                QMessageBox::information(this, tr("Sync Successful"), tr("Successfully synchronized decentral repository."));
+            } else {
+                QMessageBox::information(this, tr("Clone Successful"), tr("Successfully cloned decentral repository."));
+            }
             mMainWidget->updateDisplay();
             mMainWidget->triggerTreeSelectionChanged();
         } else if (!status.isEmpty() && (status.contains("Failed") || status.contains("failed") || status.contains("down") || status.contains("not available"))) {
-            QMessageBox::critical(this, tr("Clone Failed"), status);
+            if (status.contains("sync", Qt::CaseInsensitive)) {
+                QMessageBox::critical(this, tr("Sync Failed"), status);
+            } else {
+                QMessageBox::critical(this, tr("Clone Failed"), status);
+            }
         }
     } else if (e->mGitEventCode == RsGitEventCode::NEW_POST || e->mGitEventCode == RsGitEventCode::READ_STATUS_CHANGED || e->mGitEventCode == RsGitEventCode::POST_UPDATED) {
         refresh();
