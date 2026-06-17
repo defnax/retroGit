@@ -517,6 +517,7 @@ void MainWidget::handleEvent_main_thread(std::shared_ptr<const RsEvent> event)
             break;
         }
         case RsGitEventCode::READ_STATUS_CHANGED:
+        case RsGitEventCode::POST_UPDATED:
         {
             loadGroupMeta();
             refreshCurrentRepo();

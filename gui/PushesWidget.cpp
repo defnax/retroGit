@@ -128,7 +128,7 @@ void PushesWidget::handleGitEvent(const RsGitEvent *e)
         } else if (!status.isEmpty() && (status.contains("Failed") || status.contains("failed") || status.contains("down") || status.contains("not available"))) {
             QMessageBox::critical(this, tr("Clone Failed"), status);
         }
-    } else if (e->mGitEventCode == RsGitEventCode::NEW_POST || e->mGitEventCode == RsGitEventCode::READ_STATUS_CHANGED) {
+    } else if (e->mGitEventCode == RsGitEventCode::NEW_POST || e->mGitEventCode == RsGitEventCode::READ_STATUS_CHANGED || e->mGitEventCode == RsGitEventCode::POST_UPDATED) {
         refresh();
     }
 }

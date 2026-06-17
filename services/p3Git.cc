@@ -252,7 +252,7 @@ void p3Git::notifyChanges(std::vector<RsGxsNotify *> &changes)
       if (msgChange->mNewMsgItem) {
           RsGitMsgItem* gitMsg = dynamic_cast<RsGitMsgItem*>(msgChange->mNewMsgItem);
           if (gitMsg) {
-              std::cerr << ", MsgType: " << (gitMsg->mGitMsgType == 1 ? "UPDATE" : gitMsg->mGitMsgType == 2 ? "PULL_REQUEST" : "UNKNOWN")
+              std::cerr << ", MsgType: " << (gitMsg->mGitMsgType == 1 ? "UPDATE" : gitMsg->mGitMsgType == 2 ? "PULL_REQUEST" : gitMsg->mGitMsgType == 3 ? "STATUS_UPDATE" : "UNKNOWN")
                         << ", Author Identity: " << gitMsg->meta.mAuthorId.toStdString();
           }
       }
@@ -262,39 +262,47 @@ void p3Git::notifyChanges(std::vector<RsGxsNotify *> &changes)
           msgChange->getType() == RsGxsNotify::TYPE_PUBLISHED) {
           
         bool unpackedImmediately = false;
+        bool isPRorStatusUpdate = false;
         if (msgChange->mNewMsgItem) {
             RsGitMsgItem* gitMsg = dynamic_cast<RsGitMsgItem*>(msgChange->mNewMsgItem);
-            if (gitMsg && gitMsg->mGitMsgType == 1) // UPDATE
-            {
-                std::string repoPath = GitManager::getBareRepoPath(msgChange->mGroupId.toStdString());
-                if (!gitMsg->mFiles.empty()) {
-                    const RsGxsFile& packFile = gitMsg->mFiles[0];
-                    FileInfo info;
-                    if (rsFiles && rsFiles->alreadyHaveFile(packFile.mHash, info)) {
-                        if (GitManager::unpackPackfileFromFile(repoPath, info.path, gitMsg->mRefUpdates)) {
+            if (gitMsg) {
+                if (gitMsg->mGitMsgType == 1) // UPDATE
+                {
+                    std::string repoPath = GitManager::getBareRepoPath(msgChange->mGroupId.toStdString());
+                    if (!gitMsg->mFiles.empty()) {
+                        const RsGxsFile& packFile = gitMsg->mFiles[0];
+                        FileInfo info;
+                        if (rsFiles && rsFiles->alreadyHaveFile(packFile.mHash, info)) {
+                            if (GitManager::unpackPackfileFromFile(repoPath, info.path, gitMsg->mRefUpdates)) {
+                                unpackedImmediately = true;
+                            }
+                        } else {
+                            PendingPackfile pending;
+                            pending.groupId = msgChange->mGroupId;
+                            pending.msgId = msgChange->mMsgId;
+                            pending.fileHash = packFile.mHash;
+                            pending.refUpdates = gitMsg->mRefUpdates;
+                            
+                            RS_STACK_MUTEX(mRetroGitMtx);
+                            mPendingPackfiles.push_back(pending);
+                        }
+                    } else if (!gitMsg->mPackfileData.empty()) {
+                        if (GitManager::unpackPackfile(repoPath, gitMsg->mPackfileData, gitMsg->mRefUpdates)) {
                             unpackedImmediately = true;
                         }
-                    } else {
-                        PendingPackfile pending;
-                        pending.groupId = msgChange->mGroupId;
-                        pending.msgId = msgChange->mMsgId;
-                        pending.fileHash = packFile.mHash;
-                        pending.refUpdates = gitMsg->mRefUpdates;
-                        
-                        RS_STACK_MUTEX(mRetroGitMtx);
-                        mPendingPackfiles.push_back(pending);
                     }
-                } else if (!gitMsg->mPackfileData.empty()) {
-                    if (GitManager::unpackPackfile(repoPath, gitMsg->mPackfileData, gitMsg->mRefUpdates)) {
-                        unpackedImmediately = true;
-                    }
+                }
+                else if (gitMsg->mGitMsgType == 2 || gitMsg->mGitMsgType == 3) {
+                    isPRorStatusUpdate = true;
                 }
             }
         }
 
-        if (unpackedImmediately) {
-          uint32_t pToken;
-          setMessageProcessedStatus(pToken, RsGxsGrpMsgIdPair(msgChange->mGroupId, msgChange->mMsgId), true);
+        if (unpackedImmediately || isPRorStatusUpdate) {
+          if (unpackedImmediately) {
+              uint32_t pToken;
+              setMessageProcessedStatus(pToken, RsGxsGrpMsgIdPair(msgChange->mGroupId, msgChange->mMsgId), true);
+          }
           if (rsEvents) {
             RsEventType gitEventType = (RsEventType)rsEvents->getDynamicEventType("GIT");
             auto ev = std::make_shared<RsGitEvent>(gitEventType);
@@ -553,7 +561,7 @@ bool p3Git::closePullRequest(uint32_t &token, const RsGxsGroupId &groupId, const
     msgItem->meta.mGroupId = groupId;
     msgItem->meta.mParentId = msgId;
     
-    msgItem->meta.mThreadId.clear();
+    msgItem->meta.mThreadId = msgId;
     
     if (rsIdentity) {
         std::list<RsGxsId> ownIds;
@@ -1223,6 +1231,13 @@ void p3Git::receiveData(const RsGxsTunnelId& id, unsigned char *data, uint32_t d
             if (GitManager::cloneRepository(barePath, pc.localPath)) {
                 std::cout << "p3Git: Successfully cloned/checked out bare repo to working path: " << pc.localPath << std::endl;
                 postCloneStatus(groupId, "Clone completed successfully!", true);
+                if (rsEvents) {
+                    RsEventType gitEventType = (RsEventType)rsEvents->getDynamicEventType("GIT");
+                    auto ev = std::make_shared<RsGitEvent>(gitEventType);
+                    ev->mGitGroupId = groupId;
+                    ev->mGitEventCode = RsGitEventCode::NEW_POST;
+                    rsEvents->postEvent(ev);
+                }
             } else {
                 std::cerr << "p3Git: Failed to clone bare repo to working path: " << pc.localPath << std::endl;
                 postCloneStatus(groupId, "Failed to write working tree to selected path.", false);
@@ -1270,15 +1285,25 @@ void p3Git::receiveData(const RsGxsTunnelId& id, unsigned char *data, uint32_t d
         std::string barePath = GitManager::getBareRepoPath(groupId.toStdString());
         if (GitManager::unpackPackfile(barePath, std::string(packfileData.data(), packfileData.size()), refUpdates)) {
             bool hasWorkingDir = !pp.localPath.empty() && GitManager::isValidRepository(pp.localPath);
+            bool pullSuccess = false;
             if (hasWorkingDir) {
                 postCloneStatus(groupId, "Syncing working tree...", false);
                 if (GitManager::pullRepository(pp.localPath)) {
                     postCloneStatus(groupId, "Sync completed successfully!", true);
+                    pullSuccess = true;
                 } else {
                     postCloneStatus(groupId, "Failed to update working tree with new changes.", false);
                 }
             } else {
                 postCloneStatus(groupId, "Bare repository synced successfully!", true);
+                pullSuccess = true;
+            }
+            if (pullSuccess && rsEvents) {
+                RsEventType gitEventType = (RsEventType)rsEvents->getDynamicEventType("GIT");
+                auto ev = std::make_shared<RsGitEvent>(gitEventType);
+                ev->mGitGroupId = groupId;
+                ev->mGitEventCode = RsGitEventCode::NEW_POST;
+                rsEvents->postEvent(ev);
             }
         } else {
             postCloneStatus(groupId, "Failed to unpack sync packfile.", false);

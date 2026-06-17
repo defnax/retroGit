@@ -24,6 +24,9 @@
 #include <QWidget>
 #include <QString>
 #include <memory>
+#include <vector>
+#include <string>
+#include <utility>
 #include "interface/rsGit.h"
 
 namespace Ui {
@@ -65,6 +68,13 @@ private:
     Ui::GitWidget *ui;
     MainWidget *mMainWidget;
     QString mGroupId;
+
+    QString mLastGroupId;
+    std::string mLastRepoPath;
+    std::string mLastSelectedBranch;
+    std::vector<std::string> mLastCommitHashes;
+    std::vector<std::pair<std::string, char>> mLastLocalChanges;
+    std::vector<std::pair<std::string, uint32_t>> mLastUpdates;
 };
 
 #endif // GITWIDGET_H

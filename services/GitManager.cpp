@@ -185,9 +185,33 @@ bool GitManager::createPackfile(const std::string& repoPath, std::string& outPac
         git_revwalk *walk = NULL;
         if (git_revwalk_new(&walk, repo) == 0) {
             git_revwalk_sorting(walk, GIT_SORT_TIME);
-            if (git_revwalk_push_head(walk) == 0) {
-                error = git_packbuilder_insert_walk(pb, walk);
+            
+            git_reference_iterator *ref_it = NULL;
+            if (git_reference_iterator_new(&ref_it, repo) == 0) {
+                git_reference *ref = NULL;
+                while (git_reference_next(&ref, ref_it) == 0) {
+                    std::string ref_name = git_reference_name(ref);
+                    if (ref_name.find("refs/heads/") == 0 || ref_name.find("refs/tags/") == 0) {
+                        const git_oid *oid = git_reference_target(ref);
+                        if (oid) {
+                            char oid_str[GIT_OID_HEXSZ + 1];
+                            git_oid_tostr(oid_str, sizeof(oid_str), oid);
+                            outRefUpdates[ref_name] = std::string(oid_str);
+                            
+                            git_object *peeled = NULL;
+                            if (git_reference_peel(&peeled, ref, GIT_OBJECT_COMMIT) == 0) {
+                                const git_oid *peeled_oid = git_object_id(peeled);
+                                git_revwalk_push(walk, peeled_oid);
+                                git_object_free(peeled);
+                            }
+                        }
+                    }
+                    git_reference_free(ref);
+                }
+                git_reference_iterator_free(ref_it);
             }
+            
+            error = git_packbuilder_insert_walk(pb, walk);
             git_revwalk_free(walk);
         }
         

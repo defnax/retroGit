@@ -34,6 +34,7 @@
 #include <QPushButton>
 #include <QHeaderView>
 #include <QMenu>
+#include <QTimer>
 #include <iostream>
 
 extern RsGit *rsGit;
@@ -64,6 +65,14 @@ GitWidget::GitWidget(MainWidget *mainWidget, QWidget *parent)
     connect(ui->mCommitTable, &QTableWidget::itemSelectionChanged, this, &GitWidget::onCommitSelectionChanged);
     connect(ui->mCommitTable, &QTableWidget::customContextMenuRequested, this, &GitWidget::onCommitTableContextMenu);
 
+    QTimer *timer = new QTimer(this);
+    connect(timer, &QTimer::timeout, this, [this]() {
+        if (isVisible() && !mGroupId.isEmpty()) {
+            refresh();
+        }
+    });
+    timer->start(3000);
+
     clear();
 }
 
@@ -87,6 +96,13 @@ void GitWidget::clear()
     ui->mLblSubscriberInfo->setVisible(false);
     ui->mCommitTable->setRowCount(0);
     mGroupId.clear();
+
+    mLastGroupId.clear();
+    mLastRepoPath.clear();
+    mLastSelectedBranch.clear();
+    mLastCommitHashes.clear();
+    mLastLocalChanges.clear();
+    mLastUpdates.clear();
 }
 
 void GitWidget::setGroupId(const QString &groupId)
@@ -133,6 +149,14 @@ void GitWidget::refresh()
         }
     }
 
+    bool hasLocalChanges = false;
+    if (isCloned) {
+        std::vector<GitLocalChange> localChanges;
+        if (GitManager::getLocalChanges(QDir::cleanPath(path).toStdString(), localChanges) && !localChanges.empty()) {
+            hasLocalChanges = true;
+        }
+    }
+
     ui->mBtnPush->setEnabled(isAdmin);
     ui->mBtnPull->setEnabled(true);
     if (!isSubscribed) {
@@ -140,7 +164,7 @@ void GitWidget::refresh()
     } else {
         ui->mBtnClone->setEnabled(!isAdmin && !isCloned);
     }
-    ui->mBtnCommit->setEnabled(hasPath && pathExists && isAdmin);
+    ui->mBtnCommit->setEnabled(hasPath && pathExists && isAdmin && hasLocalChanges);
 
     ui->mBtnBrowse->setEnabled(isSubscribed || isAdmin);
     ui->mLocalPathEdit->setEnabled(isSubscribed || isAdmin);
@@ -162,7 +186,7 @@ void GitWidget::handleGitEvent(const RsGitEvent *e)
     if (mGroupId.isEmpty() || e->mGitGroupId != RsGxsGroupId(mGroupId.toStdString()))
         return;
 
-    if (e->mGitEventCode == RsGitEventCode::NEW_POST || e->mGitEventCode == RsGitEventCode::READ_STATUS_CHANGED) {
+    if (e->mGitEventCode == RsGitEventCode::NEW_POST || e->mGitEventCode == RsGitEventCode::READ_STATUS_CHANGED || e->mGitEventCode == RsGitEventCode::POST_UPDATED) {
         refresh();
     }
 }
@@ -381,13 +405,23 @@ void GitWidget::onPushClicked()
         if (rsGit) {
             rsGit->getUpdates(RsGxsGroupId(mGroupId.toStdString()), updates);
         }
-        for (const auto &update : updates) {
-            for (const auto &pair : refUpdates) {
+        bool allAlreadyPublished = true;
+        for (const auto &pair : refUpdates) {
+            bool thisRefPublished = false;
+            for (const auto &update : updates) {
                 if (update.mRefUpdates.count(pair.first) && update.mRefUpdates.at(pair.first) == pair.second) {
-                    QMessageBox::information(this, tr("Already Published"), tr("This commit history has already been published to GXS."));
-                    return;
+                    thisRefPublished = true;
+                    break;
                 }
             }
+            if (!thisRefPublished) {
+                allAlreadyPublished = false;
+                break;
+            }
+        }
+        if (allAlreadyPublished && !refUpdates.empty()) {
+            QMessageBox::information(this, tr("Already Published"), tr("This commit history has already been published to GXS."));
+            return;
         }
 
         std::vector<GitCommitInfo> latestCommits;
@@ -448,7 +482,7 @@ void GitWidget::onCommitSelectionChanged()
     QString rawPath = ui->mLocalPathEdit->text().trimmed();
     if (!rawPath.isEmpty()) {
         QString localPath = QDir::cleanPath(rawPath);
-        if (QDir(localPath).exists()) {
+        if (QDir(localPath).exists() && GitManager::isValidRepository(localPath.toStdString())) {
             repoPath = localPath.toStdString();
         }
     }
@@ -518,14 +552,22 @@ void GitWidget::onCommitReadStatusToggled(const QString &msgIdStr, bool markRead
 
 void GitWidget::populateCommitLog()
 {
-    ui->mCommitTable->setRowCount(0);
-    if (mGroupId.isEmpty()) return;
+    if (mGroupId.isEmpty()) {
+        ui->mCommitTable->setRowCount(0);
+        mLastGroupId.clear();
+        mLastRepoPath.clear();
+        mLastSelectedBranch.clear();
+        mLastCommitHashes.clear();
+        mLastLocalChanges.clear();
+        mLastUpdates.clear();
+        return;
+    }
 
     std::string repoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
     QString rawPath = ui->mLocalPathEdit->text().trimmed();
     if (!rawPath.isEmpty()) {
         QString localPath = QDir::cleanPath(rawPath);
-        if (QDir(localPath).exists()) {
+        if (QDir(localPath).exists() && GitManager::isValidRepository(localPath.toStdString())) {
             repoPath = localPath.toStdString();
         }
     }
@@ -539,7 +581,7 @@ void GitWidget::populateCommitLog()
     }
 
     std::vector<GitCommitInfo> commits;
-    bool gotLog = GitManager::getCommitLog(repoPath, commits, selectedBranch);
+    GitManager::getCommitLog(repoPath, commits, selectedBranch);
 
     std::vector<GitLocalChange> localChanges;
     bool hasLocalChanges = false;
@@ -548,22 +590,57 @@ void GitWidget::populateCommitLog()
         hasLocalChanges = true;
     }
 
+    std::vector<RsGitUpdate> updates;
+    if (rsGit) {
+        rsGit->getUpdates(RsGxsGroupId(mGroupId.toStdString()), updates);
+    }
+
+    // State comparison for early return (detect real-time changes without clearing selection/flickering)
+    std::vector<std::string> currentCommitHashes;
+    for (const auto &c : commits) {
+        currentCommitHashes.push_back(c.full_hash);
+    }
+
+    std::vector<std::pair<std::string, char>> currentLocalChanges;
+    for (const auto &c : localChanges) {
+        currentLocalChanges.push_back({c.path, c.status});
+    }
+
+    std::vector<std::pair<std::string, uint32_t>> currentUpdates;
+    for (const auto &u : updates) {
+        currentUpdates.push_back({u.mMeta.mMsgId.toStdString(), u.mMeta.mMsgStatus});
+    }
+
+    if (mGroupId == mLastGroupId &&
+        repoPath == mLastRepoPath &&
+        selectedBranch == mLastSelectedBranch &&
+        currentCommitHashes == mLastCommitHashes &&
+        currentLocalChanges == mLastLocalChanges &&
+        currentUpdates == mLastUpdates) {
+        return; // No changes to display, skip clearing/rebuilding the table
+    }
+
+    mLastGroupId = mGroupId;
+    mLastRepoPath = repoPath;
+    mLastSelectedBranch = selectedBranch;
+    mLastCommitHashes = currentCommitHashes;
+    mLastLocalChanges = currentLocalChanges;
+    mLastUpdates = currentUpdates;
+
+    ui->mCommitTable->setRowCount(0);
+
     std::set<std::string> localCommitShas;
     for (const auto &c : commits) {
         localCommitShas.insert(c.hash);
         localCommitShas.insert(c.full_hash);
     }
 
-    std::vector<RsGitUpdate> updates;
-    if (rsGit) {
-        rsGit->getUpdates(RsGxsGroupId(mGroupId.toStdString()), updates);
-    }
-
     std::set<std::string> allRepoCommitShas;
     std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
-    GitManager::getAllCommitShas(bareRepoPath, allRepoCommitShas);
-    if (repoPath != bareRepoPath) {
+    if (GitManager::isValidRepository(repoPath)) {
         GitManager::getAllCommitShas(repoPath, allRepoCommitShas);
+    } else {
+        GitManager::getAllCommitShas(bareRepoPath, allRepoCommitShas);
     }
 
     std::vector<RsGitUpdate> undownloadedUpdates;
