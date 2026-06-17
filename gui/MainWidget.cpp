@@ -125,8 +125,8 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
     mPushesWidget = new PushesWidget(this, ui->rightPaneTabWidget);
     
     ui->rightPaneTabWidget->addTab(mGitWidget, QIcon(":/images/git.png"), tr("Working Directory"));
-    ui->rightPaneTabWidget->addTab(mCodeWidget, QIcon(":/images/git.png"), tr("Files"));
-    ui->rightPaneTabWidget->addTab(mPushesWidget, QIcon(":/images/git.png"), tr("Pushes / Packs"));
+    ui->rightPaneTabWidget->addTab(mCodeWidget, QIcon(":/images/code-16_.png"), tr("Code"));
+    ui->rightPaneTabWidget->addTab(mPushesWidget, QIcon(":/images/database_.png"), tr("Pushes / Packs"));
     
     ui->rightPaneTabWidget->setTabsClosable(true);
     connect(ui->rightPaneTabWidget, SIGNAL(tabCloseRequested(int)), this, SLOT(onTabCloseRequested(int)));

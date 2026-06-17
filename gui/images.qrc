@@ -12,5 +12,12 @@
 		<file>images/git-pull-request-closed.png</file>
 		<file>images/git-merge.png</file>
 		<file>images/git-merge-pink.png</file>
+		<file>images/comment-discussion-16_.png</file>
+		<file>images/commit-24_.png</file>
+		<file>images/code-16_.png</file>
+		<file>images/database_.png</file>
+		<file>images/file-diff-24_.png</file>
+		<file>images/file-16_ .png</file>
+		<file>images/file-directory-fill-24_.png</file>
     </qresource>
 </RCC>

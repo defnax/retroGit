@@ -106,7 +106,7 @@
     </layout>
    </item>
    <item>
-    <widget class="QListWidget" name="mRepoBrowserList"/>
+    <widget class="QTreeWidget" name="mRepoBrowserList"/>
    </item>
   </layout>
  </widget>

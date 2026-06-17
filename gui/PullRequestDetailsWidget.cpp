@@ -52,6 +52,11 @@ PullRequestDetailsWidget::PullRequestDetailsWidget(const QString &groupId, const
 {
     ui->setupUi(this);
 
+    // Set tab icons
+    ui->mPRTabs->setTabIcon(0, QIcon(":/images/comment-discussion-16_.png"));
+    ui->mPRTabs->setTabIcon(1, QIcon(":/images/commit-24_.png"));
+    ui->mPRTabs->setTabIcon(2, QIcon(":/images/file-diff-24_.png"));
+
     // Styling Title & Status Badge (GitHub-like)
     ui->mLblTitle->setStyleSheet("font-size: 20px; font-weight: bold; color: #24292f;");
     
