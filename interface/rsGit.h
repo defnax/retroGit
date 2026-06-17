@@ -132,6 +132,11 @@ public:
      */
     virtual bool publishPullRequest(uint32_t &token, RsGitPullRequest &pr) = 0;
 
+    /**
+     * @brief Close or update status of a Pull Request.
+     */
+    virtual bool closePullRequest(uint32_t &token, const RsGxsGroupId &groupId, const RsGxsMessageId &msgId, uint32_t status) = 0;
+
     virtual bool getGroups(const std::list<RsGxsGroupId> &groupIds,std::vector<RsGitGroup> &groups) = 0;
 
     /**

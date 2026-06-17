@@ -47,9 +47,12 @@ private slots:
     void onFilterTextChanged(const QString &text);
     void onRowDoubleClicked(int row, int column);
     void onViewPRDetailsClicked(const QString &msgIdStr);
+    void onOpenFilterClicked();
+    void onClosedFilterClicked();
 
 private:
     void populatePRList();
+    void updateFilterButtons(bool showOpenOnly, bool showClosedOnly);
 
     Ui::PullRequestsWidget *ui;
     MainWidget *mMainWidget;

@@ -185,9 +185,33 @@ bool GitManager::createPackfile(const std::string& repoPath, std::string& outPac
         git_revwalk *walk = NULL;
         if (git_revwalk_new(&walk, repo) == 0) {
             git_revwalk_sorting(walk, GIT_SORT_TIME);
-            if (git_revwalk_push_head(walk) == 0) {
-                error = git_packbuilder_insert_walk(pb, walk);
+            
+            git_reference_iterator *ref_it = NULL;
+            if (git_reference_iterator_new(&ref_it, repo) == 0) {
+                git_reference *ref = NULL;
+                while (git_reference_next(&ref, ref_it) == 0) {
+                    std::string ref_name = git_reference_name(ref);
+                    if (ref_name.find("refs/heads/") == 0 || ref_name.find("refs/tags/") == 0) {
+                        const git_oid *oid = git_reference_target(ref);
+                        if (oid) {
+                            char oid_str[GIT_OID_HEXSZ + 1];
+                            git_oid_tostr(oid_str, sizeof(oid_str), oid);
+                            outRefUpdates[ref_name] = std::string(oid_str);
+                            
+                            git_object *peeled = NULL;
+                            if (git_reference_peel(&peeled, ref, GIT_OBJECT_COMMIT) == 0) {
+                                const git_oid *peeled_oid = git_object_id(peeled);
+                                git_revwalk_push(walk, peeled_oid);
+                                git_object_free(peeled);
+                            }
+                        }
+                    }
+                    git_reference_free(ref);
+                }
+                git_reference_iterator_free(ref_it);
             }
+            
+            error = git_packbuilder_insert_walk(pb, walk);
             git_revwalk_free(walk);
         }
         
@@ -199,7 +223,14 @@ bool GitManager::createPackfile(const std::string& repoPath, std::string& outPac
             if (git_reference_name_to_id(&head_oid, repo, "HEAD") == 0) {
                 char oid_str[GIT_OID_HEXSZ + 1];
                 git_oid_tostr(oid_str, sizeof(oid_str), &head_oid);
-                outRefUpdates["refs/heads/master"] = std::string(oid_str);
+                
+                std::string branch_ref = "refs/heads/master";
+                git_reference *head_ref = NULL;
+                if (git_repository_head(&head_ref, repo) == 0) {
+                    branch_ref = git_reference_name(head_ref);
+                    git_reference_free(head_ref);
+                }
+                outRefUpdates[branch_ref] = std::string(oid_str);
             }
         }
         git_packbuilder_free(pb);
@@ -213,6 +244,64 @@ bool GitManager::createPackfile(const std::string& repoPath, std::string& outPac
     git_repository_free(repo);
     return error == 0;
 }
+
+bool GitManager::createPackfileForRef(const std::string& repoPath, const std::string& refName, std::string& outPackfileData, std::map<std::string, std::string>& outRefUpdates)
+{
+    std::string normPath = normalizePath(repoPath);
+    git_repository *repo = NULL;
+    int error = git_repository_open(&repo, normPath.c_str());
+    if (error < 0) {
+        std::cerr << "createPackfileForRef failed to open repo" << std::endl;
+        return false;
+    }
+
+    git_oid ref_oid;
+    std::string fullRef = refName;
+    if (fullRef.rfind("refs/", 0) != 0) {
+        fullRef = "refs/heads/" + refName;
+    }
+
+    git_packbuilder *pb = NULL;
+    error = git_packbuilder_new(&pb, repo);
+    if (error == 0) {
+        git_revwalk *walk = NULL;
+        if (git_revwalk_new(&walk, repo) == 0) {
+            git_revwalk_sorting(walk, GIT_SORT_TIME);
+            
+            if (git_reference_name_to_id(&ref_oid, repo, fullRef.c_str()) == 0) {
+                if (git_revwalk_push(walk, &ref_oid) == 0) {
+                    error = git_packbuilder_insert_walk(pb, walk);
+                } else {
+                    error = -1;
+                }
+            } else {
+                error = -1;
+            }
+            git_revwalk_free(walk);
+        } else {
+            error = -1;
+        }
+        
+        if (error == 0) {
+            outPackfileData.clear();
+            git_packbuilder_foreach(pb, packbuilder_callback, &outPackfileData);
+            
+            char oid_str[GIT_OID_HEXSZ + 1];
+            git_oid_tostr(oid_str, sizeof(oid_str), &ref_oid);
+            outRefUpdates[fullRef] = std::string(oid_str);
+        }
+        git_packbuilder_free(pb);
+    }
+    
+    if (error < 0) {
+        const git_error *e = git_error_last();
+        std::cerr << "Error creating packfile for ref " << refName << ": " << (e ? e->message : "Unknown") << std::endl;
+    }
+
+    git_repository_free(repo);
+    return error == 0;
+}
+
 
 bool GitManager::getCommitLog(const std::string &repoPath, std::vector<GitCommitInfo> &commits, const std::string& branchOrTag) {
     std::string normPath = normalizePath(repoPath);
@@ -1185,6 +1274,46 @@ bool GitManager::mergeBranch(const std::string& repoPath, const std::string& sou
     git_repository_free(repo);
     return true;
 }
+
+bool GitManager::isBranchMerged(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch)
+{
+    std::string normPath = normalizePath(repoPath);
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, normPath.c_str()) != 0) {
+        return false;
+    }
+
+    git_oid target_oid;
+    std::string targetRef = "refs/heads/" + targetBranch;
+    if (git_reference_name_to_id(&target_oid, repo, targetRef.c_str()) != 0) {
+        if (git_reference_name_to_id(&target_oid, repo, targetBranch.c_str()) != 0) {
+            git_repository_free(repo);
+            return false;
+        }
+    }
+
+    git_oid source_oid;
+    std::string sourceRef = "refs/heads/" + sourceBranch;
+    if (git_reference_name_to_id(&source_oid, repo, sourceRef.c_str()) != 0) {
+        if (git_reference_name_to_id(&source_oid, repo, sourceBranch.c_str()) != 0) {
+            git_repository_free(repo);
+            return false;
+        }
+    }
+
+    git_oid merge_base_oid;
+    int err = git_merge_base(&merge_base_oid, repo, &target_oid, &source_oid);
+    bool merged = false;
+    if (err == 0) {
+        if (git_oid_equal(&merge_base_oid, &source_oid)) {
+            merged = true;
+        }
+    }
+
+    git_repository_free(repo);
+    return merged;
+}
+
 
 bool GitManager::getCommitsBetweenBranches(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch, std::vector<GitCommitInfo>& commits)
 {

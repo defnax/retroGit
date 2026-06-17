@@ -125,8 +125,8 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
     mPushesWidget = new PushesWidget(this, ui->rightPaneTabWidget);
     
     ui->rightPaneTabWidget->addTab(mGitWidget, QIcon(":/images/git.png"), tr("Working Directory"));
-    ui->rightPaneTabWidget->addTab(mCodeWidget, QIcon(":/images/git.png"), tr("Files"));
-    ui->rightPaneTabWidget->addTab(mPushesWidget, QIcon(":/images/git.png"), tr("Pushes / Packs"));
+    ui->rightPaneTabWidget->addTab(mCodeWidget, QIcon(":/images/code-16_.png"), tr("Code"));
+    ui->rightPaneTabWidget->addTab(mPushesWidget, QIcon(":/images/database_.png"), tr("Pushes / Packs"));
     
     ui->rightPaneTabWidget->setTabsClosable(true);
     connect(ui->rightPaneTabWidget, SIGNAL(tabCloseRequested(int)), this, SLOT(onTabCloseRequested(int)));
@@ -472,16 +472,78 @@ void MainWidget::handleEvent_main_thread(std::shared_ptr<const RsEvent> event)
             if (rsGit && rsGit->getGroups(groupIds, groups) && !groups.empty()) {
                 uint32_t flags = groups[0].mMeta.mSubscribeFlags;
                 isAdmin = IS_GROUP_ADMIN(flags);
-                
-                if (!isAdmin) {
-                    QString repoName = QString::fromUtf8(groups[0].mGroupName.c_str());
-                    QMessageBox::information(this, tr("New Updates Available"),
-                        tr("The repository '%1' has new commits published by the owner. Please pull/sync to update your local files.").arg(repoName));
+            }
+
+            bool prMerged = false;
+            bool prClosed = false;
+            // Check if any open/unprocessed pull request has been merged or closed
+            std::vector<RsGitPullRequest> pullRequests;
+            if (rsGit && rsGit->getPullRequests(e->mGitGroupId, pullRequests)) {
+                std::string bareRepoPath = GitManager::getBareRepoPath(e->mGitGroupId.toStdString());
+                for (auto &pr : pullRequests) {
+                    bool isUnprocessed = (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED);
+                    if (isUnprocessed) {
+                        if (GitManager::isBranchMerged(bareRepoPath, pr.mSourceBranch, pr.mTargetBranch) || pr.mStatus == 2) {
+                            // Automatically mark as processed locally
+                            uint32_t token;
+                            rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(e->mGitGroupId, pr.mMeta.mMsgId), true);
+                            prMerged = true;
+                            
+                            // Notify user about the merge
+                            QString prTitle = QString::fromStdString(pr.mTitle);
+                            QMessageBox::information(this, tr("Pull Request Merged"),
+                                tr("Pull request '%1' has been merged into branch '%2'!").arg(prTitle).arg(QString::fromStdString(pr.mTargetBranch)));
+                        }
+                        else if (pr.mStatus == 1) {
+                            // Automatically mark as processed locally
+                            uint32_t token;
+                            rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(e->mGitGroupId, pr.mMeta.mMsgId), true);
+                            prClosed = true;
+                            
+                            // Notify user about the closure
+                            QString prTitle = QString::fromStdString(pr.mTitle);
+                            QMessageBox::information(this, tr("Pull Request Closed"),
+                                tr("Pull request '%1' has been closed!").arg(prTitle));
+                        }
+                    }
                 }
+            }
+
+            bool hasUndownloaded = true;
+            if (!updatedGroupId.isEmpty()) {
+                QString localPath = loadRepoLocalPath(updatedGroupId).trimmed();
+                if (!localPath.isEmpty()) {
+                    QString cleanPath = QDir::cleanPath(localPath);
+                    if (QDir(cleanPath).exists() && GitManager::isValidRepository(cleanPath.toStdString())) {
+                        std::vector<RsGitUpdate> updates;
+                        if (rsGit && rsGit->getUpdates(e->mGitGroupId, updates)) {
+                            std::set<std::string> localCommitShas;
+                            GitManager::getAllCommitShas(cleanPath.toStdString(), localCommitShas);
+                            
+                            hasUndownloaded = false;
+                            for (const auto &update : updates) {
+                                for (const auto &pair : update.mRefUpdates) {
+                                    if (localCommitShas.count(pair.second) == 0) {
+                                        hasUndownloaded = true;
+                                        break;
+                                    }
+                                }
+                                if (hasUndownloaded) break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!isAdmin && !prMerged && !prClosed && !groups.empty() && hasUndownloaded) {
+                QString repoName = QString::fromUtf8(groups[0].mGroupName.c_str());
+                QMessageBox::information(this, tr("New Updates Available"),
+                    tr("The repository '%1' has new commits published by the owner. Please pull/sync to update your local files.").arg(repoName));
             }
             break;
         }
         case RsGitEventCode::READ_STATUS_CHANGED:
+        case RsGitEventCode::POST_UPDATED:
         {
             loadGroupMeta();
             refreshCurrentRepo();

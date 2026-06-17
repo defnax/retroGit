@@ -66,6 +66,7 @@ public:
 
     virtual bool publishGitUpdate(uint32_t &token, RsGitUpdate &update) override;
     virtual bool publishPullRequest(uint32_t &token, RsGitPullRequest &pr) override;
+    virtual bool closePullRequest(uint32_t &token, const RsGxsGroupId &groupId, const RsGxsMessageId &msgId, uint32_t status) override;
 
     virtual bool getGroups(const std::list<RsGxsGroupId> &groupIds, std::vector<RsGitGroup> &groups) override;
 
