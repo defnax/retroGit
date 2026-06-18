@@ -249,11 +249,11 @@ void PullRequestDetailsWidget::populateFilesChangedTab()
 {
     ui->mFilesTree->clear();
     std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
-    std::vector<std::string> changedFiles;
+    std::vector<GitCommitFileChange> changedFiles;
 
     if (GitManager::getPRChangedFiles(bareRepoPath, mPR.mSourceBranch, mPR.mTargetBranch, changedFiles)) {
         for (const auto &file : changedFiles) {
-            QString filePath = QString::fromStdString(file);
+            QString filePath = QString::fromStdString(file.path);
             QStringList parts = filePath.split('/');
             
             QTreeWidgetItem *parent = nullptr;
@@ -285,7 +285,13 @@ void PullRequestDetailsWidget::populateFilesChangedTab()
             
             QTreeWidgetItem *fileItem = new QTreeWidgetItem();
             fileItem->setText(0, parts.last());
-            fileItem->setIcon(0, QApplication::style()->standardIcon(QStyle::SP_FileIcon));
+            if (file.status == '+' || file.status == '?') {
+                fileItem->setIcon(0, QIcon(":/images/file-added-16_.png"));
+            } else if (file.status == '~') {
+                fileItem->setIcon(0, QIcon(":/images/file-diff-2.png"));
+            } else {
+                fileItem->setIcon(0, QApplication::style()->standardIcon(QStyle::SP_FileIcon));
+            }
             fileItem->setData(0, Qt::UserRole, filePath);
             
             if (parent) {

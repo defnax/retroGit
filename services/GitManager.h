@@ -46,6 +46,11 @@ struct GitLocalChange {
     std::string color_hex;
 };
 
+struct GitCommitFileChange {
+    std::string path;
+    char status; // '+', '-', '~', '?'
+};
+
 class GitManager
 {
 public:
@@ -146,7 +151,7 @@ public:
     static bool getCommitDetails(const std::string& repoPath, const std::string& commitHash,
                                  std::string& authorName, std::string& authorEmail,
                                  std::string& summary, std::string& body,
-                                 std::string& date, std::vector<std::string>& changedFiles);
+                                 std::string& date, std::vector<GitCommitFileChange>& changedFiles);
 
     /**
      * @brief Retrieve the diff of a specific file inside a commit.
@@ -196,7 +201,7 @@ public:
     /**
      * @brief Retrieve list of changed files between source branch and target branch.
      */
-    static bool getPRChangedFiles(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch, std::vector<std::string>& changedFiles);
+    static bool getPRChangedFiles(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch, std::vector<GitCommitFileChange>& changedFiles);
 
     /**
      * @brief Retrieve patch diff lines for a file between source branch and target branch.

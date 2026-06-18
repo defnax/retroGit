@@ -1,23 +1,26 @@
 <RCC>
-    <qresource prefix="/">
-        <file>images/git.png</file>
-		<file>images/git-notify.png</file>
-		<file>images/git-white.png</file>
-		<file>images/add.png</file>
-		<file>images/git-branch.png</file>
-		<file>images/git-branch-2.png</file>
-		<file>images/tag.png</file>
-		<file>images/git-pull-request.png</file>
-		<file>images/git-pull-request-green.png</file>
-		<file>images/git-pull-request-closed.png</file>
-		<file>images/git-merge.png</file>
-		<file>images/git-merge-pink.png</file>
-		<file>images/comment-discussion-16_.png</file>
-		<file>images/commit-24_.png</file>
-		<file>images/code-16_.png</file>
-		<file>images/database_.png</file>
-		<file>images/file-diff-24_.png</file>
-		<file>images/file-16_ .png</file>
-		<file>images/file-directory-fill-24_.png</file>
-    </qresource>
+  <qresource prefix="/">
+    <file>images/terminal-16_.png</file>
+    <file>images/git.png</file>
+    <file>images/git-notify.png</file>
+    <file>images/git-white.png</file>
+    <file>images/add.png</file>
+    <file>images/git-branch.png</file>
+    <file>images/git-branch-2.png</file>
+    <file>images/tag.png</file>
+    <file>images/git-pull-request.png</file>
+    <file>images/git-pull-request-green.png</file>
+    <file>images/git-pull-request-closed.png</file>
+    <file>images/git-merge.png</file>
+    <file>images/git-merge-pink.png</file>
+    <file>images/comment-discussion-16_.png</file>
+    <file>images/commit-24_.png</file>
+    <file>images/code-16_.png</file>
+    <file>images/database_.png</file>
+    <file>images/file-diff-24_.png</file>
+    <file>images/file-16_.png</file>
+    <file>images/file-directory-fill-24_.png</file>
+    <file>images/file-diff-2.png</file>
+    <file>images/file-added-16_.png</file>
+  </qresource>
 </RCC>
