@@ -326,7 +326,7 @@ void CodeWidget::populateRepoBrowser(const QString &branchOrTag)
 
     if (GitManager::getRepoFiles(bareRepoPath, files, branchOrTag.toStdString())) {
         QIcon folderIcon(":/images/file-directory-fill-24_.png");
-        QIcon fileIcon(":/images/file-16_ .png");
+        QIcon fileIcon(":/images/file-16_.png");
 
         QMap<QString, RepoBrowserItem*> folderItems;
 

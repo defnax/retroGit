@@ -650,7 +650,7 @@ bool GitManager::checkoutBranch(const std::string& repoPath, const std::string& 
 bool GitManager::getCommitDetails(const std::string& repoPath, const std::string& commitHash,
                                  std::string& authorName, std::string& authorEmail,
                                  std::string& summary, std::string& body,
-                                 std::string& date, std::vector<std::string>& changedFiles)
+                                 std::string& date, std::vector<GitCommitFileChange>& changedFiles)
 {
     std::string normPath = normalizePath(repoPath);
     git_repository *repo = nullptr;
@@ -713,7 +713,15 @@ bool GitManager::getCommitDetails(const std::string& repoPath, const std::string
                         path = delta->old_file.path;
                     }
                     if (!path.empty()) {
-                        changedFiles.push_back(path);
+                        GitCommitFileChange change;
+                        change.path = path;
+                        change.status = '~'; // modified default
+                        if (delta->status == GIT_DELTA_ADDED || delta->status == GIT_DELTA_UNTRACKED) {
+                            change.status = '+';
+                        } else if (delta->status == GIT_DELTA_DELETED) {
+                            change.status = '-';
+                        }
+                        changedFiles.push_back(change);
                     }
                 }
             }
@@ -1388,7 +1396,7 @@ bool GitManager::getCommitsBetweenBranches(const std::string& repoPath, const st
     return true;
 }
 
-bool GitManager::getPRChangedFiles(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch, std::vector<std::string>& changedFiles)
+bool GitManager::getPRChangedFiles(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch, std::vector<GitCommitFileChange>& changedFiles)
 {
     std::cerr << "RetroGit [DEBUG]: getPRChangedFiles started. RepoPath: " << repoPath << ", source: " << sourceBranch << ", target: " << targetBranch << std::endl;
     std::string normPath = normalizePath(repoPath);
@@ -1465,7 +1473,15 @@ bool GitManager::getPRChangedFiles(const std::string& repoPath, const std::strin
                     path = delta->old_file.path;
                 }
                 if (!path.empty()) {
-                    changedFiles.push_back(path);
+                    GitCommitFileChange change;
+                    change.path = path;
+                    change.status = '~'; // modified default
+                    if (delta->status == GIT_DELTA_ADDED || delta->status == GIT_DELTA_UNTRACKED) {
+                        change.status = '+';
+                    } else if (delta->status == GIT_DELTA_DELETED) {
+                        change.status = '-';
+                    }
+                    changedFiles.push_back(change);
                 }
             }
         }

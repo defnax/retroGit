@@ -74,6 +74,10 @@
        <property name="text">
         <string>Clone Repository</string>
        </property>
+       <property name="icon">
+        <iconset resource="images.qrc">
+         <normaloff>:/images/terminal-16_.png</normaloff>:/images/terminal-16_.png</iconset>
+       </property>
       </widget>
      </item>
      <item>
@@ -111,6 +115,8 @@
    </item>
   </layout>
  </widget>
- <resources/>
+ <resources>
+  <include location="images.qrc"/>
+ </resources>
  <connections/>
 </ui>

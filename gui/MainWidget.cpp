@@ -992,7 +992,13 @@ void MainWidget::showCommitDetails(const QString &fullHash, const QString &qRepo
                             QString prefixedText = QString("%1 %2").arg(change.status).arg(part);
                             childItem->setText(0, prefixedText);
                             childItem->setForeground(0, QBrush(QColor(QString::fromStdString(change.color_hex))));
-                            childItem->setIcon(0, style()->standardIcon(QStyle::SP_FileIcon));
+                            if (change.status == '+' || change.status == '?') {
+                                childItem->setIcon(0, QIcon(":/images/file-added-16_.png"));
+                            } else if (change.status == '~') {
+                                childItem->setIcon(0, QIcon(":/images/file-diff-2.png"));
+                            } else {
+                                childItem->setIcon(0, style()->standardIcon(QStyle::SP_FileIcon));
+                            }
                             childItem->setData(0, Qt::UserRole, QString::fromStdString(change.path));
                         } else {
                             childItem->setText(0, part);
@@ -1015,7 +1021,7 @@ void MainWidget::showCommitDetails(const QString &fullHash, const QString &qRepo
         }
     } else {
         std::string authorName, authorEmail, summary, body, date;
-        std::vector<std::string> changedFiles;
+        std::vector<GitCommitFileChange> changedFiles;
         
         if (GitManager::getCommitDetails(repoPath, fullHash.toStdString(),
                                          authorName, authorEmail,
@@ -1049,8 +1055,8 @@ void MainWidget::showCommitDetails(const QString &fullHash, const QString &qRepo
             
             mChangedFilesTree->clear();
             
-            for (const std::string& filePath : changedFiles) {
-                QString normalizedPath = QString::fromStdString(filePath).replace('\\', '/');
+            for (const GitCommitFileChange& change : changedFiles) {
+                QString normalizedPath = QString::fromStdString(change.path).replace('\\', '/');
                 QStringList pathParts = normalizedPath.split('/');
                 QTreeWidgetItem *parentItem = nullptr;
                 
@@ -1074,8 +1080,14 @@ void MainWidget::showCommitDetails(const QString &fullHash, const QString &qRepo
                         childItem->setData(0, Qt::UserRole + 1, part);
                         
                         if (i == pathParts.size() - 1) {
-                            childItem->setIcon(0, style()->standardIcon(QStyle::SP_FileIcon));
-                            childItem->setData(0, Qt::UserRole, QString::fromStdString(filePath));
+                            if (change.status == '+' || change.status == '?') {
+                                childItem->setIcon(0, QIcon(":/images/file-added-16_.png"));
+                            } else if (change.status == '~') {
+                                childItem->setIcon(0, QIcon(":/images/file-diff-2.png"));
+                            } else {
+                                childItem->setIcon(0, style()->standardIcon(QStyle::SP_FileIcon));
+                            }
+                            childItem->setData(0, Qt::UserRole, QString::fromStdString(change.path));
                         } else {
                             childItem->setIcon(0, style()->standardIcon(QStyle::SP_DirIcon));
                         }
