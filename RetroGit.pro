@@ -16,6 +16,13 @@ DESTDIR = lib
 TARGET = RetroGit
 CONFIG += c++17
 
+# RetroShare's bundled RapidJSON has an invalid, unused StringRef assignment
+# operator. GCC 15 diagnoses it before instantiation; keep the warning visible
+# until the parent project's RapidJSON is updated.
+win32-g++:greaterThan(QMAKE_GCC_MAJOR_VERSION, 14) {
+	QMAKE_CXXFLAGS += -Wno-error=template-body
+}
+
 DEPENDPATH  += ../../retroshare-gui/src/temp/ui ../../libretroshare/src
 INCLUDEPATH += ../../retroshare-gui/src/temp/ui ../../libretroshare/src
 INCLUDEPATH += ../../../Build/retroshare-gui/src/temp/ui
