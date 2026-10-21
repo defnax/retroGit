@@ -51,6 +51,7 @@ public:
 
 private slots:
     void onBrowseClicked();
+    void onInitializeClicked();
     void onCloneClicked();
     void onCommitClicked();
     void onPushClicked();

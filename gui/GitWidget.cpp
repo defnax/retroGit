@@ -28,6 +28,7 @@
 #include "CodeWidget.h"
 
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QDir>
 #include <QDateTime>
 #include <QMessageBox>
@@ -57,6 +58,7 @@ GitWidget::GitWidget(MainWidget *mainWidget, QWidget *parent)
     ui->mCommitTable->setContextMenuPolicy(Qt::CustomContextMenu);
 
     connect(ui->mBtnBrowse, &QPushButton::clicked, this, &GitWidget::onBrowseClicked);
+    connect(ui->mBtnInitialize, &QPushButton::clicked, this, &GitWidget::onInitializeClicked);
     connect(ui->mBtnClone, &QPushButton::clicked, this, &GitWidget::onCloneClicked);
     connect(ui->mBtnCommit, &QPushButton::clicked, this, &GitWidget::onCommitClicked);
     connect(ui->mBtnPush, &QPushButton::clicked, this, &GitWidget::onPushClicked);
@@ -88,6 +90,7 @@ void GitWidget::clear()
     ui->mLocalPathEdit->blockSignals(false);
     ui->mLocalPathEdit->setEnabled(false);
     ui->mBtnBrowse->setEnabled(false);
+    ui->mBtnInitialize->setEnabled(false);
     ui->mBtnClone->setEnabled(false);
     ui->mBtnCommit->setEnabled(false);
     ui->mBtnPush->setEnabled(false);
@@ -158,6 +161,8 @@ void GitWidget::refresh()
     }
 
     ui->mBtnPush->setEnabled(isAdmin);
+    ui->mBtnInitialize->setVisible(isAdmin);
+    ui->mBtnInitialize->setEnabled(isAdmin && pathExists && !isCloned);
     ui->mBtnPull->setEnabled(true);
     if (!isSubscribed) {
         ui->mBtnClone->setEnabled(false);
@@ -214,6 +219,46 @@ void GitWidget::onBrowseClicked()
     if (!dir.isEmpty()) {
         ui->mLocalPathEdit->setText(dir);
     }
+}
+
+void GitWidget::onInitializeClicked()
+{
+    if (mGroupId.isEmpty() || !rsGit) return;
+    std::vector<RsGitGroup> groups;
+    std::list<RsGxsGroupId> ids({RsGxsGroupId(mGroupId.toStdString())});
+    if (!rsGit->getGroups(ids, groups) || groups.empty() ||
+        !IS_GROUP_ADMIN(groups[0].mMeta.mSubscribeFlags)) return;
+
+    QString path = ui->mLocalPathEdit->text().trimmed();
+    if (path.isEmpty() || !QDir(path).exists()) {
+        QMessageBox::warning(this, tr("Initialize Repository"), tr("Please browse to an existing project folder first."));
+        return;
+    }
+    path = QDir::cleanPath(path);
+    std::string error;
+    if (GitManager::isValidRepository(path.toStdString(), &error)) {
+        refresh();
+        return;
+    }
+    // Do not reinitialize an existing repository that failed to open (for
+    // example because of ownership, permissions, or damaged metadata).
+    QDir dir(path);
+    QFileInfo metadata(dir.filePath(".git"));
+    if (metadata.exists() || metadata.isSymLink() ||
+        dir.exists("HEAD") || dir.exists("objects")) {
+        QMessageBox::critical(this, tr("Cannot Open Repository"),
+            tr("This folder contains Git metadata and will not be reinitialized.\n\n%1")
+                .arg(QString::fromStdString(error)));
+        return;
+    }
+    if (!GitManager::initRepository(path.toStdString(), false, &error)) {
+        QMessageBox::critical(this, tr("Initialization Failed"), QString::fromStdString(error));
+        return;
+    }
+    refresh();
+    mMainWidget->updateDisplay();
+    QMessageBox::information(this, tr("Repository Initialized"),
+        tr("Add your project files to this folder, then use Commit Changes to create your first commit. After committing, use Push / Publish."));
 }
 
 void GitWidget::onLocalPathChanged(const QString &text)
@@ -357,6 +402,12 @@ void GitWidget::onCommitClicked()
         }
     }
 
+    // An unborn branch has a HEAD name but is absent from the branch iterator.
+    // Keep it selectable for the initial commit, even if the sync repo has branches.
+    if (!currentBranch.empty() && !qBranches.contains(QString::fromStdString(currentBranch))) {
+        qBranches.append(QString::fromStdString(currentBranch));
+    }
+
     GitCommitDialog diag(QString::fromStdString(authorName), QString::fromStdString(authorEmail),
                          ownId, qBranches, QString::fromStdString(currentBranch), this);
     if (diag.exec() == QDialog::Accepted) {
@@ -389,14 +440,22 @@ void GitWidget::onPushClicked()
     QString localPath = ui->mLocalPathEdit->text().trimmed();
     std::string repoPath = localPath.toStdString();
 
-    if (!GitManager::isValidRepository(repoPath)) {
-        QMessageBox::critical(this, tr("Push Failed"), tr("Local path is not a valid git repository."));
+    std::string error;
+    if (!GitManager::isValidRepository(repoPath, &error)) {
+        QMessageBox::critical(this, tr("Push Failed"),
+            tr("Cannot open the local Git repository. For a new project folder, use Initialize Repository first.\n\n%1")
+                .arg(QString::fromStdString(error)));
         return;
     }
 
     std::string packfileData;
     std::map<std::string, std::string> refUpdates;
     if (GitManager::createPackfile(repoPath, packfileData, refUpdates)) {
+        if (refUpdates.empty()) {
+            QMessageBox::information(this, tr("Nothing to Publish"),
+                tr("Add files and use Commit Changes to create your first commit before publishing."));
+            return;
+        }
         // Unpack locally immediately so the owner's sync repo is instantly updated!
         std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
         GitManager::unpackPackfile(bareRepoPath, packfileData, refUpdates);

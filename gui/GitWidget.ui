@@ -50,7 +50,7 @@
    <item>
     <widget class="QLabel" name="mLblOwnerInfo">
      <property name="text">
-      <string>&lt;b&gt;For Repo Owners:&lt;/b&gt; Browse to your existing local project folder and &lt;b&gt;Push / Publish&lt;/b&gt;.</string>
+      <string>&lt;b&gt;For Repo Owners:&lt;/b&gt; Browse to your project folder. For a new folder, click &lt;b&gt;Initialize Repository&lt;/b&gt;, add files and &lt;b&gt;Commit Changes&lt;/b&gt;, then &lt;b&gt;Push / Publish&lt;/b&gt;.</string>
      </property>
      <property name="wordWrap">
       <bool>true</bool>
@@ -69,6 +69,13 @@
    </item>
    <item>
     <layout class="QHBoxLayout" name="actionLayout">
+     <item>
+      <widget class="QPushButton" name="mBtnInitialize">
+       <property name="text">
+        <string>Initialize Repository</string>
+       </property>
+      </widget>
+     </item>
      <item>
       <widget class="QPushButton" name="mBtnClone">
        <property name="text">

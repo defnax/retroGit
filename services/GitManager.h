@@ -67,12 +67,12 @@ public:
     /**
      * @brief Initialize a new Git repository at the given path.
      */
-    static bool initRepository(const std::string& repoPath, bool isBare = true);
+    static bool initRepository(const std::string& repoPath, bool isBare = true, std::string* errorMessage = nullptr);
 
     /**
      * @brief Check if the directory is a valid Git repository.
      */
-    static bool isValidRepository(const std::string& repoPath);
+    static bool isValidRepository(const std::string& repoPath, std::string* errorMessage = nullptr);
 
     /**
      * @brief Get the absolute bare repository path inside RsAccounts::AccountDirectory.

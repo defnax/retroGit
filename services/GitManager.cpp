@@ -50,14 +50,16 @@ void GitManager::shutdown()
     git_libgit2_shutdown();
 }
 
-bool GitManager::initRepository(const std::string& repoPath, bool isBare)
+bool GitManager::initRepository(const std::string& repoPath, bool isBare, std::string* errorMessage)
 {
+    if (errorMessage) errorMessage->clear();
     std::string normPath = normalizePath(repoPath);
     git_repository *repo = NULL;
     int error = git_repository_init(&repo, normPath.c_str(), isBare ? 1 : 0);
     
     if (error < 0) {
         const git_error *e = git_error_last();
+        if (errorMessage) *errorMessage = e ? e->message : "Unknown error";
         std::cerr << "Error " << error << " initRepository: " << (e ? e->message : "Unknown") << std::endl;
         return false;
     }
@@ -66,8 +68,9 @@ bool GitManager::initRepository(const std::string& repoPath, bool isBare)
     return true;
 }
  
-bool GitManager::isValidRepository(const std::string& repoPath)
+bool GitManager::isValidRepository(const std::string& repoPath, std::string* errorMessage)
 {
+    if (errorMessage) errorMessage->clear();
     std::string normPath = normalizePath(repoPath);
     git_repository *repo = NULL;
     int error = git_repository_open(&repo, normPath.c_str());
@@ -75,6 +78,8 @@ bool GitManager::isValidRepository(const std::string& repoPath)
         git_repository_free(repo);
         return true;
     }
+    const git_error *e = git_error_last();
+    if (errorMessage) *errorMessage = e ? e->message : "Unknown error";
     return false;
 }
  
