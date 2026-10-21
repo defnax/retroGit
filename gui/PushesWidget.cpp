@@ -28,6 +28,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QProgressBar>
 #include <QDir>
 #include "util/misc.h"
 #include <iostream>
@@ -47,15 +48,21 @@ PushesWidget::PushesWidget(MainWidget *mainWidget, QWidget *parent)
     ui->mPackfilesTable->setColumnCount(6);
     ui->mPackfilesTable->setHorizontalHeaderLabels(QStringList() << tr("Author") << tr("Date") << tr("Refs Updated") << tr("Size") << tr("Status / Progress") << tr("Action"));
     ui->mPackfilesTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    ui->mPackfilesTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     ui->mPackfilesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     ui->mPackfilesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
     // Setup Clones Table
-    ui->mClonesTable->setColumnCount(4);
-    ui->mClonesTable->setHorizontalHeaderLabels(QStringList() << tr("Repository") << tr("Author") << tr("Status / Progress") << tr("Date"));
-    ui->mClonesTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    ui->mClonesTable->setColumnCount(6);
+    ui->mClonesTable->setHorizontalHeaderLabels(QStringList() << tr("Repository") << tr("Author") << tr("Status") << tr("Progress") << tr("Received / Total") << tr("Date / Time"));
+    ui->mClonesTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
+    ui->mClonesTable->setColumnWidth(0, 180);
     ui->mClonesTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    ui->mClonesTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    ui->mClonesTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    ui->mClonesTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Interactive);
+    ui->mClonesTable->setColumnWidth(3, 160);
+    ui->mClonesTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    ui->mClonesTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
     ui->mClonesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     ui->mClonesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     ui->mClonesTable->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -103,23 +110,31 @@ void PushesWidget::refresh()
 
 void PushesWidget::handleGitEvent(const RsGitEvent *e)
 {
-    if (mGroupId.isEmpty() || e->mGitGroupId != RsGxsGroupId(mGroupId.toStdString()))
+    if (e->mGitEventCode != RsGitEventCode::CLONE_STATUS_CHANGED &&
+        (mGroupId.isEmpty() || e->mGitGroupId != RsGxsGroupId(mGroupId.toStdString())))
         return;
 
     if (e->mGitEventCode == RsGitEventCode::CLONE_STATUS_CHANGED) {
         // Find active clone in history and update it
         QString status = QString::fromStdString(e->mCloneStatus);
         for (int i = 0; i < (int)mCloneHistory.size(); ++i) {
-            if (mCloneHistory[i].repoId == mGroupId && 
+            if (mCloneHistory[i].repoId == QString::fromStdString(e->mGitGroupId.toStdString()) &&
                 !mCloneHistory[i].status.contains("Successful") && 
                 !mCloneHistory[i].status.contains("Failed") && 
                 !mCloneHistory[i].status.contains("completed")) 
             {
                 mCloneHistory[i].status = status;
+                if (e->mCloneBytesTotal > 0) {
+                    mCloneHistory[i].received = e->mCloneBytesReceived;
+                    mCloneHistory[i].total = e->mCloneBytesTotal;
+                }
+                mCloneHistory[i].complete = e->mCloneSuccess;
                 break;
             }
         }
         populateClonesTable();
+
+        if (e->mGitGroupId != RsGxsGroupId(mGroupId.toStdString())) return;
 
         if (e->mCloneSuccess) {
             if (status.contains("sync", Qt::CaseInsensitive)) {
@@ -525,6 +540,8 @@ void PushesWidget::populateClonesTable()
         }
         QTableWidgetItem *itemStatus = new QTableWidgetItem(filteredHistory[i].status);
         QTableWidgetItem *itemTime = new QTableWidgetItem(filteredHistory[i].time);
+        itemTime->setToolTip(filteredHistory[i].time);
+        itemStatus->setToolTip(filteredHistory[i].status);
 
         if (filteredHistory[i].status.contains("Requesting") || filteredHistory[i].status.contains("secured") || filteredHistory[i].status.contains("Unpacking")) {
             QFont font = itemStatus->font();
@@ -545,6 +562,18 @@ void PushesWidget::populateClonesTable()
             ui->mClonesTable->setCellWidget(i, 1, authorWidget);
         }
         ui->mClonesTable->setItem(i, 2, itemStatus);
-        ui->mClonesTable->setItem(i, 3, itemTime);
+        const auto& record = filteredHistory[i];
+        auto* progress = new QProgressBar(ui->mClonesTable);
+        progress->setRange(0, 100);
+        progress->setValue(record.complete ? 100 : (record.total ?
+            int(qMin<uint64_t>(record.received, record.total) * 100 / record.total) : 0));
+        progress->setFormat(record.complete || record.total ? tr("%p%") : tr("Waiting"));
+        progress->setToolTip(tr("Repository response received; unpacking and checkout follow the download."));
+        ui->mClonesTable->setCellWidget(i, 3, progress);
+        QString size = record.total ? tr("%1 / %2").arg(misc::friendlyUnit(record.received), misc::friendlyUnit(record.total)) : tr("Unknown");
+        auto* sizeItem = new QTableWidgetItem(size);
+        sizeItem->setToolTip(tr("Transferred repository response, including encoding and metadata. The total becomes known when data arrives."));
+        ui->mClonesTable->setItem(i, 4, sizeItem);
+        ui->mClonesTable->setItem(i, 5, itemTime);
     }
 }

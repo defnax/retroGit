@@ -458,7 +458,11 @@ void GitWidget::onPushClicked()
         }
         // Unpack locally immediately so the owner's sync repo is instantly updated!
         std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
-        GitManager::unpackPackfile(bareRepoPath, packfileData, refUpdates);
+        if (!GitManager::unpackPackfile(bareRepoPath, packfileData, refUpdates)) {
+            QMessageBox::critical(this, tr("Push Failed"),
+                tr("Failed to update the local repository used to serve clones. Check disk space and file permissions, then retry."));
+            return;
+        }
 
         std::vector<RsGitUpdate> updates;
         if (rsGit) {

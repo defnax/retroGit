@@ -96,6 +96,8 @@ struct RsGitEvent : RsEvent
     // Clone status tracking fields
     std::string mCloneStatus;
     bool mCloneSuccess;
+    uint64_t mCloneBytesReceived = 0;
+    uint64_t mCloneBytesTotal = 0;
 };
 
 class RsGit

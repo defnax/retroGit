@@ -51,6 +51,9 @@ public:
         QString ownerId;
         QString status;
         QString time;
+        uint64_t received = 0;
+        uint64_t total = 0;
+        bool complete = false;
     };
 
     void addCloneRecord(const CloneRecord &rec);

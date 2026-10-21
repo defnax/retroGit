@@ -119,7 +119,7 @@ bool GitManager::unpackPackfile(const std::string& repoPath, const std::string& 
         memset(&stats, 0, sizeof(stats));
         error = git_indexer_append(idx, packfileData.data(), packfileData.size(), &stats);
         if (error == 0) {
-            git_indexer_commit(idx, &stats);
+            error = git_indexer_commit(idx, &stats);
         }
         git_indexer_free(idx);
     }

@@ -74,6 +74,7 @@ SOURCES = RetroGitPlugin.cpp               \
           gui/PushesWidget.cpp
 
 HEADERS = RetroGitPlugin.h                 \
+          services/TunnelTransfer.h \
           services/p3Git.h            \
           services/rsGitItems.h       \
           services/GitManager.h       \

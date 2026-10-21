@@ -19,6 +19,8 @@
  *******************************************************************************/
 
 #include <QVariantMap>
+#include <chrono>
+#include "TunnelTransfer.h"
 #include <list>
 #include <set>
 #include <string>
@@ -128,7 +130,12 @@ private:
         std::set<RsGxsMessageId> pendingMsgIds;
     };
 
-    void postCloneStatus(const RsGxsGroupId &groupId, const std::string &status, bool success);
+    void postCloneStatus(const RsGxsGroupId &groupId, const std::string &status, bool success,
+                         uint64_t received = 0, uint64_t total = 0);
+    void failTunnelTransfer(const RsGxsTunnelId& id, const std::string& reason);
+    std::map<RsGxsTunnelId, std::chrono::steady_clock::time_point> mTransferActivity;
+    std::map<RsGxsTunnelId, GitTunnelTransfer::Assembly> mIncomingTransfers;
+    std::set<RsGxsTunnelId> mSentRequests;
 
     RsMutex mRetroGitMtx;
     RetroGitNotify *mNotify;

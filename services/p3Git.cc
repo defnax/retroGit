@@ -125,6 +125,25 @@ bool p3Git::loadList(std::list<RsItem *> &loadList)
 
 void p3Git::service_tick()
 {
+    std::vector<RsGxsTunnelId> expired;
+    std::vector<RsGxsTunnelId> waiting;
+    {
+        RS_STACK_MUTEX(mRetroGitMtx);
+        const auto now = std::chrono::steady_clock::now();
+        for (const auto& transfer : mTransferActivity) {
+            if (now - transfer.second > std::chrono::minutes(2))
+                expired.push_back(transfer.first);
+            else if (!mSentRequests.count(transfer.first)) waiting.push_back(transfer.first);
+        }
+    }
+    for (const auto& id : waiting) {
+        RsGxsTunnelService::GxsTunnelInfo info;
+        if (mGxsTunnels && mGxsTunnels->getTunnelInfo(id, info) &&
+            info.tunnel_status == RsGxsTunnelService::RS_GXS_TUNNEL_STATUS_CAN_TALK)
+            notifyTunnelStatus(id, info.tunnel_status);
+    }
+    for (const auto& id : expired)
+        failTunnelTransfer(id, "Repository transfer timed out. Check that the owner has published commits and both clients use the updated plugin, then retry.");
     std::list<PendingPackfile> completed;
     {
         RS_STACK_MUTEX(mRetroGitMtx);
@@ -1020,6 +1039,8 @@ bool p3Git::requestCloneOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &t
     if (mGxsTunnels->requestSecuredTunnel(toId, ownId, tunnelId, RETRO_GIT_GXS_TUNNEL_SERVICE_ID, error_code)) {
         RS_STACK_MUTEX(mRetroGitMtx);
         PendingClone pc;
+        if (mPendingClones.count(tunnelId) || mPendingPulls.count(tunnelId)) return false;
+        mTransferActivity[tunnelId] = std::chrono::steady_clock::now();
         pc.groupId = groupId;
         pc.localPath = localPath;
         mPendingClones[tunnelId] = pc;
@@ -1048,6 +1069,8 @@ bool p3Git::requestPullOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &to
     if (mGxsTunnels->requestSecuredTunnel(toId, ownId, tunnelId, RETRO_GIT_GXS_TUNNEL_SERVICE_ID, error_code)) {
         RS_STACK_MUTEX(mRetroGitMtx);
         PendingPull pp;
+        if (mPendingClones.count(tunnelId) || mPendingPulls.count(tunnelId)) return false;
+        mTransferActivity[tunnelId] = std::chrono::steady_clock::now();
         pp.groupId = groupId;
         pp.localPath = localPath;
         mPendingPulls[tunnelId] = pp;
@@ -1060,7 +1083,8 @@ bool p3Git::requestPullOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &to
     }
 }
 
-void p3Git::postCloneStatus(const RsGxsGroupId &groupId, const std::string &status, bool success)
+void p3Git::postCloneStatus(const RsGxsGroupId &groupId, const std::string &status, bool success,
+                           uint64_t received, uint64_t total)
 {
     if (rsEvents) {
         RsEventType gitEventType = (RsEventType)rsEvents->getDynamicEventType("GIT");
@@ -1069,7 +1093,31 @@ void p3Git::postCloneStatus(const RsGxsGroupId &groupId, const std::string &stat
         ev->mGitEventCode = RsGitEventCode::CLONE_STATUS_CHANGED;
         ev->mCloneStatus = status;
         ev->mCloneSuccess = success;
+        ev->mCloneBytesReceived = received;
+        ev->mCloneBytesTotal = total;
         rsEvents->postEvent(ev);
+    }
+}
+
+void p3Git::failTunnelTransfer(const RsGxsTunnelId& id, const std::string& reason)
+{
+    RsGxsGroupId groupId;
+    {
+        RS_STACK_MUTEX(mRetroGitMtx);
+        auto clone = mPendingClones.find(id);
+        auto pull = mPendingPulls.find(id);
+        if (clone != mPendingClones.end()) groupId = clone->second.groupId;
+        else if (pull != mPendingPulls.end()) groupId = pull->second.groupId;
+        mPendingClones.erase(id);
+        mPendingPulls.erase(id);
+        mTransferActivity.erase(id);
+        mIncomingTransfers.erase(id);
+        mSentRequests.erase(id);
+        mTunnelToGxsIdMap.erase(id);
+    }
+    if (!groupId.isNull()) {
+        postCloneStatus(groupId, reason, false);
+        if (mGxsTunnels) mGxsTunnels->closeExistingTunnel(id, RETRO_GIT_GXS_TUNNEL_SERVICE_ID);
     }
 }
 
@@ -1100,6 +1148,11 @@ void p3Git::notifyTunnelStatus(const RsGxsTunnelId& tunnel_id, uint32_t tunnel_s
     if (groupId.isNull()) return;
 
     if (tunnel_status == RsGxsTunnelService::RS_GXS_TUNNEL_STATUS_CAN_TALK) {
+        {
+            RS_STACK_MUTEX(mRetroGitMtx);
+            if (!mSentRequests.insert(tunnel_id).second) return;
+            mTransferActivity[tunnel_id] = std::chrono::steady_clock::now();
+        }
         std::cout << "p3Git: Tunnel secured (tunnel_id=" << tunnel_id << "). Sending " << (isPull ? "pull_req" : "clone_req") << "..." << std::endl;
         postCloneStatus(groupId, isPull ? "Tunnel secured. Requesting sync data..." : "Tunnel secured. Requesting repository data...", false);
 
@@ -1107,11 +1160,13 @@ void p3Git::notifyTunnelStatus(const RsGxsTunnelId& tunnel_id, uint32_t tunnel_s
         QVariantMap req;
         req["type"] = isPull ? "pull_req" : "clone_req";
         req["group_id"] = QString::fromStdString(groupId.toStdString());
+        req["chunked"] = true;
 
         QJsonDocument doc = QJsonDocument::fromVariant(req);
         std::string msg = doc.toJson().toStdString();
 
-        mGxsTunnels->sendData(tunnel_id, RETRO_GIT_GXS_TUNNEL_SERVICE_ID, (const uint8_t*)msg.c_str(), msg.size());
+        if (!mGxsTunnels->sendData(tunnel_id, RETRO_GIT_GXS_TUNNEL_SERVICE_ID, (const uint8_t*)msg.c_str(), msg.size()))
+            failTunnelTransfer(tunnel_id, "Failed to send repository request. Please retry.");
     }
     else if (tunnel_status == RsGxsTunnelService::RS_GXS_TUNNEL_STATUS_REMOTELY_CLOSED ||
              tunnel_status == RsGxsTunnelService::RS_GXS_TUNNEL_STATUS_TUNNEL_DN)
@@ -1124,6 +1179,9 @@ void p3Git::notifyTunnelStatus(const RsGxsTunnelId& tunnel_id, uint32_t tunnel_s
                 RS_STACK_MUTEX(mRetroGitMtx);
                 mPendingClones.erase(tunnel_id);
                 mPendingPulls.erase(tunnel_id);
+                mTransferActivity.erase(tunnel_id);
+                mIncomingTransfers.erase(tunnel_id);
+                mSentRequests.erase(tunnel_id);
                 mTunnelToGxsIdMap.erase(tunnel_id);
             }
             if (isPull) {
@@ -1151,25 +1209,106 @@ void p3Git::receiveData(const RsGxsTunnelId& id, unsigned char *data, uint32_t d
     QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(msg));
     if (doc.isNull()) {
         std::cerr << "p3Git: Failed to parse received JSON data from tunnel." << std::endl;
+        failTunnelTransfer(id, "Invalid repository response received.");
         return;
     }
 
     QVariantMap map = doc.toVariant().toMap();
     QString type = map["type"].toString();
 
+    if (type == "transfer_chunk" || type == "transfer_error" ||
+        type == "clone_res" || type == "pull_res") {
+        RsGxsGroupId expected;
+        bool expectsPull = false;
+        {
+            RS_STACK_MUTEX(mRetroGitMtx);
+            auto clone = mPendingClones.find(id);
+            auto pull = mPendingPulls.find(id);
+            if (clone != mPendingClones.end()) expected = clone->second.groupId;
+            else if (pull != mPendingPulls.end()) {
+                expected = pull->second.groupId;
+                expectsPull = true;
+            }
+        }
+        if (expected.isNull()) return;
+        if (map.value("group_id").toString().toStdString() != expected.toStdString() ||
+            (type == "clone_res" && expectsPull) || (type == "pull_res" && !expectsPull)) {
+            failTunnelTransfer(id, "Received a response for the wrong repository or operation.");
+            return;
+        }
+        if (type == "transfer_error") {
+            failTunnelTransfer(id, "Owner could not send repository: " + map.value("error").toString().left(1024).toStdString());
+            return;
+        }
+        if (type == "transfer_chunk") {
+            QByteArray complete;
+            int state;
+            uint64_t received = 0, total = 0;
+            bool advanced = false;
+            {
+                RS_STACK_MUTEX(mRetroGitMtx);
+                auto& assembly = mIncomingTransfers[id];
+                const size_t previous = assembly.chunks.size();
+                state = assembly.add(map, complete);
+                advanced = assembly.chunks.size() > previous;
+                if (advanced)
+                    mTransferActivity[id] = std::chrono::steady_clock::now();
+                if (state >= 0) {
+                    total = assembly.size;
+                    for (const auto& chunk : assembly.chunks) received += chunk.second.size();
+                }
+                if (state != 0) mIncomingTransfers.erase(id);
+            }
+            if (advanced && state >= 0)
+                postCloneStatus(expected, "Receiving repository data", false, received, total);
+            if (state < 0) failTunnelTransfer(id, "Invalid repository transfer chunk received.");
+            if (state != 1) return;
+            doc = QJsonDocument::fromJson(complete);
+            map = doc.toVariant().toMap();
+            type = map.value("type").toString();
+            if (doc.isNull() || type != (expectsPull ? "pull_res" : "clone_res") ||
+                map.value("group_id").toString().toStdString() != expected.toStdString()) {
+                failTunnelTransfer(id, "Invalid repository transfer response received.");
+                return;
+            }
+        }
+    }
+
     if (type == "clone_req" || type == "pull_req") {
         QString groupIdStr = map["group_id"].toString();
         std::cout << "p3Git: Received request " << type.toStdString() << " for group " << groupIdStr.toStdString() << std::endl;
 
+        auto sendError = [&](const QString& error) {
+            QVariantMap response;
+            response["type"] = "transfer_error";
+            response["group_id"] = groupIdStr;
+            response["error"] = error;
+            QByteArray bytes = QJsonDocument::fromVariant(response).toJson(QJsonDocument::Compact);
+            mGxsTunnels->sendData(id, RETRO_GIT_GXS_TUNNEL_SERVICE_ID,
+                reinterpret_cast<const uint8_t*>(bytes.constData()), bytes.size());
+        };
+
+        // Validate the identifier before using it as part of a filesystem path.
+        RsGxsGroupId requested(groupIdStr.toStdString());
+        if (requested.isNull() || requested.toStdString() != groupIdStr.toStdString()) {
+            sendError("Invalid repository identifier.");
+            return;
+        }
+
         std::string barePath = GitManager::getBareRepoPath(groupIdStr.toStdString());
         if (!GitManager::isValidRepository(barePath)) {
             std::cerr << "p3Git: Requested repository is not valid locally: " << barePath << std::endl;
+            sendError("Repository is unavailable on this client. Commit and Push / Publish on the owner first.");
             return;
         }
 
         std::string packfileData;
         std::map<std::string, std::string> refUpdates;
         if (GitManager::createPackfile(barePath, packfileData, refUpdates)) {
+            if (refUpdates.empty()) {
+                sendError("Repository has no published commits. Commit and Push / Publish on the owner first.");
+                return;
+            }
             std::cout << "p3Git: Generated packfile of size " << packfileData.size() << " bytes. Sending..." << std::endl;
             QByteArray base64Pack = QByteArray(packfileData.data(), packfileData.size()).toBase64();
 
@@ -1185,11 +1324,37 @@ void p3Git::receiveData(const RsGxsTunnelId& id, unsigned char *data, uint32_t d
             resp["ref_updates"] = refs;
 
             QJsonDocument respDoc = QJsonDocument::fromVariant(resp);
-            std::string respStr = respDoc.toJson().toStdString();
-
-            mGxsTunnels->sendData(id, RETRO_GIT_GXS_TUNNEL_SERVICE_ID, (const uint8_t*)respStr.c_str(), respStr.size());
+            QByteArray response = respDoc.toJson(QJsonDocument::Compact);
+            if (response.size() > GitTunnelTransfer::MaxSize) {
+                sendError("Repository exceeds the 128 MiB tunnel response limit. Use published pack downloads instead.");
+                return;
+            }
+            if (!map.value("chunked").toBool()) {
+                if (response.size() > GitTunnelTransfer::ChunkSize) {
+                    sendError("Update the receiving RetroGit plugin to support chunked repository transfers.");
+                } else if (!mGxsTunnels->sendData(id, RETRO_GIT_GXS_TUNNEL_SERVICE_ID,
+                    reinterpret_cast<const uint8_t*>(response.constData()), response.size())) {
+                    sendError("Failed to queue repository response.");
+                }
+                return;
+            }
+            for (int offset = 0; offset < response.size(); offset += GitTunnelTransfer::ChunkSize) {
+                QVariantMap frame;
+                frame["type"] = "transfer_chunk";
+                frame["group_id"] = groupIdStr;
+                frame["size"] = response.size();
+                frame["index"] = offset / GitTunnelTransfer::ChunkSize;
+                frame["data"] = QString::fromLatin1(response.mid(offset, GitTunnelTransfer::ChunkSize).toBase64());
+                QByteArray bytes = QJsonDocument::fromVariant(frame).toJson(QJsonDocument::Compact);
+                if (!mGxsTunnels->sendData(id, RETRO_GIT_GXS_TUNNEL_SERVICE_ID,
+                    reinterpret_cast<const uint8_t*>(bytes.constData()), bytes.size())) {
+                    sendError("Failed to queue repository transfer chunk.");
+                    break;
+                }
+            }
         } else {
             std::cerr << "p3Git: Failed to create packfile for group " << groupIdStr.toStdString() << std::endl;
+            sendError("Failed to create repository packfile on the owner.");
         }
     }
     else if (type == "clone_res") {
@@ -1204,6 +1369,9 @@ void p3Git::receiveData(const RsGxsTunnelId& id, unsigned char *data, uint32_t d
             if (it != mPendingClones.end()) {
                 pc = it->second;
                 mPendingClones.erase(it);
+                mTransferActivity.erase(id);
+                mIncomingTransfers.erase(id);
+                mSentRequests.erase(id);
                 mTunnelToGxsIdMap.erase(id);
             }
         }
@@ -1262,6 +1430,9 @@ void p3Git::receiveData(const RsGxsTunnelId& id, unsigned char *data, uint32_t d
             if (it != mPendingPulls.end()) {
                 pp = it->second;
                 mPendingPulls.erase(it);
+                mTransferActivity.erase(id);
+                mIncomingTransfers.erase(id);
+                mSentRequests.erase(id);
                 mTunnelToGxsIdMap.erase(id);
             }
         }
