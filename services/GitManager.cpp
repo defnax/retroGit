@@ -202,6 +202,9 @@ bool GitManager::createPackfile(const std::string& repoPath, std::string& outPac
                             char oid_str[GIT_OID_HEXSZ + 1];
                             git_oid_tostr(oid_str, sizeof(oid_str), oid);
                             outRefUpdates[ref_name] = std::string(oid_str);
+                            // Annotated tags are objects too, not just aliases for commits.
+                            if (ref_name.find("refs/tags/") == 0)
+                                git_packbuilder_insert(pb, oid, nullptr);
                             
                             git_object *peeled = NULL;
                             if (git_reference_peel(&peeled, ref, GIT_OBJECT_COMMIT) == 0) {
@@ -222,7 +225,7 @@ bool GitManager::createPackfile(const std::string& repoPath, std::string& outPac
         
         if (error == 0) {
             outPackfileData.clear();
-            git_packbuilder_foreach(pb, packbuilder_callback, &outPackfileData);
+            error = git_packbuilder_foreach(pb, packbuilder_callback, &outPackfileData);
             
             git_oid head_oid;
             if (git_reference_name_to_id(&head_oid, repo, "HEAD") == 0) {
@@ -289,7 +292,7 @@ bool GitManager::createPackfileForRef(const std::string& repoPath, const std::st
         
         if (error == 0) {
             outPackfileData.clear();
-            git_packbuilder_foreach(pb, packbuilder_callback, &outPackfileData);
+            error = git_packbuilder_foreach(pb, packbuilder_callback, &outPackfileData);
             
             char oid_str[GIT_OID_HEXSZ + 1];
             git_oid_tostr(oid_str, sizeof(oid_str), &ref_oid);
@@ -1271,9 +1274,17 @@ bool GitManager::mergeBranch(const std::string& repoPath, const std::string& sou
         return false;
     }
 
-    // Fast-forward or update reference
+    // Never discard target history; compare-and-swap also protects against concurrent updates.
+    const git_oid *targetOid = git_reference_target(target_ref_obj);
+    if (!targetOid || (git_oid_equal(targetOid, &source_oid) == 0 &&
+        git_graph_descendant_of(repo, &source_oid, targetOid) != 1)) {
+        git_reference_free(target_ref_obj);
+        git_repository_free(repo);
+        return false;
+    }
     git_reference *new_ref = nullptr;
-    int error = git_reference_set_target(&new_ref, target_ref_obj, &source_oid, "Merge branch");
+    int error = git_reference_create_matching(&new_ref, repo, targetRef.c_str(),
+        &source_oid, 1, targetOid, "Merge pull request");
     git_reference_free(target_ref_obj);
 
     if (error < 0) {
@@ -1569,3 +1580,73 @@ bool GitManager::getPRFileDiff(const std::string& repoPath, const std::string& s
 
 
 
+
+
+bool GitManager::setReviewRef(const std::string& repoPath, const std::string& ref, const std::string& commit)
+{
+    if (ref.rfind("refs/retrogit/pull/", 0) != 0 || commit.size() != GIT_OID_HEXSZ) return false;
+    git_oid oid;
+    if (git_oid_fromstr(&oid, commit.c_str()) != 0) return false;
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normalizePath(repoPath).c_str()) != 0) return false;
+    git_commit *object = nullptr;
+    git_reference *reference = nullptr;
+    bool ok = git_commit_lookup(&object, repo, &oid) == 0 &&
+        git_reference_create(&reference, repo, ref.c_str(), &oid, 1, "RetroGit PR snapshot") == 0;
+    git_reference_free(reference);
+    git_commit_free(object);
+    git_repository_free(repo);
+    return ok;
+}
+
+bool GitManager::canFastForward(const std::string& repoPath, const std::string& source, const std::string& target)
+{
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normalizePath(repoPath).c_str()) != 0) return false;
+    git_oid src, dst;
+    std::string sourceRef = source.rfind("refs/", 0) == 0 ? source : "refs/heads/" + source;
+    bool ok = git_reference_name_to_id(&src, repo, sourceRef.c_str()) == 0 &&
+        git_reference_name_to_id(&dst, repo, ("refs/heads/" + target).c_str()) == 0 &&
+        git_oid_equal(&src, &dst) == 0 && git_graph_descendant_of(repo, &src, &dst) == 1;
+    git_repository_free(repo);
+    return ok;
+}
+
+bool GitManager::configureFork(const std::string& localPath, const std::string& forkPath, const std::string& upstreamPath)
+{
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normalizePath(localPath).c_str()) != 0) return false;
+    git_remote *remote = nullptr;
+    bool ok = git_remote_set_url(repo, "origin", normalizePath(forkPath).c_str()) == 0;
+    if (ok) {
+        int result = git_remote_create(&remote, repo, "upstream", normalizePath(upstreamPath).c_str());
+        ok = result == 0 || (result == GIT_EEXISTS &&
+            git_remote_set_url(repo, "upstream", normalizePath(upstreamPath).c_str()) == 0);
+    }
+    git_remote_free(remote);
+    git_repository_free(repo);
+    return ok;
+}
+
+bool GitManager::materializeForkBranches(const std::string& path)
+{
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normalizePath(path).c_str()) != 0) return false;
+    git_reference_iterator *iter = nullptr;
+    bool ok = git_reference_iterator_glob_new(&iter, repo, "refs/remotes/origin/*") == 0;
+    git_reference *ref = nullptr;
+    while (ok && git_reference_next(&ref, iter) == 0) {
+        const git_oid *oid = git_reference_target(ref);
+        if (oid) {
+            const std::string name = "refs/heads/" + std::string(git_reference_name(ref)).substr(20);
+            git_reference *local = nullptr;
+            const int result = git_reference_create(&local, repo, name.c_str(), oid, 0, "Fork branch");
+            ok = result == 0 || result == GIT_EEXISTS;
+            git_reference_free(local);
+        }
+        git_reference_free(ref);
+    }
+    git_reference_iterator_free(iter);
+    git_repository_free(repo);
+    return ok;
+}

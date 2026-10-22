@@ -147,7 +147,7 @@ void CodeWidget::refresh()
         for (const auto &pr : pullRequests) {
             bool isOpen = (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) && (pr.mStatus == 0);
             if (isOpen) {
-                if (GitManager::isBranchMerged(bareRepoPath, pr.mSourceBranch, pr.mTargetBranch)) {
+                if (GitManager::isBranchMerged(bareRepoPath, pr.sourceRef(), pr.mTargetBranch)) {
                     isOpen = false;
                     // Automatically mark as processed locally
                     uint32_t token;

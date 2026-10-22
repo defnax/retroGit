@@ -19,6 +19,7 @@
  *******************************************************************************/
 
 #include "MainWidget.h"
+#include <QUuid>
 #include "PullRequestsWidget.h"
 #include "PullRequestDetailsWidget.h"
 #include "GitCommitDialog.h"
@@ -483,7 +484,7 @@ void MainWidget::handleEvent_main_thread(std::shared_ptr<const RsEvent> event)
                 for (auto &pr : pullRequests) {
                     bool isUnprocessed = (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED);
                     if (isUnprocessed) {
-                        if (GitManager::isBranchMerged(bareRepoPath, pr.mSourceBranch, pr.mTargetBranch) || pr.mStatus == 2) {
+                        if (GitManager::isBranchMerged(bareRepoPath, pr.sourceRef(), pr.mTargetBranch) || pr.mStatus == 2) {
                             // Automatically mark as processed locally
                             uint32_t token;
                             rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(e->mGitGroupId, pr.mMeta.mMsgId), true);
@@ -871,18 +872,21 @@ void MainWidget::logPullAttempt(const QString &groupId, const QString &repoName,
     }
 }
 
-void MainWidget::hashAndPublishPackfile(const QString &groupId, const std::string &packfileData, RsGitUpdate &update)
+bool MainWidget::preparePackAttachment(const QString &groupId, const std::string &packfileData, RsGxsFile &attachment)
 {
     QString tempDir = QDir::cleanPath(QString::fromStdString(RsAccounts::AccountDirectory()) + "/retrogit_temp/" + groupId);
     QDir().mkpath(tempDir);
-    QString tempFilePath = tempDir + QString("/pack_%1.pack").arg(QDateTime::currentMSecsSinceEpoch());
+    QString tempFilePath = tempDir + "/pack_" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".pack";
     
     QFile file(tempFilePath);
     if (!file.open(QIODevice::WriteOnly)) {
         QMessageBox::critical(this, tr("Push Failed"), tr("Failed to write temporary packfile to disk."));
-        return;
+        return false;
     }
-    file.write(packfileData.data(), packfileData.size());
+    if (file.write(packfileData.data(), packfileData.size()) != static_cast<qint64>(packfileData.size())) {
+        QMessageBox::critical(this, tr("Transfer Failed"), tr("Could not write the complete packfile."));
+        return false;
+    }
     file.close();
     
     if (rsFiles) {
@@ -913,25 +917,40 @@ void MainWidget::hashAndPublishPackfile(const QString &groupId, const std::strin
         
         if (!hashOk) {
             QMessageBox::critical(this, tr("Push Failed"), tr("Hashing the packfile timed out or was canceled. Please try again."));
-            return;
+            return false;
         }
         
-        RsGxsFile attachment;
         attachment.mName = fi.fname;
         attachment.mSize = fi.size;
         attachment.mHash = fi.hash;
         
-        update.mFiles.push_back(attachment);
-        
-        uint32_t token;
-        if (rsGit) {
-            rsGit->publishGitUpdate(token, update);
-            QMessageBox::information(this, tr("Push Successful"), 
-                tr("Packfile of size %1 KB has been hashed and shared as a P2P attachment. Published metadata update successfully!").arg(packfileData.size() / 1024));
-        }
+        return true;
     } else {
         QMessageBox::critical(this, tr("Push Failed"), tr("RetroShare file transfer service is not available."));
     }
+    return false;
+}
+
+void MainWidget::hashAndPublishPackfile(const QString &groupId, const std::string &packfileData, RsGitUpdate &update)
+{
+    RsGxsFile attachment;
+    if (!preparePackAttachment(groupId, packfileData, attachment)) return;
+    update.mFiles.push_back(attachment);
+    uint32_t token;
+    if (rsGit && rsGit->publishGitUpdate(token, update))
+        QMessageBox::information(this, tr("Push Queued"), tr("Repository update queued for publication."));
+}
+
+bool MainWidget::publishPullRequestWithPack(RsGitPullRequest &pr, const std::string &pack)
+{
+    if (pack.size() <= 200000) pr.mPackfileData = pack;
+    else {
+        RsGxsFile attachment;
+        if (!preparePackAttachment(QString::fromStdString(pr.mMeta.mGroupId.toStdString()), pack, attachment)) return false;
+        pr.mFiles.push_back(attachment);
+    }
+    uint32_t token;
+    return rsGit && rsGit->publishPullRequest(token, pr);
 }
 
 void MainWidget::refreshCurrentRepo()

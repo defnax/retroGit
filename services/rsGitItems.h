@@ -67,12 +67,17 @@ public:
     {
         RS_SERIAL_PROCESS(mGroup.mGroupName);
         RS_SERIAL_PROCESS(mGroup.mGroupDescription);
+        // Optional trailing fields: old records remain readable; ordinary groups retain their wire format.
+        if (j == RsGenericSerializer::DESERIALIZE ? ctx.mOffset < ctx.mSize : !mGroup.mUpstreamGroupId.isNull()) {
+            RS_SERIAL_PROCESS(mGroup.mUpstreamGroupId);
+        }
     }
 
     void clear() override
     {
         mGroup.mGroupName.clear();
         mGroup.mGroupDescription.clear();
+        mGroup.mUpstreamGroupId.clear();
     }
 };
 
@@ -99,6 +104,8 @@ public:
     std::string mTargetBranch;
     std::string mSourceBranch;
     uint32_t mStatus = 0;
+    RsGxsGroupId mSourceGroupId;
+    std::string mSourceCommit;
 
     virtual void serial_process(RsGenericSerializer::SerializeJob j,
                                 RsGenericSerializer::SerializeContext& ctx) override
@@ -112,6 +119,10 @@ public:
         RS_SERIAL_PROCESS(mTargetBranch);
         RS_SERIAL_PROCESS(mSourceBranch);
         RS_SERIAL_PROCESS(mStatus);
+        if (j == RsGenericSerializer::DESERIALIZE ? ctx.mOffset < ctx.mSize : !mSourceCommit.empty()) {
+            RS_SERIAL_PROCESS(mSourceGroupId);
+            RS_SERIAL_PROCESS(mSourceCommit);
+        }
     }
 
     void clear() override
@@ -125,6 +136,8 @@ public:
         mTargetBranch.clear();
         mSourceBranch.clear();
         mStatus = 0;
+        mSourceGroupId.clear();
+        mSourceCommit.clear();
     }
 };
 

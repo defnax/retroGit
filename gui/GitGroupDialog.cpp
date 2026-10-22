@@ -114,6 +114,9 @@ bool GitGroupDialog::service_updateGroup(const RsGroupMetaData &editedMeta)
 {
     RsGitGroup grp;
     prepareGitGroup(grp, editedMeta);
+    std::vector<RsGitGroup> existing;
+    if (!rsGit->getGroups({editedMeta.mGroupId}, existing) || existing.empty()) return false;
+    grp.mUpstreamGroupId = existing.front().mUpstreamGroupId;
 
     std::cerr << "GitGroupDialog::service_updateGroup() submitting changes";
     std::cerr << std::endl;

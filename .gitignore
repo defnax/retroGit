@@ -55,3 +55,6 @@ temp/moc/moc_PullRequestDetailsWidget.cpp
 temp/obj/moc_PullRequestDetailsWidget.o
 temp/obj/PullRequestDetailsWidget.o
 temp/ui/ui_PullRequestDetailsWidget.h
+
+temp/ForkWorkflowTest.exe
+temp/obj/ForkWorkflowTest.o

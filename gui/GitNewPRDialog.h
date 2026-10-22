@@ -32,7 +32,8 @@ class GitNewPRDialog : public QDialog
 {
     Q_OBJECT
 public:
-    explicit GitNewPRDialog(const QStringList& branches, const QString& currentBranch, QWidget *parent = nullptr);
+    explicit GitNewPRDialog(const QStringList& branches, const QString& currentBranch, QWidget *parent = nullptr,
+        const QStringList& targetBranches = QStringList(), const QString& sourceName = QString(), const QString& targetName = QString());
 
     QString getTitle() const;
     QString getDescription() const;

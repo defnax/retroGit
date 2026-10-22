@@ -69,7 +69,7 @@ RsServiceInfo p3Git::getServiceInfo()
 {
     const std::string RETRO_GIT_APP_NAME = "RetroGit";
     const uint16_t RETRO_GIT_APP_MAJOR_VERSION = 1;
-    const uint16_t RETRO_GIT_APP_MINOR_VERSION = 0;
+    const uint16_t RETRO_GIT_APP_MINOR_VERSION = 1;
     const uint16_t RETRO_GIT_MIN_MAJOR_VERSION = 1;
     const uint16_t RETRO_GIT_MIN_MINOR_VERSION = 0;
 
@@ -285,7 +285,7 @@ void p3Git::notifyChanges(std::vector<RsGxsNotify *> &changes)
         if (msgChange->mNewMsgItem) {
             RsGitMsgItem* gitMsg = dynamic_cast<RsGitMsgItem*>(msgChange->mNewMsgItem);
             if (gitMsg) {
-                if (gitMsg->mGitMsgType == 1) // UPDATE
+                if (gitMsg->mGitMsgType == 1 && gitMsg->meta.mParentId.isNull()) // Owner-signed root UPDATE
                 {
                     std::string repoPath = GitManager::getBareRepoPath(msgChange->mGroupId.toStdString());
                     if (!gitMsg->mFiles.empty()) {
@@ -395,7 +395,8 @@ void p3Git::notifyChanges(std::vector<RsGxsNotify *> &changes)
 bool p3Git::createGroup(RsGitGroup &group)
 {
     uint32_t token;
-    return createGroup(token, group) && waitToken(token) == RsTokenService::COMPLETE;
+    return createGroup(token, group) && waitToken(token) == RsTokenService::COMPLETE
+        && acknowledgeTokenGrp(token, group.mMeta.mGroupId);
 }
 
 bool p3Git::getGroups(const std::list<RsGxsGroupId> &groupIds,std::vector<RsGitGroup> &groups)
@@ -536,13 +537,46 @@ bool p3Git::publishGitUpdate(uint32_t &token, RsGitUpdate &update)
     return true;
 }
 
+bool p3Git::preparePullRequest(const RsGitPullRequest &pr)
+{
+    if (pr.mSourceCommit.empty()) return true; // Legacy same-repository PR.
+    if (pr.mMeta.mMsgId.isNull() || pr.mSourceGroupId.isNull()) return false;
+    const std::string path = GitManager::getBareRepoPath(pr.mMeta.mGroupId.toStdString());
+    if (GitManager::setReviewRef(path, pr.sourceRef(), pr.mSourceCommit)) return true;
+    // Import objects only: incoming branch names must never overwrite upstream branches.
+    bool imported = false;
+    if (!pr.mFiles.empty() && rsFiles) {
+        const auto &file = pr.mFiles.front();
+        FileInfo info;
+        if (rsFiles->alreadyHaveFile(file.mHash, info)) {
+            imported = GitManager::unpackPackfileFromFile(path, info.path, {});
+        } else {
+            std::list<RsPeerId> sources;
+            rsFiles->FileRequest(file.mName, file.mHash, file.mSize, "", RS_FILE_REQ_ANONYMOUS_ROUTING, sources);
+        }
+    } else if (!pr.mPackfileData.empty()) {
+        imported = GitManager::unpackPackfile(path, pr.mPackfileData, {});
+    }
+    return imported && GitManager::setReviewRef(path, pr.sourceRef(), pr.mSourceCommit);
+}
+
 bool p3Git::publishPullRequest(uint32_t &token, RsGitPullRequest &pr)
 {
+    std::vector<RsGitGroup> sources;
+    if (!pr.mSourceCommit.empty() &&
+        (pr.mSourceGroupId.isNull() || !getGroups({pr.mSourceGroupId}, sources) || sources.empty() ||
+         !IS_GROUP_ADMIN(sources.front().mMeta.mSubscribeFlags) ||
+         !rsIdentity || !rsIdentity->isOwnId(pr.mMeta.mAuthorId) ||
+         pr.mMeta.mAuthorId != sources.front().mMeta.mAuthorId)) return false;
+    std::vector<RsGitUpdate> updates;
+    if (!getUpdates(pr.mMeta.mGroupId, updates) || updates.empty()) return false;
+    // Proposals are author-signed children of a published upstream update.
+    // Contributors do not possess the upstream root-message publishing key.
+    pr.mMeta.mParentId = updates.back().mMeta.mMsgId;
+    pr.mMeta.mThreadId = pr.mMeta.mParentId;
     RsGitMsgItem *msgItem = new RsGitMsgItem();
     msgItem->meta = pr.mMeta;
     
-    msgItem->meta.mParentId.clear();
-    msgItem->meta.mThreadId.clear();
     
     if (msgItem->meta.mMsgName.empty()) {
         msgItem->meta.mMsgName = pr.mTitle.empty() ? "Git Pull Request" : pr.mTitle;
@@ -566,6 +600,8 @@ bool p3Git::publishPullRequest(uint32_t &token, RsGitPullRequest &pr)
     msgItem->mDescription = pr.mDescription;
     msgItem->mTargetBranch = pr.mTargetBranch;
     msgItem->mSourceBranch = pr.mSourceBranch;
+    msgItem->mSourceGroupId = pr.mSourceGroupId;
+    msgItem->mSourceCommit = pr.mSourceCommit;
     msgItem->mPackfileData = pr.mPackfileData;
     msgItem->mStatus = pr.mStatus;
     msgItem->mFiles = pr.mFiles;
@@ -576,20 +612,26 @@ bool p3Git::publishPullRequest(uint32_t &token, RsGitPullRequest &pr)
 
 bool p3Git::closePullRequest(uint32_t &token, const RsGxsGroupId &groupId, const RsGxsMessageId &msgId, uint32_t status)
 {
+    if (!rsIdentity || (status != 1 && status != 2)) return false;
+    std::vector<RsGitPullRequest> prs;
+    std::vector<RsGitGroup> groups;
+    if (!getGroups({groupId}, groups) || groups.empty() || !getPullRequests(groupId, prs)) return false;
+    RsGxsId signer;
+    RsGxsMessageId threadId = msgId;
+    for (const auto &pr : prs) if (pr.mMeta.mMsgId == msgId) {
+        if (!pr.mMeta.mThreadId.isNull()) threadId = pr.mMeta.mThreadId;
+        if (rsIdentity->isOwnId(groups.front().mMeta.mAuthorId)) signer = groups.front().mMeta.mAuthorId;
+        else if (status == 1 && rsIdentity->isOwnId(pr.mMeta.mAuthorId)) signer = pr.mMeta.mAuthorId;
+    }
+    if (signer.isNull()) return false;
     RsGitMsgItem *msgItem = new RsGitMsgItem();
     msgItem->meta.mGroupId = groupId;
     msgItem->meta.mParentId = msgId;
     
-    msgItem->meta.mThreadId = msgId;
+    msgItem->meta.mThreadId = threadId;
     
-    if (rsIdentity) {
-        std::list<RsGxsId> ownIds;
-        rsIdentity->getOwnIds(ownIds);
-        if (!ownIds.empty()) {
-            msgItem->meta.mAuthorId = ownIds.front();
-        }
-    }
-    
+    msgItem->meta.mAuthorId = signer;
+
     msgItem->mGitMsgType = 3; // PULL_REQUEST_STATUS_UPDATE
     msgItem->mStatus = status; // 1 = Closed
     msgItem->meta.mMsgName = "PR Status Update";
@@ -675,7 +717,7 @@ bool p3Git::getUpdates(const RsGxsGroupId &groupId, std::vector<RsGitUpdate> &up
     if (getMsgDataT<RsGitMsgItem>(token, msgItems)) {
         auto &vec = msgItems[groupId];
         for (auto *gitMsg : vec) {
-            if (gitMsg && gitMsg->mGitMsgType == 1) { // UPDATE
+            if (gitMsg && gitMsg->mGitMsgType == 1 && gitMsg->meta.mParentId.isNull()) { // UPDATE
                 RsGitUpdate update;
                 update.mMeta = gitMsg->meta;
                 update.mPackfileData = gitMsg->mPackfileData;
@@ -703,16 +745,24 @@ bool p3Git::getPullRequests(const RsGxsGroupId &groupId, std::vector<RsGitPullRe
     if (getMsgDataT<RsGitMsgItem>(token, msgItems)) {
         auto &vec = msgItems[groupId];
         
-        // Map to store status updates: key is ParentId (PR's MsgId), value is status (e.g. 1 = Closed)
+        std::vector<RsGitGroup> groups;
+        getGroups({groupId}, groups);
+        const RsGxsId owner = groups.empty() ? RsGxsId() : groups.front().mMeta.mAuthorId;
         std::map<RsGxsMessageId, uint32_t> statusUpdates;
-        
-        // First pass: collect status updates
-        for (auto *gitMsg : vec) {
-            if (gitMsg && gitMsg->mGitMsgType == 3) { // STATUS_UPDATE
-                statusUpdates[gitMsg->meta.mParentId] = gitMsg->mStatus;
+        std::map<RsGxsMessageId, rstime_t> statusTimes;
+        for (auto *status : vec) {
+            if (!status || status->mGitMsgType != 3 || (status->mStatus != 1 && status->mStatus != 2)) continue;
+            for (auto *proposal : vec) {
+                if (!proposal || proposal->mGitMsgType != 2 || proposal->meta.mMsgId != status->meta.mParentId) continue;
+                const bool authorized = (!owner.isNull() && status->meta.mAuthorId == owner) ||
+                    (status->mStatus == 1 && status->meta.mAuthorId == proposal->meta.mAuthorId);
+                if (authorized && status->meta.mPublishTs >= statusTimes[proposal->meta.mMsgId]) {
+                    statusUpdates[proposal->meta.mMsgId] = status->mStatus;
+                    statusTimes[proposal->meta.mMsgId] = status->meta.mPublishTs;
+                }
             }
         }
-        
+
         // Second pass: build pull requests
         for (auto *gitMsg : vec) {
             if (gitMsg && gitMsg->mGitMsgType == 2) { // PULL_REQUEST
@@ -722,8 +772,10 @@ bool p3Git::getPullRequests(const RsGxsGroupId &groupId, std::vector<RsGitPullRe
                 pr.mDescription = gitMsg->mDescription;
                 pr.mTargetBranch = gitMsg->mTargetBranch;
                 pr.mSourceBranch = gitMsg->mSourceBranch;
+                pr.mSourceGroupId = gitMsg->mSourceGroupId;
+                pr.mSourceCommit = gitMsg->mSourceCommit;
                 pr.mPackfileData = gitMsg->mPackfileData;
-                pr.mStatus = gitMsg->mStatus;
+                pr.mStatus = 0; // Only authenticated status replies can close or merge a proposal.
                 pr.mFiles = gitMsg->mFiles;
                 
                 // Override status if there is an update message on GXS

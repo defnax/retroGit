@@ -24,6 +24,8 @@
 #include "services/GitManager.h"
 
 #include <QMessageBox>
+#include <QTimer>
+#include "gui/settings/rsharesettings.h"
 #include <QDateTime>
 #include <QPixmap>
 #include <QIcon>
@@ -81,6 +83,11 @@ PullRequestDetailsWidget::PullRequestDetailsWidget(const QString &groupId, const
     connect(ui->mBtnClose, &QPushButton::clicked, this, &PullRequestDetailsWidget::onCloseClicked);
     connect(ui->mFilesTree, &QTreeWidget::itemSelectionChanged, this, &PullRequestDetailsWidget::onFileSelectionChanged);
 
+    auto *timer = new QTimer(this);
+    connect(timer, &QTimer::timeout, this, [this]() {
+        if (isVisible() && mLoaded && !mReviewReady) refresh();
+    });
+    timer->start(5000);
     refresh();
 }
 
@@ -109,6 +116,7 @@ void PullRequestDetailsWidget::refresh()
 {
     loadPRDetails();
     if (!mLoaded) return;
+    mReviewReady = rsGit && rsGit->preparePullRequest(mPR);
 
     // 1. Populate Header info
     ui->mLblTitle->setText(QString::fromStdString(mPR.mTitle));
@@ -117,7 +125,7 @@ void PullRequestDetailsWidget::refresh()
     bool isOpen = (mPR.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) && (mPR.mStatus == 0);
     if (isOpen) {
         std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
-        if (GitManager::isBranchMerged(bareRepoPath, mPR.mSourceBranch, mPR.mTargetBranch)) {
+        if (GitManager::isBranchMerged(bareRepoPath, mPR.sourceRef(), mPR.mTargetBranch)) {
             isOpen = false;
             if (rsGit) {
                 uint32_t token;
@@ -146,7 +154,8 @@ void PullRequestDetailsWidget::refresh()
     QString descMetaStr = tr("<b>%1</b> wants to merge into <code>%2</code> from <code>%3</code>")
         .arg(QString::fromStdString(mPR.mMeta.mAuthorId.toStdString().substr(0, 8)))
         .arg(QString::fromStdString(mPR.mTargetBranch))
-        .arg(QString::fromStdString(mPR.mSourceBranch));
+        .arg(QString::fromStdString(mPR.mSourceGroupId.isNull() ? mPR.mSourceBranch :
+            mPR.mSourceGroupId.toStdString().substr(0, 8) + ":" + mPR.mSourceBranch).toHtmlEscaped());
     ui->mLblDescriptionMeta->setText(descMetaStr);
 
     populateConversationTab();
@@ -168,7 +177,7 @@ void PullRequestDetailsWidget::populateConversationTab()
     std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
     std::vector<GitCommitInfo> commits;
     
-    if (GitManager::getCommitsBetweenBranches(bareRepoPath, mPR.mSourceBranch, mPR.mTargetBranch, commits)) {
+    if (GitManager::getCommitsBetweenBranches(bareRepoPath, mPR.sourceRef(), mPR.mTargetBranch, commits)) {
         for (const auto &c : commits) {
             QString commitText = QString("[%1] %2 - by %3 (%4)")
                 .arg(QString::fromStdString(c.hash))
@@ -184,7 +193,7 @@ void PullRequestDetailsWidget::populateConversationTab()
     bool isOpen = (mPR.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) && (mPR.mStatus == 0);
     if (isOpen) {
         std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
-        if (GitManager::isBranchMerged(bareRepoPath, mPR.mSourceBranch, mPR.mTargetBranch)) {
+        if (GitManager::isBranchMerged(bareRepoPath, mPR.sourceRef(), mPR.mTargetBranch)) {
             isOpen = false;
         }
     }
@@ -220,9 +229,14 @@ void PullRequestDetailsWidget::populateConversationTab()
         ui->mLblMergeIcon->setPixmap(QIcon(":/images/git-pull-request-green.png").pixmap(badgeSize, badgeSize));
         
         if (isAdmin) {
-            ui->mLblMergeStatus->setText(tr("<b>This branch has no conflicts.</b><br>Merging can be performed automatically."));
+            const bool ready = mReviewReady;
+            const bool mergeable = ready && GitManager::canFastForward(bareRepoPath, mPR.sourceRef(), mPR.mTargetBranch);
+            ui->mLblMergeStatus->setText(!ready
+                ? tr("Waiting for the proposed commits to download. Keep this tab open.")
+                : mergeable ? tr("The reviewed commit can be merged without discarding target history.")
+                : tr("The target has diverged or already contains these changes. Update the source branch from upstream and submit a new pull request."));
             ui->mBtnMerge->setVisible(true);
-            ui->mBtnMerge->setEnabled(true);
+            ui->mBtnMerge->setEnabled(mergeable);
             ui->mBtnMerge->setText(tr("Merge pull request"));
             ui->mBtnMerge->setStyleSheet("QPushButton { background-color: #2da44e; color: white; border-radius: 6px; padding: 6px 16px; font-weight: bold; border: 1px solid rgba(27, 31, 36, 0.15); }"
                                         "QPushButton:hover { background-color: #2c974b; }"
@@ -251,7 +265,7 @@ void PullRequestDetailsWidget::populateFilesChangedTab()
     std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
     std::vector<GitCommitFileChange> changedFiles;
 
-    if (GitManager::getPRChangedFiles(bareRepoPath, mPR.mSourceBranch, mPR.mTargetBranch, changedFiles)) {
+    if (GitManager::getPRChangedFiles(bareRepoPath, mPR.sourceRef(), mPR.mTargetBranch, changedFiles)) {
         for (const auto &file : changedFiles) {
             QString filePath = QString::fromStdString(file.path);
             QStringList parts = filePath.split('/');
@@ -326,43 +340,48 @@ bool PullRequestDetailsWidget::selectFirstFileItem(QTreeWidgetItem *item)
 
 void PullRequestDetailsWidget::onMergeClicked()
 {
+    loadPRDetails();
+    std::vector<RsGitGroup> groups;
+    if (!rsGit || !mLoaded || mPR.mStatus != 0 ||
+        !rsGit->getGroups({RsGxsGroupId(mGroupId.toStdString())}, groups) || groups.empty() ||
+        !IS_GROUP_ADMIN(groups.front().mMeta.mSubscribeFlags) || !rsGit->preparePullRequest(mPR)) return;
+
     std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
 
-    // Perform fast-forward merge
-    if (GitManager::mergeBranch(bareRepoPath, mPR.mSourceBranch, mPR.mTargetBranch)) {
-        // Mark PR as processed in GXS exchange
+    // Prepare the publication before changing the target so canceled/failed hashing
+    // cannot leave a merged PR with no transferable commits.
+    std::string pack;
+    std::map<std::string, std::string> refs;
+    if (!GitManager::createPackfileForRef(bareRepoPath, mPR.sourceRef(), pack, refs)) return;
+    RsGitUpdate update;
+    update.mMeta.mGroupId = RsGxsGroupId(mGroupId.toStdString());
+    update.mMeta.mAuthorId = groups.front().mMeta.mAuthorId;
+    update.mMeta.mMsgName = "Merge PR: " + mPR.mTitle;
+    const auto snapshot = refs.find(mPR.sourceRef().rfind("refs/", 0) == 0 ? mPR.sourceRef() : "refs/heads/" + mPR.sourceRef());
+    if (snapshot == refs.end()) return;
+    update.mRefUpdates["refs/heads/" + mPR.mTargetBranch] = snapshot->second;
+    if (pack.size() <= 200000) update.mPackfileData = pack;
+    else {
+        RsGxsFile attachment;
+        if (!mMainWidget || !mMainWidget->preparePackAttachment(mGroupId, pack, attachment)) return;
+        update.mFiles.push_back(attachment);
+    }
+    if (GitManager::mergeBranch(bareRepoPath, mPR.sourceRef(), mPR.mTargetBranch)) {
         uint32_t token;
-        if (rsGit) {
+        if (!rsGit->publishGitUpdate(token, update)) {
+            QMessageBox::warning(this, tr("Publication Failed"), tr("The merge exists locally but could not be queued for publication. Publish the target branch before closing this request."));
+            return;
+        }
+        uint32_t statusToken;
+        if (rsGit->closePullRequest(statusToken, RsGxsGroupId(mGroupId.toStdString()), mMsgId, 2))
             rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(RsGxsGroupId(mGroupId.toStdString()), mMsgId), true);
-            uint32_t statusToken;
-            rsGit->closePullRequest(statusToken, RsGxsGroupId(mGroupId.toStdString()), mMsgId, 2);
-        }
-
-        // Publish the merged commits as a repository update to the GXS network
-        std::string packfileData;
-        std::map<std::string, std::string> refUpdates;
-        if (GitManager::createPackfileForRef(bareRepoPath, mPR.mTargetBranch, packfileData, refUpdates)) {
-            RsGitUpdate update;
-            update.mMeta.mGroupId = RsGxsGroupId(mGroupId.toStdString());
-            update.mRefUpdates = refUpdates;
-            update.mMeta.mMsgName = QString("Merge PR: %1").arg(QString::fromStdString(mPR.mTitle)).toStdString();
-
-            if (packfileData.size() <= 200000) {
-                update.mPackfileData = packfileData;
-                uint32_t publishToken;
-                if (rsGit) {
-                    rsGit->publishGitUpdate(publishToken, update);
-                }
-            } else if (mMainWidget) {
-                mMainWidget->hashAndPublishPackfile(mGroupId, packfileData, update);
-            }
-        }
-
-        QMessageBox::information(this, tr("Success"), tr("Pull request merged successfully and updates published to the network."));
+        QMessageBox::information(this, tr("Pull Request Merged"), tr("The reviewed commit was merged and the repository update was queued for publication."));
 
         // Automatically pull the merged changes into the local working directory if configured
         if (mMainWidget) {
-            QString localPath = mMainWidget->getLocalPath();
+            Settings->beginGroup("RetroGit_WorkingDirs");
+            QString localPath = Settings->value(mGroupId).toString();
+            Settings->endGroup();
             if (!localPath.isEmpty()) {
                 GitManager::pullRepository(localPath.toStdString());
                 mMainWidget->refreshGitWidget();
@@ -391,7 +410,7 @@ void PullRequestDetailsWidget::onFileSelectionChanged()
     std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
     std::vector<GitDiffLine> diffLines;
 
-    if (!GitManager::getPRFileDiff(bareRepoPath, mPR.mSourceBranch, mPR.mTargetBranch, filePath.toStdString(), diffLines)) {
+    if (!GitManager::getPRFileDiff(bareRepoPath, mPR.sourceRef(), mPR.mTargetBranch, filePath.toStdString(), diffLines)) {
         ui->mDiffBrowser->setHtml(tr("<i>Failed to load diff for %1</i>").arg(filePath.toHtmlEscaped()));
         return;
     }

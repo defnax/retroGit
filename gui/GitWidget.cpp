@@ -27,6 +27,8 @@
 #include "GitCommitDialog.h"
 #include "CodeWidget.h"
 
+#include <QComboBox>
+#include <QFormLayout>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QVBoxLayout>
@@ -64,6 +66,7 @@ GitWidget::GitWidget(MainWidget *mainWidget, QWidget *parent)
     ui->mCommitTable->setContextMenuPolicy(Qt::CustomContextMenu);
 
     connect(ui->mBtnInitialize, &QPushButton::clicked, this, &GitWidget::onInitializeClicked);
+    connect(ui->mBtnFork, &QPushButton::clicked, this, &GitWidget::onForkClicked);
     connect(ui->mBtnClone, &QPushButton::clicked, this, &GitWidget::onCloneClicked);
     connect(ui->mBtnCommit, &QPushButton::clicked, this, &GitWidget::onCommitClicked);
     connect(ui->mBtnPush, &QPushButton::clicked, this, &GitWidget::onPushClicked);
@@ -90,6 +93,7 @@ GitWidget::~GitWidget()
 void GitWidget::clear()
 {
     mLocalPath.clear();
+    ui->mBtnFork->hide();
     ui->mBtnInitialize->setVisible(false);
     ui->mBtnClone->setVisible(false);
     ui->mBtnInitialize->setEnabled(false);
@@ -159,6 +163,8 @@ void GitWidget::refresh()
         }
     }
 
+    ui->mBtnFork->setVisible(!isAdmin && isSubscribed);
+    ui->mBtnFork->setEnabled(mPendingForkPath.isEmpty());
     ui->mBtnPush->setEnabled(isAdmin);
     ui->mBtnInitialize->setVisible(isAdmin && !isCloned);
     ui->mBtnInitialize->setEnabled(isAdmin && !isCloned);
@@ -180,6 +186,11 @@ void GitWidget::refresh()
         ? tr("<b>For Subscribers:</b> Use <b>Sync / Pull</b> to download repository updates.")
         : tr("<b>For Subscribers:</b> Click <b>Clone Repository</b> and choose an empty local folder to download the code."));
 
+    if (isAdmin && !groups.empty() && !groups.front().mUpstreamGroupId.isNull()) {
+        ui->mLblOwnerInfo->setText(tr("<b>Fork of %1</b>: Commit and publish changes in your fork, then open Pull Requests to propose them upstream.")
+            .arg(QString::fromStdString(groups.front().mUpstreamGroupId.toStdString()).toHtmlEscaped()));
+    }
+
     populateCommitLog();
 
     if (ui->mCommitTable->rowCount() == 0) {
@@ -191,6 +202,15 @@ void GitWidget::refresh()
 
 void GitWidget::handleGitEvent(const RsGitEvent *e)
 {
+    if (!mPendingForkPath.isEmpty() && e->mGitGroupId == mPendingFork.mUpstreamGroupId &&
+        e->mGitEventCode == RsGitEventCode::CLONE_STATUS_CHANGED) {
+        if (e->mCloneSuccess && GitManager::isValidRepository(mPendingForkPath.toStdString())) finishFork();
+        else if (e->mCloneStatus.find("Failed") != std::string::npos || e->mCloneStatus.find("failed") != std::string::npos || e->mCloneStatus.find("timed out") != std::string::npos || e->mCloneStatus.find("went down") != std::string::npos) {
+            mPendingForkPath.clear();
+            QMessageBox::warning(this, tr("Fork Failed"), QString::fromStdString(e->mCloneStatus));
+        }
+    }
+
     if (mGroupId.isEmpty() || e->mGitGroupId != RsGxsGroupId(mGroupId.toStdString()))
         return;
 
@@ -343,6 +363,132 @@ void GitWidget::onCloneClicked()
     }
 
     mMainWidget->logCloneAttempt(mGroupId, repoName, QString::fromStdString(creatorId.toStdString()), ownId, localPath);
+}
+
+void GitWidget::onForkClicked()
+{
+    if (!rsGit || !rsIdentity || mGroupId.isEmpty() || !mPendingForkPath.isEmpty()) return;
+    std::vector<RsGitGroup> groups;
+    if (!rsGit->getGroups({RsGxsGroupId(mGroupId.toStdString())}, groups) || groups.empty()) return;
+    const RsGitGroup upstream = groups.front();
+    if (IS_GROUP_ADMIN(upstream.mMeta.mSubscribeFlags)) return;
+    std::list<RsGxsId> identities;
+    rsIdentity->getOwnIds(identities);
+    if (identities.empty()) {
+        QMessageBox::warning(this, tr("Fork Repository"), tr("Create a RetroShare identity before forking a repository."));
+        return;
+    }
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Fork repository"));
+    dialog.setMinimumWidth(500);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *info = new QLabel(tr("Create your own repository with the original history. Choose a new empty folder for your fork."), &dialog);
+    info->setWordWrap(true);
+    layout->addWidget(info);
+    auto *form = new QFormLayout;
+    auto *name = new QLineEdit(QString::fromStdString(upstream.mGroupName) + "-fork", &dialog);
+    auto *identity = new QComboBox(&dialog);
+    for (const auto &id : identities) {
+        RsIdentityDetails details;
+        rsIdentity->getIdDetails(id, details);
+        identity->addItem(QString::fromStdString(details.mNickname) + " (" + QString::fromStdString(id.toStdString().substr(0, 8)) + ")",
+            QString::fromStdString(id.toStdString()));
+    }
+    auto *path = new QLineEdit(&dialog);
+    auto *choose = new QPushButton(tr("Choose..."), &dialog);
+    auto *row = new QHBoxLayout;
+    row->addWidget(path, 1);
+    row->addWidget(choose);
+    form->addRow(tr("Repository name"), name);
+    form->addRow(tr("Owner identity"), identity);
+    form->addRow(tr("Local path"), row);
+    layout->addLayout(form);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, &dialog);
+    buttons->addButton(tr("Fork"), QDialogButtonBox::AcceptRole);
+    layout->addWidget(buttons);
+    connect(choose, &QPushButton::clicked, &dialog, [&dialog, path]() {
+        const QString dir = QFileDialog::getExistingDirectory(&dialog, tr("Select Empty Folder"), QDir::homePath());
+        if (!dir.isEmpty()) path->setText(dir);
+    });
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&dialog, name, path]() {
+        const QString dir = path->text().trimmed();
+        if (name->text().trimmed().isEmpty() || !QDir::isAbsolutePath(dir) || !QDir(dir).exists() ||
+            !QDir(dir).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System).isEmpty()) {
+            QMessageBox::warning(&dialog, tr("Fork Repository"), tr("Enter a repository name and choose an existing empty folder."));
+            return;
+        }
+        dialog.accept();
+    });
+    if (dialog.exec() != QDialog::Accepted) return;
+    mPendingFork = RsGitGroup();
+    mPendingFork.mGroupName = name->text().trimmed().toStdString();
+    mPendingFork.mGroupDescription = upstream.mGroupDescription;
+    mPendingFork.mUpstreamGroupId = upstream.mMeta.mGroupId;
+    mPendingFork.mMeta.mGroupName = mPendingFork.mGroupName;
+    mPendingFork.mMeta.mAuthorId = RsGxsId(identity->currentData().toString().toStdString());
+    // Preserve the original distribution boundary when publishing a fork.
+    mPendingFork.mMeta.mGroupFlags = upstream.mMeta.mGroupFlags;
+    mPendingFork.mMeta.mSignFlags = upstream.mMeta.mSignFlags;
+    mPendingFork.mMeta.mCircleType = upstream.mMeta.mCircleType;
+    mPendingFork.mMeta.mCircleId = upstream.mMeta.mCircleId;
+    mPendingFork.mMeta.mInternalCircle = upstream.mMeta.mInternalCircle;
+    mPendingForkPath = QDir::cleanPath(path->text().trimmed());
+    // Prefer the downloaded repository; otherwise the existing transfer service downloads it.
+    const std::string source = GitManager::getBareRepoPath(upstream.mMeta.mGroupId.toStdString());
+    std::vector<std::string> branches;
+    std::string current;
+    if (GitManager::getBranches(source, branches, current) && !branches.empty()) {
+        if (GitManager::cloneRepository(source, mPendingForkPath.toStdString())) finishFork();
+        else {
+            mPendingForkPath.clear();
+            QMessageBox::critical(this, tr("Fork Failed"), tr("Could not copy the downloaded repository into the chosen folder."));
+        }
+    } else {
+        bool queued = rsGit->requestCloneOverTunnel(upstream.mMeta.mGroupId, upstream.mMeta.mAuthorId,
+            mPendingFork.mMeta.mAuthorId, mPendingForkPath.toStdString());
+        if (!queued) {
+            mPendingForkPath.clear();
+            QMessageBox::critical(this, tr("Fork Failed"), tr("Could not start downloading the original repository. Clone it first and retry."));
+        } else QMessageBox::information(this, tr("Creating Fork"), tr("Downloading the original repository. Keep RetroGit open; your fork will be created when the transfer completes."));
+    }
+    refresh();
+}
+
+void GitWidget::finishFork()
+{
+    if (mPendingForkPath.isEmpty()) return;
+    const QString path = mPendingForkPath;
+    mPendingForkPath.clear();
+    RsGitGroup fork = mPendingFork;
+    std::string pack;
+    std::map<std::string, std::string> refs;
+    if (!GitManager::materializeForkBranches(path.toStdString()) ||
+        !GitManager::createPackfile(path.toStdString(), pack, refs) || refs.empty() || !rsGit->createGroup(fork)) {
+        QMessageBox::critical(this, tr("Fork Failed"), tr("Could not create the fork. The downloaded files remain in your chosen folder."));
+        return;
+    }
+    const QString id = QString::fromStdString(fork.mMeta.mGroupId.toStdString());
+    saveRepoLocalPath(id, path);
+    const std::string bare = GitManager::getBareRepoPath(fork.mMeta.mGroupId.toStdString());
+    const std::string upstream = GitManager::getBareRepoPath(fork.mUpstreamGroupId.toStdString());
+    if (!GitManager::unpackPackfile(bare, pack, refs) || !GitManager::configureFork(path.toStdString(), bare, upstream)) {
+        QMessageBox::warning(this, tr("Fork Created"), tr("The fork was created, but local setup failed. Your files are preserved; select the fork under My Repositories and retry publishing."));
+        mMainWidget->updateDisplay();
+        return;
+    }
+    RsGitUpdate update;
+    update.mMeta.mGroupId = fork.mMeta.mGroupId;
+    update.mMeta.mAuthorId = fork.mMeta.mAuthorId;
+    update.mMeta.mMsgName = "Initial fork history";
+    update.mRefUpdates = refs;
+    if (pack.size() <= 200000) {
+        update.mPackfileData = pack;
+        uint32_t token;
+        rsGit->publishGitUpdate(token, update);
+    } else mMainWidget->hashAndPublishPackfile(id, pack, update);
+    mMainWidget->updateDisplay();
+    QMessageBox::information(this, tr("Fork Created"), tr("Your fork is available under My Repositories. Create a branch, commit your changes, then open Pull Requests to propose them to the original repository."));
 }
 
 void GitWidget::onPullClicked()

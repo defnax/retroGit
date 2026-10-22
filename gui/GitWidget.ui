@@ -103,6 +103,17 @@
       </widget>
      </item>
      <item>
+      <widget class="QPushButton" name="mBtnFork">
+       <property name="text">
+        <string>Fork Repository</string>
+       </property>
+       <property name="icon">
+        <iconset resource="images.qrc">
+         <normaloff>:/images/git-fork.png</normaloff>:/images/git-fork.png</iconset>
+       </property>
+      </widget>
+     </item>
+     <item>
       <spacer name="horizontalSpacer">
        <property name="orientation">
         <enum>Qt::Horizontal</enum>

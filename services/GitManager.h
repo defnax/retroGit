@@ -58,6 +58,11 @@ public:
      * @brief Initialize libgit2. Must be called once before using any Git features.
      */
     static bool init();
+    static bool setReviewRef(const std::string& repoPath, const std::string& ref, const std::string& commit);
+    static bool materializeForkBranches(const std::string& path);
+    static bool configureFork(const std::string& localPath, const std::string& forkPath, const std::string& upstreamPath);
+    static bool canFastForward(const std::string& repoPath, const std::string& source, const std::string& target);
+
 
     /**
      * @brief Shutdown libgit2 and free resources.

@@ -48,6 +48,7 @@ struct RsGitGroup : public RsGxsGenericGroupData
 {
       std::string mGroupName;
       std::string mGroupDescription;
+    RsGxsGroupId mUpstreamGroupId;
 };
 
 struct RsGitUpdate
@@ -66,7 +67,14 @@ struct RsGitPullRequest
     std::string mTargetBranch;
     std::string mSourceBranch;
     std::string mPackfileData;
-    uint32_t mStatus;
+    uint32_t mStatus = 0;
+    RsGxsGroupId mSourceGroupId;
+    std::string mSourceCommit;
+
+    std::string sourceRef() const {
+        return mSourceCommit.empty() ? mSourceBranch
+            : "refs/retrogit/pull/" + mMeta.mMsgId.toStdString();
+    }
     std::vector<RsGxsFile> mFiles;
 };
 
@@ -132,6 +140,8 @@ public:
     /**
      * @brief Publish a Pull Request to a Repository.
      */
+    virtual bool preparePullRequest(const RsGitPullRequest &pr) = 0;
+
     virtual bool publishPullRequest(uint32_t &token, RsGitPullRequest &pr) = 0;
 
     /**
