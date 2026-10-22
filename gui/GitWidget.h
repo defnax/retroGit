@@ -50,18 +50,18 @@ public:
     QString getLocalPath() const;
 
 private slots:
-    void onBrowseClicked();
     void onInitializeClicked();
     void onCloneClicked();
     void onCommitClicked();
     void onPushClicked();
     void onPullClicked();
-    void onLocalPathChanged(const QString &text);
     void onCommitSelectionChanged();
     void onCommitTableContextMenu(const QPoint &pos);
     void onCommitReadStatusToggled(const QString &msgIdStr, bool markRead);
 
 private:
+    QString chooseRepositoryPath(bool clone);
+    void setLocalPath(const QString &path);
     void populateCommitLog();
     void saveRepoLocalPath(const QString &groupId, const QString &path);
     QString loadRepoLocalPath(const QString &groupId);
@@ -69,6 +69,7 @@ private:
     Ui::GitWidget *ui;
     MainWidget *mMainWidget;
     QString mGroupId;
+    QString mLocalPath;
 
     QString mLastGroupId;
     std::string mLastRepoPath;

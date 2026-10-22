@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>500</width>
+    <width>658</width>
     <height>400</height>
    </rect>
   </property>
@@ -30,27 +30,9 @@
     <number>9</number>
    </property>
    <item>
-    <layout class="QHBoxLayout" name="pathLayout">
-     <item>
-      <widget class="QLineEdit" name="mLocalPathEdit">
-       <property name="placeholderText">
-        <string>Local Working Directory...</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QPushButton" name="mBtnBrowse">
-       <property name="text">
-        <string>Browse...</string>
-       </property>
-      </widget>
-     </item>
-    </layout>
-   </item>
-   <item>
     <widget class="QLabel" name="mLblOwnerInfo">
      <property name="text">
-      <string>&lt;b&gt;For Repo Owners:&lt;/b&gt; Browse to your project folder. For a new folder, click &lt;b&gt;Initialize Repository&lt;/b&gt;, add files and &lt;b&gt;Commit Changes&lt;/b&gt;, then &lt;b&gt;Push / Publish&lt;/b&gt;.</string>
+      <string>&lt;b&gt;For Repo Owners:&lt;/b&gt; Choose your project folder with &lt;b&gt;Initialize Repository&lt;/b&gt;, add files and &lt;b&gt;Commit Changes&lt;/b&gt;, then &lt;b&gt;Push / Publish&lt;/b&gt;.</string>
      </property>
      <property name="wordWrap">
       <bool>true</bool>
@@ -60,7 +42,7 @@
    <item>
     <widget class="QLabel" name="mLblSubscriberInfo">
      <property name="text">
-      <string>&lt;b&gt;For Subscribers:&lt;/b&gt; Browse to an empty folder and &lt;b&gt;Clone&lt;/b&gt; to download the code.</string>
+      <string>&lt;b&gt;For Subscribers:&lt;/b&gt; Click &lt;b&gt;Clone Repository&lt;/b&gt; and choose an empty local folder to download the code.</string>
      </property>
      <property name="wordWrap">
       <bool>true</bool>
@@ -92,12 +74,20 @@
        <property name="text">
         <string>Commit Changes</string>
        </property>
+       <property name="icon">
+        <iconset resource="images.qrc">
+         <normaloff>:/images/commit-24_.png</normaloff>:/images/commit-24_.png</iconset>
+       </property>
       </widget>
      </item>
      <item>
       <widget class="QPushButton" name="mBtnPush">
        <property name="text">
         <string>Push / Publish</string>
+       </property>
+       <property name="icon">
+        <iconset resource="images.qrc">
+         <normaloff>:/images/repo-push.png</normaloff>:/images/repo-push.png</iconset>
        </property>
       </widget>
      </item>
@@ -106,7 +96,24 @@
        <property name="text">
         <string>Sync / Pull</string>
        </property>
+       <property name="icon">
+        <iconset resource="images.qrc">
+         <normaloff>:/images/sync.png</normaloff>:/images/sync.png</iconset>
+       </property>
       </widget>
+     </item>
+     <item>
+      <spacer name="horizontalSpacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
      </item>
     </layout>
    </item>

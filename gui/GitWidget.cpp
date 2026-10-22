@@ -27,6 +27,12 @@
 #include "GitCommitDialog.h"
 #include "CodeWidget.h"
 
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QLineEdit>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QDir>
@@ -57,13 +63,11 @@ GitWidget::GitWidget(MainWidget *mainWidget, QWidget *parent)
     ui->mCommitTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     ui->mCommitTable->setContextMenuPolicy(Qt::CustomContextMenu);
 
-    connect(ui->mBtnBrowse, &QPushButton::clicked, this, &GitWidget::onBrowseClicked);
     connect(ui->mBtnInitialize, &QPushButton::clicked, this, &GitWidget::onInitializeClicked);
     connect(ui->mBtnClone, &QPushButton::clicked, this, &GitWidget::onCloneClicked);
     connect(ui->mBtnCommit, &QPushButton::clicked, this, &GitWidget::onCommitClicked);
     connect(ui->mBtnPush, &QPushButton::clicked, this, &GitWidget::onPushClicked);
     connect(ui->mBtnPull, &QPushButton::clicked, this, &GitWidget::onPullClicked);
-    connect(ui->mLocalPathEdit, &QLineEdit::textChanged, this, &GitWidget::onLocalPathChanged);
     connect(ui->mCommitTable, &QTableWidget::itemSelectionChanged, this, &GitWidget::onCommitSelectionChanged);
     connect(ui->mCommitTable, &QTableWidget::customContextMenuRequested, this, &GitWidget::onCommitTableContextMenu);
 
@@ -85,11 +89,9 @@ GitWidget::~GitWidget()
 
 void GitWidget::clear()
 {
-    ui->mLocalPathEdit->blockSignals(true);
-    ui->mLocalPathEdit->clear();
-    ui->mLocalPathEdit->blockSignals(false);
-    ui->mLocalPathEdit->setEnabled(false);
-    ui->mBtnBrowse->setEnabled(false);
+    mLocalPath.clear();
+    ui->mBtnInitialize->setVisible(false);
+    ui->mBtnClone->setVisible(false);
     ui->mBtnInitialize->setEnabled(false);
     ui->mBtnClone->setEnabled(false);
     ui->mBtnCommit->setEnabled(false);
@@ -116,10 +118,7 @@ void GitWidget::setGroupId(const QString &groupId)
         return;
     }
 
-    ui->mLocalPathEdit->blockSignals(true);
-    QString path = loadRepoLocalPath(mGroupId);
-    ui->mLocalPathEdit->setText(path);
-    ui->mLocalPathEdit->blockSignals(false);
+    mLocalPath = loadRepoLocalPath(mGroupId).trimmed();
 
     refresh();
 }
@@ -128,7 +127,7 @@ void GitWidget::refresh()
 {
     if (mGroupId.isEmpty()) return;
 
-    QString path = ui->mLocalPathEdit->text().trimmed();
+    QString path = mLocalPath;
     bool hasPath = !path.isEmpty();
     bool pathExists = false;
     bool isCloned = false;
@@ -161,9 +160,10 @@ void GitWidget::refresh()
     }
 
     ui->mBtnPush->setEnabled(isAdmin);
-    ui->mBtnInitialize->setVisible(isAdmin);
-    ui->mBtnInitialize->setEnabled(isAdmin && pathExists && !isCloned);
-    ui->mBtnPull->setEnabled(true);
+    ui->mBtnInitialize->setVisible(isAdmin && !isCloned);
+    ui->mBtnInitialize->setEnabled(isAdmin && !isCloned);
+    ui->mBtnClone->setVisible(!isAdmin && !isCloned);
+    ui->mBtnPull->setEnabled(isCloned);
     if (!isSubscribed) {
         ui->mBtnClone->setEnabled(false);
     } else {
@@ -171,11 +171,14 @@ void GitWidget::refresh()
     }
     ui->mBtnCommit->setEnabled(hasPath && pathExists && isAdmin && hasLocalChanges);
 
-    ui->mBtnBrowse->setEnabled(isSubscribed || isAdmin);
-    ui->mLocalPathEdit->setEnabled(isSubscribed || isAdmin);
-
     ui->mLblOwnerInfo->setVisible(isAdmin);
+    ui->mLblOwnerInfo->setText(isCloned
+        ? tr("<b>For Repo Owners:</b> Add or edit project files, then <b>Commit Changes</b> and <b>Push / Publish</b>.")
+        : tr("<b>For Repo Owners:</b> Choose your project folder with <b>Initialize Repository</b>, add files and <b>Commit Changes</b>, then <b>Push / Publish</b>."));
     ui->mLblSubscriberInfo->setVisible(isSubscribed && !isAdmin);
+    ui->mLblSubscriberInfo->setText(isCloned
+        ? tr("<b>For Subscribers:</b> Use <b>Sync / Pull</b> to download repository updates.")
+        : tr("<b>For Subscribers:</b> Click <b>Clone Repository</b> and choose an empty local folder to download the code."));
 
     populateCommitLog();
 
@@ -211,14 +214,66 @@ QString GitWidget::loadRepoLocalPath(const QString &groupId)
     return path;
 }
 
-void GitWidget::onBrowseClicked()
+QString GitWidget::chooseRepositoryPath(bool clone)
 {
-    QString dir = QFileDialog::getExistingDirectory(this, tr("Select Working Directory"),
-                                                 ui->mLocalPathEdit->text(),
-                                                 QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
-    if (!dir.isEmpty()) {
-        ui->mLocalPathEdit->setText(dir);
-    }
+    QDialog dialog(this);
+    dialog.setWindowTitle(clone ? tr("Clone a repository") : tr("Initialize repository"));
+    dialog.setMinimumWidth(500);
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setSpacing(12);
+    auto *hint = new QLabel(clone
+        ? tr("Choose an empty folder where the repository will be downloaded.")
+        : tr("Choose your project folder to initialize or connect an existing Git repository."), &dialog);
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+    auto *label = new QLabel(tr("Local path"), &dialog);
+    layout->addWidget(label);
+    auto *pathLayout = new QHBoxLayout;
+    auto *pathEdit = new QLineEdit(mLocalPath, &dialog);
+    pathEdit->setPlaceholderText(tr("Select a local folder"));
+    label->setBuddy(pathEdit);
+    auto *browse = new QPushButton(tr("Choose..."), &dialog);
+    pathLayout->addWidget(pathEdit, 1);
+    pathLayout->addWidget(browse);
+    layout->addLayout(pathLayout);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, &dialog);
+    auto *accept = buttons->addButton(clone ? tr("Clone") : tr("Initialize"), QDialogButtonBox::AcceptRole);
+    accept->setDefault(true);
+    accept->setEnabled(!pathEdit->text().trimmed().isEmpty());
+    layout->addWidget(buttons);
+    connect(pathEdit, &QLineEdit::textChanged, &dialog, [accept](const QString &text) {
+        accept->setEnabled(!text.trimmed().isEmpty());
+    });
+    connect(browse, &QPushButton::clicked, &dialog, [&dialog, pathEdit]() {
+        const QString path = QFileDialog::getExistingDirectory(&dialog, tr("Select Local Folder"),
+            pathEdit->text().isEmpty() ? QDir::homePath() : pathEdit->text(),
+            QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+        if (!path.isEmpty()) pathEdit->setText(path);
+    });
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&dialog, pathEdit, clone]() {
+        const QString path = pathEdit->text().trimmed();
+        if (path.isEmpty() || !QDir::isAbsolutePath(path) || !QDir(path).exists()) {
+            QMessageBox::warning(&dialog, tr("Invalid Local Path"), tr("Choose an existing folder using an absolute path."));
+            return;
+        }
+        if (clone && !QDir(path).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System).isEmpty()) {
+            QMessageBox::warning(&dialog, tr("Folder Is Not Empty"), tr("Choose an empty folder for the cloned repository."));
+            return;
+        }
+        dialog.accept();
+    });
+    pathEdit->setFocus();
+    if (dialog.exec() != QDialog::Accepted) return QString();
+    return QDir::cleanPath(pathEdit->text().trimmed());
+}
+
+void GitWidget::setLocalPath(const QString &path)
+{
+    mLocalPath = path;
+    saveRepoLocalPath(mGroupId, path);
+    refresh();
+    mMainWidget->updateDisplay();
 }
 
 void GitWidget::onInitializeClicked()
@@ -229,15 +284,11 @@ void GitWidget::onInitializeClicked()
     if (!rsGit->getGroups(ids, groups) || groups.empty() ||
         !IS_GROUP_ADMIN(groups[0].mMeta.mSubscribeFlags)) return;
 
-    QString path = ui->mLocalPathEdit->text().trimmed();
-    if (path.isEmpty() || !QDir(path).exists()) {
-        QMessageBox::warning(this, tr("Initialize Repository"), tr("Please browse to an existing project folder first."));
-        return;
-    }
-    path = QDir::cleanPath(path);
+    const QString path = chooseRepositoryPath(false);
+    if (path.isEmpty()) return;
     std::string error;
     if (GitManager::isValidRepository(path.toStdString(), &error)) {
-        refresh();
+        setLocalPath(path);
         return;
     }
     // Do not reinitialize an existing repository that failed to open (for
@@ -255,41 +306,14 @@ void GitWidget::onInitializeClicked()
         QMessageBox::critical(this, tr("Initialization Failed"), QString::fromStdString(error));
         return;
     }
-    refresh();
-    mMainWidget->updateDisplay();
+    setLocalPath(path);
     QMessageBox::information(this, tr("Repository Initialized"),
         tr("Add your project files to this folder, then use Commit Changes to create your first commit. After committing, use Push / Publish."));
-}
-
-void GitWidget::onLocalPathChanged(const QString &text)
-{
-    bool isAdmin = false;
-    if (!mGroupId.isEmpty()) {
-        std::list<RsGxsGroupId> groupIds({RsGxsGroupId(mGroupId.toStdString())});
-        std::vector<RsGitGroup> groups;
-        if (rsGit && rsGit->getGroups(groupIds, groups) && !groups.empty()) {
-            uint32_t flags = groups[0].mMeta.mSubscribeFlags;
-            isAdmin = IS_GROUP_ADMIN(flags);
-        }
-    }
-    ui->mBtnCommit->setEnabled(!text.isEmpty() && isAdmin);
-
-    if (mGroupId.isEmpty()) return;
-    QString cleanText = QDir::cleanPath(text.trimmed());
-    saveRepoLocalPath(mGroupId, cleanText);
-    refresh();
-    mMainWidget->updateDisplay();
 }
 
 void GitWidget::onCloneClicked()
 {
     if (mGroupId.isEmpty()) return;
-
-    QString localPath = ui->mLocalPathEdit->text().trimmed();
-    if (localPath.isEmpty()) {
-        QMessageBox::warning(this, tr("Error"), tr("Please select a local working directory first."));
-        return;
-    }
 
     RsGxsId creatorId;
     std::list<RsGxsGroupId> groupIds({RsGxsGroupId(mGroupId.toStdString())});
@@ -304,6 +328,10 @@ void GitWidget::onCloneClicked()
         QMessageBox::critical(this, tr("Clone Failed"), tr("Could not locate repository creator ID to clone from."));
         return;
     }
+
+    const QString localPath = chooseRepositoryPath(true);
+    if (localPath.isEmpty()) return;
+    setLocalPath(localPath);
 
     RsGxsId ownId;
     if (rsIdentity) {
@@ -321,7 +349,12 @@ void GitWidget::onPullClicked()
 {
     if (mGroupId.isEmpty()) return;
 
-    QString localPath = ui->mLocalPathEdit->text().trimmed();
+    QString localPath = mLocalPath;
+    if (localPath.isEmpty() || !QDir(localPath).exists() ||
+        !GitManager::isValidRepository(localPath.toStdString())) {
+        refresh();
+        return;
+    }
 
     RsGxsId creatorId;
     std::list<RsGxsGroupId> groupIds({RsGxsGroupId(mGroupId.toStdString())});
@@ -352,7 +385,7 @@ void GitWidget::onPullClicked()
 void GitWidget::onCommitClicked()
 {
     if (mGroupId.isEmpty()) return;
-    QString localPath = ui->mLocalPathEdit->text().trimmed();
+    QString localPath = mLocalPath;
 
     RsGxsId ownId;
     if (rsIdentity) {
@@ -437,7 +470,7 @@ void GitWidget::onCommitClicked()
 void GitWidget::onPushClicked()
 {
     if (mGroupId.isEmpty()) return;
-    QString localPath = ui->mLocalPathEdit->text().trimmed();
+    QString localPath = mLocalPath;
     std::string repoPath = localPath.toStdString();
 
     std::string error;
@@ -542,7 +575,7 @@ void GitWidget::onCommitSelectionChanged()
 
     // Determine current repo path
     std::string repoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
-    QString rawPath = ui->mLocalPathEdit->text().trimmed();
+    QString rawPath = mLocalPath;
     if (!rawPath.isEmpty()) {
         QString localPath = QDir::cleanPath(rawPath);
         if (QDir(localPath).exists() && GitManager::isValidRepository(localPath.toStdString())) {
@@ -584,7 +617,7 @@ void GitWidget::onCommitTableContextMenu(const QPoint &pos)
     if (selected == actionDiff) {
         mMainWidget->showDiffForCommit(fullHash);
     } else if (selected == actionDiscard) {
-        QString localPath = ui->mLocalPathEdit->text().trimmed();
+        QString localPath = mLocalPath;
         if (!localPath.isEmpty()) {
             if (QMessageBox::question(this, tr("Discard Changes"),
                                       tr("Are you sure you want to discard all local uncommitted changes? This action cannot be undone."),
@@ -627,7 +660,7 @@ void GitWidget::populateCommitLog()
     }
 
     std::string repoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
-    QString rawPath = ui->mLocalPathEdit->text().trimmed();
+    QString rawPath = mLocalPath;
     if (!rawPath.isEmpty()) {
         QString localPath = QDir::cleanPath(rawPath);
         if (QDir(localPath).exists() && GitManager::isValidRepository(localPath.toStdString())) {
@@ -864,7 +897,7 @@ void GitWidget::populateCommitLog()
         if (!creatorId.isNull()) {
             QPushButton *btnPull = new QPushButton(tr("Pull"), ui->mCommitTable);
             btnPull->setStyleSheet("QPushButton { font-weight: bold; color: #2980b9; }");
-            QString localPath = ui->mLocalPathEdit->text().trimmed();
+            QString localPath = mLocalPath;
             connect(btnPull, &QPushButton::clicked, [this, creatorId, ownId, localPath, repoName]() {
                 mMainWidget->logPullAttempt(mGroupId, repoName, QString::fromStdString(creatorId.toStdString()), ownId, localPath);
             });
@@ -996,24 +1029,13 @@ void GitWidget::populateCommitLog()
     }
 
     bool hasPath = !rawPath.isEmpty();
-    bool pathExists = false;
-    bool isCloned = false;
-    if (hasPath) {
-        QString cleanPath = QDir::cleanPath(rawPath);
-        pathExists = QDir(cleanPath).exists();
-        if (pathExists && GitManager::isValidRepository(cleanPath.toStdString())) {
-            isCloned = true;
-        }
-    }
+    bool pathExists = hasPath && QDir(QDir::cleanPath(rawPath)).exists();
 
     ui->mBtnPush->setEnabled(isAdmin);
-    bool hasUndownloaded = (undownloadedUpdates.size() > 0);
-    ui->mBtnPull->setEnabled(isCloned && hasUndownloaded);
-    ui->mBtnClone->setEnabled(!isAdmin && !isCloned);
     ui->mBtnCommit->setEnabled(hasPath && pathExists && isAdmin && hasLocalChanges);
 }
 
 QString GitWidget::getLocalPath() const
 {
-    return ui->mLocalPathEdit->text().trimmed();
+    return mLocalPath;
 }
