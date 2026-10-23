@@ -61,7 +61,7 @@ public:
     static bool setReviewRef(const std::string& repoPath, const std::string& ref, const std::string& commit);
     static bool materializeForkBranches(const std::string& path);
     static bool configureFork(const std::string& localPath, const std::string& forkPath, const std::string& upstreamPath);
-    static bool canFastForward(const std::string& repoPath, const std::string& source, const std::string& target);
+    static bool canFastForward(const std::string& repoPath, const std::string& source, const std::string& target, std::string* reason = nullptr);
 
 
     /**
@@ -92,7 +92,9 @@ public:
     /**
      * @brief Pull changes from origin into a local working directory.
      */
-    static bool pullRepository(const std::string& localPath);
+    static bool pullRepository(const std::string& localPath, const std::string& sourcePath = "", std::string* errorMessage = nullptr, const std::string& expectedBranch = "");
+    static bool hasCommit(const std::string& path, const std::string& commit);
+    static std::set<std::string> knownTips(const std::string& path);
 
     /**
      * @brief Commit all changes in the working directory.
@@ -180,12 +182,12 @@ public:
     /**
      * @brief Create a packfile from the local repository and return ref updates.
      */
-    static bool createPackfile(const std::string &repoPath, std::string &packfileData, std::map<std::string, std::string> &refUpdates);
+    static bool createPackfile(const std::string &repoPath, std::string &packfileData, std::map<std::string, std::string> &refUpdates, const std::set<std::string>& known = {});
 
     /**
      * @brief Create a packfile for a specific reference (branch).
      */
-    static bool createPackfileForRef(const std::string& repoPath, const std::string& refName, std::string& outPackfileData, std::map<std::string, std::string>& outRefUpdates);
+    static bool createPackfileForRef(const std::string& repoPath, const std::string& refName, std::string& outPackfileData, std::map<std::string, std::string>& outRefUpdates, const std::set<std::string>& known = {});
 
 
     /**

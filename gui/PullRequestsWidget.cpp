@@ -365,7 +365,7 @@ void PullRequestsWidget::populatePRList()
 
             QPushButton *btnAction = new QPushButton(container);
             if (isOpen && isAdmin) {
-                btnAction->setText(tr("Merge"));
+                btnAction->setText(tr("Review"));
                 btnAction->setStyleSheet("QPushButton { background-color: #2da44e; color: white; border-radius: 6px; padding: 4px 12px; font-weight: bold; min-height: 26px; max-height: 26px; }"
                                         "QPushButton:hover { background-color: #2c974b; }"
                                         "QPushButton:pressed { background-color: #298e46; }");

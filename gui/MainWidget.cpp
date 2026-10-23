@@ -844,6 +844,26 @@ void MainWidget::logCloneAttempt(const QString &groupId, const QString &repoName
 
 void MainWidget::logPullAttempt(const QString &groupId, const QString &repoName, const QString &ownerId, const RsGxsId &ownId, const QString &localPath)
 {
+    if (!rsGit) return;
+    const std::string cached = GitManager::getBareRepoPath(groupId.toStdString());
+    std::vector<RsGitGroup> groups;
+    bool owner = rsGit->getGroups({RsGxsGroupId(groupId.toStdString())}, groups) && !groups.empty() &&
+        IS_GROUP_ADMIN(groups.front().mMeta.mSubscribeFlags);
+    bool available = false;
+    std::vector<RsGitUpdate> updates;
+    if (rsGit->getUpdates(RsGxsGroupId(groupId.toStdString()), updates) && !updates.empty()) {
+        available = true;
+        for (const auto &update : updates) for (const auto &ref : update.mRefUpdates)
+            if (!GitManager::hasCommit(cached, ref.second)) available = false;
+    }
+    if (owner || available) {
+        std::string error;
+        if (GitManager::pullRepository(localPath.toStdString(), cached, &error)) {
+            refreshCurrentRepo();
+            QMessageBox::information(this, tr("Working Folder Updated"), tr("The current branch is up to date with the locally stored repository."));
+        } else QMessageBox::warning(this, tr("Working Folder Not Updated"), QString::fromStdString(error));
+        return;
+    }
     PushesWidget::CloneRecord rec;
     rec.repoId = groupId;
     rec.repoName = repoName;
@@ -964,6 +984,8 @@ void MainWidget::showCommitDetails(const QString &fullHash, const QString &qRepo
 {
     mCurrentCommitHash = fullHash;
     std::string repoPath = qRepoPath.toStdString();
+    if (fullHash != "LOCAL_CHANGES" && !GitManager::hasCommit(repoPath, fullHash.toStdString()))
+        repoPath = GitManager::getBareRepoPath(getSelectedGroupId().toStdString());
     if (fullHash == "LOCAL_CHANGES") {
         mDetailsAuthorNameLabel->setText("");
         mDetailsAuthorEmailLabel->hide();
@@ -1199,6 +1221,9 @@ void MainWidget::showDiffForFile(const QString &filePath)
         }
     }
 
+    if (fullHash != "LOCAL_CHANGES" && !GitManager::hasCommit(repoPath, fullHash.toStdString()))
+        repoPath = GitManager::getBareRepoPath(groupId.toStdString());
+
     std::vector<GitDiffLine> diffLines;
     if (!GitManager::getFileDiff(repoPath, fullHash.toStdString(), filePath.toStdString(), diffLines)) {
         QMessageBox::warning(this, tr("Diff Error"), tr("Failed to retrieve diff for the selected file."));
@@ -1336,6 +1361,9 @@ void MainWidget::showDiffForCommit(const QString &commitHash)
             repoPath = localPath.toStdString();
         }
     }
+
+    if (commitHash != "LOCAL_CHANGES" && !GitManager::hasCommit(repoPath, commitHash.toStdString()))
+        repoPath = GitManager::getBareRepoPath(groupId.toStdString());
 
     std::vector<GitDiffLine> diffLines;
     if (!GitManager::getFileDiff(repoPath, commitHash.toStdString(), "", diffLines)) {

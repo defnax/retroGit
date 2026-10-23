@@ -233,7 +233,7 @@ void p3Git::service_tick()
         bool hasWorkingDir = !pp.localPath.empty() && GitManager::isValidRepository(pp.localPath);
         if (hasWorkingDir) {
             postCloneStatus(pp.groupId, "Offline sync: updating working tree...", false);
-            if (GitManager::pullRepository(pp.localPath)) {
+            if (GitManager::pullRepository(pp.localPath, GitManager::getBareRepoPath(pp.groupId.toStdString()))) {
                 postCloneStatus(pp.groupId, "Offline sync completed successfully!", true);
             } else {
                 postCloneStatus(pp.groupId, "Offline sync failed to update working tree.", false);
@@ -1042,7 +1042,7 @@ bool p3Git::requestOfflinePull(const RsGxsGroupId &groupId, const std::string &l
         bool hasWorkingDir = !localPath.empty() && GitManager::isValidRepository(localPath);
         if (hasWorkingDir) {
             postCloneStatus(groupId, "Offline sync: updating working tree...", false);
-            if (GitManager::pullRepository(localPath)) {
+            if (GitManager::pullRepository(localPath, barePath)) {
                 postCloneStatus(groupId, "Offline sync completed successfully!", true);
                 return true;
             } else {
@@ -1213,6 +1213,15 @@ void p3Git::notifyTunnelStatus(const RsGxsTunnelId& tunnel_id, uint32_t tunnel_s
         req["type"] = isPull ? "pull_req" : "clone_req";
         req["group_id"] = QString::fromStdString(groupId.toStdString());
         req["chunked"] = true;
+        if (isPull) {
+            // Only advertise objects in the cache where the response is imported.
+            QVariantList have;
+            for (const auto& tip : GitManager::knownTips(GitManager::getBareRepoPath(groupId.toStdString()))) {
+                if (have.size() >= 256) break;
+                have.append(QString::fromStdString(tip));
+            }
+            req["have"] = have;
+        }
 
         QJsonDocument doc = QJsonDocument::fromVariant(req);
         std::string msg = doc.toJson().toStdString();
@@ -1356,7 +1365,15 @@ void p3Git::receiveData(const RsGxsTunnelId& id, unsigned char *data, uint32_t d
 
         std::string packfileData;
         std::map<std::string, std::string> refUpdates;
-        if (GitManager::createPackfile(barePath, packfileData, refUpdates)) {
+        std::set<std::string> known;
+        if (type == "pull_req") {
+            const QVariantList have = map["have"].toList();
+            for (int i = 0; i < have.size() && i < 256; ++i) {
+                const std::string tip = have[i].toString().toStdString();
+                if (tip.size() == 40) known.insert(tip);
+            }
+        }
+        if (GitManager::createPackfile(barePath, packfileData, refUpdates, known)) {
             if (refUpdates.empty()) {
                 sendError("Repository has no published commits. Commit and Push / Publish on the owner first.");
                 return;
@@ -1511,7 +1528,7 @@ void p3Git::receiveData(const RsGxsTunnelId& id, unsigned char *data, uint32_t d
             bool pullSuccess = false;
             if (hasWorkingDir) {
                 postCloneStatus(groupId, "Syncing working tree...", false);
-                if (GitManager::pullRepository(pp.localPath)) {
+                if (GitManager::pullRepository(pp.localPath, GitManager::getBareRepoPath(pp.groupId.toStdString()))) {
                     postCloneStatus(groupId, "Sync completed successfully!", true);
                     pullSuccess = true;
                 } else {

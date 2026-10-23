@@ -88,6 +88,72 @@ std::string GitManager::getBareRepoPath(const std::string& groupId)
     return RsAccounts::AccountDirectory() + "/retrogit_repos/" + groupId + ".git";
 }
  
+namespace {
+std::string oidText(const git_oid *oid) {
+    char hex[GIT_OID_HEXSZ + 1]; git_oid_tostr(hex, sizeof(hex), oid); return hex;
+}
+// Enumerate full object closure, including trees, blobs, tags and commit parents.
+// Gitlinks name commits in another repository and are intentionally excluded.
+bool collectObjects(git_repository *repo, const git_oid& tip, std::set<std::string>& objects) {
+    std::vector<git_oid> pending{tip};
+    while (!pending.empty()) {
+        git_oid id = pending.back(); pending.pop_back();
+        if (!objects.insert(oidText(&id)).second) continue;
+        git_object *object = nullptr;
+        if (git_object_lookup(&object, repo, &id, GIT_OBJECT_ANY) != 0) return false;
+        switch (git_object_type(object)) {
+        case GIT_OBJECT_COMMIT: {
+            auto *commit = reinterpret_cast<git_commit*>(object);
+            pending.push_back(*git_commit_tree_id(commit));
+            for (unsigned i = 0; i < git_commit_parentcount(commit); ++i)
+                pending.push_back(*git_commit_parent_id(commit, i));
+            break;
+        }
+        case GIT_OBJECT_TREE: {
+            auto *tree = reinterpret_cast<git_tree*>(object);
+            for (size_t i = 0; i < git_tree_entrycount(tree); ++i) {
+                const auto *entry = git_tree_entry_byindex(tree, i);
+                if (git_tree_entry_type(entry) != GIT_OBJECT_COMMIT) pending.push_back(*git_tree_entry_id(entry));
+            }
+            break;
+        }
+        case GIT_OBJECT_TAG: pending.push_back(*git_tag_target_id(reinterpret_cast<git_tag*>(object))); break;
+        default: break;
+        }
+        git_object_free(object);
+    }
+    return true;
+}
+}
+
+bool GitManager::hasCommit(const std::string& path, const std::string& commit) {
+    git_repository *repo = nullptr; git_oid id; git_commit *object = nullptr;
+    if (commit.size() != GIT_OID_HEXSZ || git_oid_fromstr(&id, commit.c_str()) != 0 ||
+        git_repository_open(&repo, normalizePath(path).c_str()) != 0) return false;
+    const bool ok = git_commit_lookup(&object, repo, &id) == 0;
+    git_commit_free(object); git_repository_free(repo); return ok;
+}
+
+std::set<std::string> GitManager::knownTips(const std::string& path) {
+    std::set<std::string> tips;
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normalizePath(path).c_str()) != 0) return tips;
+    git_reference_iterator *iter = nullptr;
+    if (git_reference_iterator_new(&iter, repo) == 0) {
+        git_reference *ref = nullptr;
+        while (git_reference_next(&ref, iter) == 0) {
+            const std::string name = git_reference_name(ref);
+            const git_oid *id = git_reference_target(ref);
+            std::set<std::string> objects;
+            if (id && (name.rfind("refs/heads/", 0) == 0 || name.rfind("refs/tags/", 0) == 0) &&
+                collectObjects(repo, *id, objects)) tips.insert(oidText(id));
+            git_reference_free(ref);
+        }
+        git_reference_iterator_free(iter);
+    }
+    git_repository_free(repo); return tips;
+}
+
 bool GitManager::unpackPackfile(const std::string& repoPath, const std::string& packfileData, const std::map<std::string, std::string>& refUpdates)
 {
     std::string normPath = normalizePath(repoPath);
@@ -131,6 +197,17 @@ bool GitManager::unpackPackfile(const std::string& repoPath, const std::string& 
         return false;
     }
 
+    // Delta packs may arrive before their prerequisites. Retain objects, but
+    // never expose incomplete history through branch references.
+    std::set<std::string> complete;
+    for (const auto& update : refUpdates) {
+        git_oid id;
+        if (update.second.size() != GIT_OID_HEXSZ || git_oid_fromstr(&id, update.second.c_str()) != 0 ||
+            !collectObjects(repo, id, complete)) {
+            git_repository_free(repo);
+            return false;
+        }
+    }
     // Update branch references
     for (std::map<std::string, std::string>::const_iterator it = refUpdates.begin(); it != refUpdates.end(); ++it) {
         git_oid oid;
@@ -174,142 +251,69 @@ static int packbuilder_callback(void *buf, size_t size, void *payload) {
     return 0;
 }
 
-bool GitManager::createPackfile(const std::string& repoPath, std::string& outPackfileData, std::map<std::string, std::string>& outRefUpdates)
+static bool buildObjectPack(git_repository *repo, const std::map<std::string, std::string>& refs,
+                            const std::set<std::string>& known, std::string& data)
 {
-    std::string normPath = normalizePath(repoPath);
-    git_repository *repo = NULL;
-    int error = git_repository_open(&repo, normPath.c_str());
-    if (error < 0) {
-        std::cerr << "createPackfile failed to open repo" << std::endl;
-        return false;
+    std::set<std::string> wanted, excluded;
+    for (const auto& ref : refs) {
+        git_oid id;
+        if (git_oid_fromstr(&id, ref.second.c_str()) != 0 || !collectObjects(repo, id, wanted)) return false;
     }
-
-    git_packbuilder *pb = NULL;
-    error = git_packbuilder_new(&pb, repo);
-    if (error == 0) {
-        git_revwalk *walk = NULL;
-        if (git_revwalk_new(&walk, repo) == 0) {
-            git_revwalk_sorting(walk, GIT_SORT_TIME);
-            
-            git_reference_iterator *ref_it = NULL;
-            if (git_reference_iterator_new(&ref_it, repo) == 0) {
-                git_reference *ref = NULL;
-                while (git_reference_next(&ref, ref_it) == 0) {
-                    std::string ref_name = git_reference_name(ref);
-                    if (ref_name.find("refs/heads/") == 0 || ref_name.find("refs/tags/") == 0) {
-                        const git_oid *oid = git_reference_target(ref);
-                        if (oid) {
-                            char oid_str[GIT_OID_HEXSZ + 1];
-                            git_oid_tostr(oid_str, sizeof(oid_str), oid);
-                            outRefUpdates[ref_name] = std::string(oid_str);
-                            // Annotated tags are objects too, not just aliases for commits.
-                            if (ref_name.find("refs/tags/") == 0)
-                                git_packbuilder_insert(pb, oid, nullptr);
-                            
-                            git_object *peeled = NULL;
-                            if (git_reference_peel(&peeled, ref, GIT_OBJECT_COMMIT) == 0) {
-                                const git_oid *peeled_oid = git_object_id(peeled);
-                                git_revwalk_push(walk, peeled_oid);
-                                git_object_free(peeled);
-                            }
-                        }
-                    }
-                    git_reference_free(ref);
-                }
-                git_reference_iterator_free(ref_it);
-            }
-            
-            error = git_packbuilder_insert_walk(pb, walk);
-            git_revwalk_free(walk);
-        }
-        
-        if (error == 0) {
-            outPackfileData.clear();
-            error = git_packbuilder_foreach(pb, packbuilder_callback, &outPackfileData);
-            
-            git_oid head_oid;
-            if (git_reference_name_to_id(&head_oid, repo, "HEAD") == 0) {
-                char oid_str[GIT_OID_HEXSZ + 1];
-                git_oid_tostr(oid_str, sizeof(oid_str), &head_oid);
-                
-                std::string branch_ref = "refs/heads/master";
-                git_reference *head_ref = NULL;
-                if (git_repository_head(&head_ref, repo) == 0) {
-                    branch_ref = git_reference_name(head_ref);
-                    git_reference_free(head_ref);
-                }
-                outRefUpdates[branch_ref] = std::string(oid_str);
-            }
-        }
-        git_packbuilder_free(pb);
+    // Unknown or incomplete baselines cannot justify omitting any objects.
+    for (const auto& tip : known) {
+        git_oid id; std::set<std::string> objects;
+        if (tip.size() == GIT_OID_HEXSZ && git_oid_fromstr(&id, tip.c_str()) == 0 && collectObjects(repo, id, objects))
+            excluded.insert(objects.begin(), objects.end());
     }
-    
-    if (error < 0) {
-        const git_error *e = git_error_last();
-        std::cerr << "Error creating packfile: " << (e ? e->message : "Unknown") << std::endl;
+    git_packbuilder *builder = nullptr;
+    if (git_packbuilder_new(&builder, repo) != 0) return false;
+    bool ok = true;
+    for (const auto& hex : wanted) {
+        if (excluded.count(hex)) continue;
+        git_oid id; git_oid_fromstr(&id, hex.c_str());
+        if (git_packbuilder_insert(builder, &id, nullptr) != 0) { ok = false; break; }
     }
-
-    git_repository_free(repo);
-    return error == 0;
+    data.clear();
+    if (ok) ok = git_packbuilder_foreach(builder, packbuilder_callback, &data) == 0;
+    git_packbuilder_free(builder);
+    return ok;
 }
 
-bool GitManager::createPackfileForRef(const std::string& repoPath, const std::string& refName, std::string& outPackfileData, std::map<std::string, std::string>& outRefUpdates)
+bool GitManager::createPackfile(const std::string& repoPath, std::string& outPackfileData,
+    std::map<std::string, std::string>& outRefUpdates, const std::set<std::string>& known)
 {
-    std::string normPath = normalizePath(repoPath);
-    git_repository *repo = NULL;
-    int error = git_repository_open(&repo, normPath.c_str());
-    if (error < 0) {
-        std::cerr << "createPackfileForRef failed to open repo" << std::endl;
-        return false;
-    }
-
-    git_oid ref_oid;
-    std::string fullRef = refName;
-    if (fullRef.rfind("refs/", 0) != 0) {
-        fullRef = "refs/heads/" + refName;
-    }
-
-    git_packbuilder *pb = NULL;
-    error = git_packbuilder_new(&pb, repo);
-    if (error == 0) {
-        git_revwalk *walk = NULL;
-        if (git_revwalk_new(&walk, repo) == 0) {
-            git_revwalk_sorting(walk, GIT_SORT_TIME);
-            
-            if (git_reference_name_to_id(&ref_oid, repo, fullRef.c_str()) == 0) {
-                if (git_revwalk_push(walk, &ref_oid) == 0) {
-                    error = git_packbuilder_insert_walk(pb, walk);
-                } else {
-                    error = -1;
-                }
-            } else {
-                error = -1;
-            }
-            git_revwalk_free(walk);
-        } else {
-            error = -1;
+    outRefUpdates.clear();
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normalizePath(repoPath).c_str()) != 0) return false;
+    git_reference_iterator *iter = nullptr;
+    bool ok = git_reference_iterator_new(&iter, repo) == 0;
+    if (ok) {
+        git_reference *ref = nullptr;
+        while (git_reference_next(&ref, iter) == 0) {
+            const std::string name = git_reference_name(ref);
+            const git_oid *id = git_reference_target(ref);
+            if (id && (name.rfind("refs/heads/", 0) == 0 || name.rfind("refs/tags/", 0) == 0))
+                outRefUpdates[name] = oidText(id);
+            git_reference_free(ref);
         }
-        
-        if (error == 0) {
-            outPackfileData.clear();
-            error = git_packbuilder_foreach(pb, packbuilder_callback, &outPackfileData);
-            
-            char oid_str[GIT_OID_HEXSZ + 1];
-            git_oid_tostr(oid_str, sizeof(oid_str), &ref_oid);
-            outRefUpdates[fullRef] = std::string(oid_str);
-        }
-        git_packbuilder_free(pb);
+        git_reference_iterator_free(iter);
+        ok = buildObjectPack(repo, outRefUpdates, known, outPackfileData);
     }
-    
-    if (error < 0) {
-        const git_error *e = git_error_last();
-        std::cerr << "Error creating packfile for ref " << refName << ": " << (e ? e->message : "Unknown") << std::endl;
-    }
-
-    git_repository_free(repo);
-    return error == 0;
+    git_repository_free(repo); return ok;
 }
 
+bool GitManager::createPackfileForRef(const std::string& repoPath, const std::string& refName,
+    std::string& outPackfileData, std::map<std::string, std::string>& outRefUpdates, const std::set<std::string>& known)
+{
+    outRefUpdates.clear();
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normalizePath(repoPath).c_str()) != 0) return false;
+    const std::string ref = refName.rfind("refs/", 0) == 0 ? refName : "refs/heads/" + refName;
+    git_oid id;
+    bool ok = git_reference_name_to_id(&id, repo, ref.c_str()) == 0;
+    if (ok) { outRefUpdates[ref] = oidText(&id); ok = buildObjectPack(repo, outRefUpdates, known, outPackfileData); }
+    git_repository_free(repo); return ok;
+}
 
 bool GitManager::getCommitLog(const std::string &repoPath, std::vector<GitCommitInfo> &commits, const std::string& branchOrTag) {
     std::string normPath = normalizePath(repoPath);
@@ -517,6 +521,35 @@ bool GitManager::commitChanges(const std::string& repoPath, const std::string& c
         return false;
     }
 
+    const std::string refName = targetBranch.empty() ? "HEAD" : "refs/heads/" + targetBranch;
+    git_oid parent_id;
+    int parentResult = git_reference_name_to_id(&parent_id, repo, refName.c_str());
+    if (parentResult == GIT_ENOTFOUND && !targetBranch.empty()) {
+        // A remote branch can be materialized locally, but a missing branch must
+        // never silently become a new, unrelated root commit.
+        git_oid remoteOid;
+        if (git_reference_name_to_id(&remoteOid, repo, ("refs/remotes/origin/" + targetBranch).c_str()) == 0) {
+            git_reference *branch = nullptr;
+            if (git_reference_create(&branch, repo, refName.c_str(), &remoteOid, 0, "Track branch") == 0)
+                parentResult = git_reference_name_to_id(&parent_id, repo, refName.c_str());
+            git_reference_free(branch);
+        }
+    }
+    bool initialCommit = false;
+    if (parentResult == GIT_ENOTFOUND && git_repository_is_empty(repo) == 1 && git_repository_head_unborn(repo) == 1) {
+        git_reference *head = nullptr;
+        if (git_reference_lookup(&head, repo, "HEAD") == 0) {
+            const char *unborn = git_reference_symbolic_target(head);
+            initialCommit = unborn && (targetBranch.empty() || refName == unborn);
+            git_reference_free(head);
+        }
+    }
+    if (parentResult != 0 && !initialCommit) {
+        std::cerr << "commitChanges: Target branch is missing or unreadable; create it from an existing branch first." << std::endl;
+        git_repository_free(repo);
+        return false;
+    }
+
     git_index *index = NULL;
     error = git_repository_index(&index, repo);
     if (error < 0) {
@@ -561,34 +594,18 @@ bool GitManager::commitChanges(const std::string& repoPath, const std::string& c
         return false;
     }
 
-    git_oid parent_id;
-    git_commit *parent = NULL;
-    int parent_count = 0;
-    const git_commit *parents[1] = { NULL };
-
-    std::string refName = targetBranch.empty() ? "HEAD" : ("refs/heads/" + targetBranch);
-    git_oid target_branch_oid;
-    
-    // Check if local branch reference exists
-    if (git_reference_name_to_id(&target_branch_oid, repo, refName.c_str()) != 0) {
-        // Local branch does not exist! Let's check if the remote-tracking branch exists
-        std::string remoteRefName = "refs/remotes/origin/" + targetBranch;
-        git_oid remote_branch_oid;
-        if (git_reference_name_to_id(&remote_branch_oid, repo, remoteRefName.c_str()) == 0) {
-            // Yes! Let's create the local branch reference pointing to the remote OID
-            git_reference *new_ref = nullptr;
-            if (git_reference_create(&new_ref, repo, refName.c_str(), &remote_branch_oid, 0, nullptr) == 0) {
-                git_reference_free(new_ref);
-            }
+    git_commit *parent = nullptr;
+    const git_commit *parents[1] = { nullptr };
+    if (!initialCommit) {
+        if (git_commit_lookup(&parent, repo, &parent_id) != 0) {
+            git_signature_free(sig);
+            git_tree_free(tree);
+            git_repository_free(repo);
+            return false;
         }
+        parents[0] = parent;
     }
-
-    if (git_reference_name_to_id(&parent_id, repo, refName.c_str()) == 0) {
-        if (git_commit_lookup(&parent, repo, &parent_id) == 0) {
-            parents[0] = parent;
-            parent_count = 1;
-        }
-    }
+    const int parent_count = initialCommit ? 0 : 1;
 
     git_oid commit_id;
     error = git_commit_create(
@@ -1036,89 +1053,65 @@ bool GitManager::extractFile(const std::string& repoPath, const std::string& rel
     return true;
 }
 
-bool GitManager::pullRepository(const std::string& localPath)
+bool GitManager::pullRepository(const std::string& localPath, const std::string& sourcePath,
+    std::string* errorMessage, const std::string& expectedBranch)
 {
-    std::string normPath = normalizePath(localPath);
+    if (errorMessage) errorMessage->clear();
     git_repository *repo = nullptr;
-    if (git_repository_open(&repo, normPath.c_str()) != 0) {
+    if (git_repository_open(&repo, normalizePath(localPath).c_str()) != 0) {
+        if (errorMessage) *errorMessage = "Cannot open the working repository.";
         return false;
     }
-
+    auto fail = [&](const char *message) { if (errorMessage) *errorMessage = message; git_repository_free(repo); return false; };
+    git_reference *head = nullptr;
+    if (git_repository_head(&head, repo) != 0 || !git_reference_is_branch(head)) {
+        git_reference_free(head); return fail("Check out a local branch before pulling.");
+    }
+    const std::string branchRef = git_reference_name(head);
+    const std::string branch = branchRef.substr(11);
+    const git_oid previous = *git_reference_target(head);
+    git_reference_free(head);
+    if (!expectedBranch.empty() && branch != expectedBranch)
+        return fail("The merged branch is not checked out. Switch to the target branch and pull to update its working files.");
+    git_status_options statusOptions = GIT_STATUS_OPTIONS_INIT;
+    statusOptions.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED | GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS;
+    git_status_list *status = nullptr;
+    if (git_status_list_new(&status, repo, &statusOptions) != 0) return fail("Cannot check local changes.");
+    const bool dirty = git_status_list_entrycount(status) != 0;
+    git_status_list_free(status);
+    if (dirty) return fail("Local changes are preserved. Commit or stash them before pulling.");
     git_remote *remote = nullptr;
-    if (git_remote_lookup(&remote, repo, "origin") != 0) {
-        git_repository_free(repo);
-        return false;
-    }
-
-    // Fetch from origin remote
-    git_fetch_options fetch_opts = GIT_FETCH_OPTIONS_INIT;
-    if (git_remote_fetch(remote, nullptr, &fetch_opts, nullptr) != 0) {
-        const git_error *e = git_error_last();
-        if (e) {
-            std::cerr << "Git remote fetch failed: " << e->message << std::endl;
-        }
-        git_remote_free(remote);
-        git_repository_free(repo);
-        return false;
-    }
+    const bool localSource = !sourcePath.empty();
+    int err = localSource ? git_remote_create_anonymous(&remote, repo, normalizePath(sourcePath).c_str())
+                          : git_remote_lookup(&remote, repo, "origin");
+    if (err != 0) return fail("No repository source is available for pulling.");
+    std::string spec = "+refs/heads/" + branch + ":refs/remotes/retrogit/" + branch;
+    char *specPtr = &spec[0]; git_strarray specs{&specPtr, 1};
+    git_fetch_options options = GIT_FETCH_OPTIONS_INIT;
+    err = git_remote_fetch(remote, &specs, &options, "RetroGit pull");
     git_remote_free(remote);
-
-    // Resolve current active branch reference name
-    std::string remoteBranch = "refs/remotes/origin/master"; // default fallback
-    git_reference *head_ref = nullptr;
-    if (git_reference_lookup(&head_ref, repo, "HEAD") == 0) {
-        if (git_reference_type(head_ref) == GIT_REF_SYMBOLIC) {
-            const char *target = git_reference_symbolic_target(head_ref);
-            if (target) {
-                std::string targetStr(target);
-                if (targetStr.rfind("refs/heads/", 0) == 0) {
-                    remoteBranch = "refs/remotes/origin/" + targetStr.substr(11);
-                }
-            }
-        }
-        git_reference_free(head_ref);
+    if (err != 0) return fail("Could not fetch the current branch from the repository source.");
+    git_oid target;
+    if (git_reference_name_to_id(&target, repo, ("refs/remotes/retrogit/" + branch).c_str()) != 0)
+        return fail("The current branch has not been published. No other branch was substituted.");
+    if (git_oid_equal(&target, &previous) || git_graph_descendant_of(repo, &previous, &target) == 1) {
+        git_repository_free(repo); return true; // Already current or locally ahead.
     }
-
-    git_reference *remote_ref = nullptr;
-    int error = git_reference_lookup(&remote_ref, repo, remoteBranch.c_str());
-    if (error != 0) {
-        error = git_reference_lookup(&remote_ref, repo, "refs/remotes/origin/master");
-        if (error != 0) {
-            error = git_reference_lookup(&remote_ref, repo, "refs/remotes/origin/main");
-        }
-    }
-
-    if (error != 0) {
-        std::cerr << "Failed to find remote tracking branch for pull reset." << std::endl;
-        git_repository_free(repo);
-        return false;
-    }
-
-    git_object *target_commit = nullptr;
-    if (git_reference_peel(&target_commit, remote_ref, GIT_OBJECT_COMMIT) != 0) {
-        git_reference_free(remote_ref);
-        git_repository_free(repo);
-        return false;
-    }
-    git_reference_free(remote_ref);
-
-    // Perform hard reset to force update the working directory and index
-    git_checkout_options checkout_opts = GIT_CHECKOUT_OPTIONS_INIT;
-    checkout_opts.checkout_strategy = GIT_CHECKOUT_FORCE;
-
-    if (git_reset(repo, target_commit, GIT_RESET_HARD, &checkout_opts) != 0) {
-        const git_error *e = git_error_last();
-        if (e) {
-            std::cerr << "Git reset hard failed: " << e->message << std::endl;
-        }
-        git_object_free(target_commit);
-        git_repository_free(repo);
-        return false;
-    }
-
-    git_object_free(target_commit);
-    git_repository_free(repo);
-    return true;
+    if (git_graph_descendant_of(repo, &target, &previous) != 1)
+        return fail("Local and published history have diverged. Your commits are preserved; reconcile the branches before pulling.");
+    git_object *object = nullptr;
+    if (git_object_lookup(&object, repo, &target, GIT_OBJECT_COMMIT) != 0)
+        return fail("The published commit is not available locally.");
+    git_checkout_options checkout = GIT_CHECKOUT_OPTIONS_INIT;
+    checkout.checkout_strategy = GIT_CHECKOUT_SAFE;
+    err = git_checkout_tree(repo, object, &checkout);
+    git_object_free(object);
+    if (err != 0) return fail("The working files could not be updated safely. No hard reset was performed.");
+    git_reference *updated = nullptr;
+    err = git_reference_create_matching(&updated, repo, branchRef.c_str(), &target, 1, &previous, "RetroGit fast-forward pull");
+    git_reference_free(updated);
+    if (err != 0) return fail("The branch changed during the pull. Check its status before retrying.");
+    git_repository_free(repo); return true;
 }
 
 bool GitManager::getBranches(const std::string& repoPath, std::vector<std::string>& branches, std::string& currentBranch)
@@ -1205,7 +1198,7 @@ bool GitManager::createBranch(const std::string& repoPath, const std::string& br
     git_reference *ref = nullptr;
     if (git_reference_lookup(&ref, repo, sourceRef.c_str()) != 0) {
         if (git_reference_lookup(&ref, repo, sourceBranch.c_str()) != 0) {
-            if (git_reference_lookup(&ref, repo, "HEAD") != 0) {
+            if (!sourceBranch.empty() || git_reference_lookup(&ref, repo, "HEAD") != 0) {
                 std::cerr << "createBranch: Failed to lookup source ref " << sourceBranch << std::endl;
                 git_repository_free(repo);
                 return false;
@@ -1237,17 +1230,28 @@ bool GitManager::createBranch(const std::string& repoPath, const std::string& br
     git_reference_free(new_branch_ref);
     git_commit_free(commit);
 
-    // 3. Switch HEAD to the new branch
-    std::string newBranchRef = "refs/heads/" + branchName;
-    if (git_repository_set_head(repo, newBranchRef.c_str()) != 0) {
-        const git_error *e = git_error_last();
-        std::cerr << "createBranch: Failed to set HEAD to " << newBranchRef << ": "
-                  << (e ? e->message : "Unknown error") << std::endl;
+    // Safely check out the selected source tree before switching HEAD. A dirty
+    // working tree must not be silently reassociated with a different commit.
+    bool ok = true;
+    if (!git_repository_is_bare(repo)) {
+        git_object *object = nullptr;
+        git_checkout_options options = GIT_CHECKOUT_OPTIONS_INIT;
+        options.checkout_strategy = GIT_CHECKOUT_SAFE;
+        ok = git_revparse_single(&object, repo, ("refs/heads/" + branchName).c_str()) == 0 &&
+            git_checkout_tree(repo, object, &options) == 0;
+        git_object_free(object);
     }
-
+    if (ok) ok = git_repository_set_head(repo, ("refs/heads/" + branchName).c_str()) == 0;
+    if (!ok) {
+        git_reference *created = nullptr;
+        if (git_reference_lookup(&created, repo, ("refs/heads/" + branchName).c_str()) == 0)
+            git_reference_delete(created);
+        git_reference_free(created);
+    }
     git_repository_free(repo);
-    return true;
+    return ok;
 }
+
 
 bool GitManager::mergeBranch(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch)
 {
@@ -1591,7 +1595,8 @@ bool GitManager::setReviewRef(const std::string& repoPath, const std::string& re
     if (git_repository_open(&repo, normalizePath(repoPath).c_str()) != 0) return false;
     git_commit *object = nullptr;
     git_reference *reference = nullptr;
-    bool ok = git_commit_lookup(&object, repo, &oid) == 0 &&
+    std::set<std::string> closure;
+    bool ok = collectObjects(repo, oid, closure) && git_commit_lookup(&object, repo, &oid) == 0 &&
         git_reference_create(&reference, repo, ref.c_str(), &oid, 1, "RetroGit PR snapshot") == 0;
     git_reference_free(reference);
     git_commit_free(object);
@@ -1599,17 +1604,31 @@ bool GitManager::setReviewRef(const std::string& repoPath, const std::string& re
     return ok;
 }
 
-bool GitManager::canFastForward(const std::string& repoPath, const std::string& source, const std::string& target)
+bool GitManager::canFastForward(const std::string& repoPath, const std::string& source, const std::string& target, std::string* reason)
 {
+    if (reason) reason->clear();
+    auto fail = [reason](const char *text) { if (reason) *reason = text; return false; };
     git_repository *repo = nullptr;
-    if (git_repository_open(&repo, normalizePath(repoPath).c_str()) != 0) return false;
-    git_oid src, dst;
-    std::string sourceRef = source.rfind("refs/", 0) == 0 ? source : "refs/heads/" + source;
-    bool ok = git_reference_name_to_id(&src, repo, sourceRef.c_str()) == 0 &&
-        git_reference_name_to_id(&dst, repo, ("refs/heads/" + target).c_str()) == 0 &&
-        git_oid_equal(&src, &dst) == 0 && git_graph_descendant_of(repo, &src, &dst) == 1;
+    if (git_repository_open(&repo, normalizePath(repoPath).c_str()) != 0)
+        return fail("The local repository cannot be opened.");
+    git_oid src, dst, base;
+    const std::string sourceRef = source.rfind("refs/", 0) == 0 ? source : "refs/heads/" + source;
+    if (git_reference_name_to_id(&src, repo, sourceRef.c_str()) != 0 ||
+        git_reference_name_to_id(&dst, repo, ("refs/heads/" + target).c_str()) != 0) {
+        git_repository_free(repo);
+        return fail("The source or target branch is missing. Download the repository history and retry.");
+    }
+    const int result = git_merge_base(&base, repo, &src, &dst);
     git_repository_free(repo);
-    return ok;
+    if (result == GIT_ENOTFOUND)
+        return fail("The proposed commit and target have no common ancestor. Recreate the changes on a branch based on the upstream target and submit a new pull request.");
+    if (result != 0)
+        return fail("The commit history could not be read. Download the complete repository history and retry.");
+    if (git_oid_equal(&base, &src))
+        return fail("The target already contains the proposed commit.");
+    if (!git_oid_equal(&base, &dst))
+        return fail("The branches have diverged. Incorporate upstream changes into the source branch and submit a new pull request.");
+    return true;
 }
 
 bool GitManager::configureFork(const std::string& localPath, const std::string& forkPath, const std::string& upstreamPath)

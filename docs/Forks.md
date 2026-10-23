@@ -23,15 +23,4 @@ PRs are author-signed children of published upstream updates, allowing contribut
 
 The service advertises version 1.1. Existing repositories and legacy same-repository PR records remain readable. Non-fork groups and legacy PRs retain their original serialized layout. Forks and snapshot PRs append metadata; both contributor and reviewer need the updated plugin to use the new workflow. Older peers are not expected to understand extended records.
 
-## Regression checks
 
-From the plugin directory, with the existing MinGW/Qt build environment:
-
-```text
-mingw32-make -f Makefile.Release -j1
-powershell -File tests/run.ps1
-```
-
-The Windows runner adds the existing RetroShare runtime DLL directories to its process PATH. Tests use temporary repositories. They cover legacy and extended serialization, fork history and branch preservation, same-named branches in source and target, isolated PR imports, missing-commit rejection, review commit ranges, safe fast-forward merges, and refusal to discard divergent upstream history.
-
-Manual two-peer validation is still required for identity signing, circle distribution, live tunnel downloads, attachment transfer, and the complete GUI review flow.

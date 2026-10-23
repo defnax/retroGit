@@ -230,17 +230,19 @@ void PullRequestDetailsWidget::populateConversationTab()
         
         if (isAdmin) {
             const bool ready = mReviewReady;
-            const bool mergeable = ready && GitManager::canFastForward(bareRepoPath, mPR.sourceRef(), mPR.mTargetBranch);
+            std::string mergeReason;
+            const bool mergeable = ready && GitManager::canFastForward(bareRepoPath, mPR.sourceRef(), mPR.mTargetBranch, &mergeReason);
             ui->mLblMergeStatus->setText(!ready
                 ? tr("Waiting for the proposed commits to download. Keep this tab open.")
                 : mergeable ? tr("The reviewed commit can be merged without discarding target history.")
-                : tr("The target has diverged or already contains these changes. Update the source branch from upstream and submit a new pull request."));
+                : QString::fromStdString(mergeReason));
             ui->mBtnMerge->setVisible(true);
             ui->mBtnMerge->setEnabled(mergeable);
             ui->mBtnMerge->setText(tr("Merge pull request"));
             ui->mBtnMerge->setStyleSheet("QPushButton { background-color: #2da44e; color: white; border-radius: 6px; padding: 6px 16px; font-weight: bold; border: 1px solid rgba(27, 31, 36, 0.15); }"
                                         "QPushButton:hover { background-color: #2c974b; }"
-                                        "QPushButton:pressed { background-color: #298e46; }");
+                                        "QPushButton:pressed { background-color: #298e46; }"
+                                        "QPushButton:disabled { background-color: #e1e4e8; color: #6a737d; border-color: #d1d5da; }");
         } else {
             ui->mLblMergeStatus->setText(tr("<b>Pending Admin approval.</b><br>Only repository administrators can merge this pull request."));
             ui->mBtnMerge->setVisible(false);
@@ -383,7 +385,9 @@ void PullRequestDetailsWidget::onMergeClicked()
             QString localPath = Settings->value(mGroupId).toString();
             Settings->endGroup();
             if (!localPath.isEmpty()) {
-                GitManager::pullRepository(localPath.toStdString());
+                std::string pullError;
+                if (!GitManager::pullRepository(localPath.toStdString(), bareRepoPath, &pullError, mPR.mTargetBranch))
+                    QMessageBox::warning(this, tr("Merged; Working Folder Not Updated"), QString::fromStdString(pullError));
                 mMainWidget->refreshGitWidget();
             }
         }

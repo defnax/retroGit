@@ -50,6 +50,42 @@ extern RsGit *rsGit;
 extern RsPeers *rsPeers;
 extern RsIdentity *rsIdentity;
 
+namespace {
+bool hasUnpublishedRefs(const std::string& path, const RsGxsGroupId& groupId)
+{
+    std::vector<RsGitUpdate> updates;
+    if (!rsGit || !rsGit->getUpdates(groupId, updates)) return false;
+    git_repository* repo = nullptr;
+    if (git_repository_open(&repo, path.c_str()) != 0) return false;
+    git_reference_iterator* iterator = nullptr;
+    bool unpublished = false;
+    if (git_reference_iterator_new(&iterator, repo) == 0) {
+        git_reference* ref = nullptr;
+        while (git_reference_next(&ref, iterator) == 0) {
+            const std::string name = git_reference_name(ref);
+            const git_oid* id = git_reference_target(ref);
+            if (id && (name.rfind("refs/heads/", 0) == 0 || name.rfind("refs/tags/", 0) == 0)) {
+                char hash[GIT_OID_HEXSZ + 1];
+                git_oid_tostr(hash, sizeof(hash), id);
+                bool published = false;
+                for (const auto& update : updates) {
+                    const auto found = update.mRefUpdates.find(name);
+                    if (found != update.mRefUpdates.end() && found->second == hash) {
+                        published = true;
+                        break;
+                    }
+                }
+                if (!published) unpublished = true;
+            }
+            git_reference_free(ref);
+        }
+        git_reference_iterator_free(iterator);
+    }
+    git_repository_free(repo);
+    return unpublished;
+}
+}
+
 GitWidget::GitWidget(MainWidget *mainWidget, QWidget *parent)
     : QWidget(parent)
     , ui(new Ui::GitWidget)
@@ -165,11 +201,19 @@ void GitWidget::refresh()
 
     ui->mBtnFork->setVisible(!isAdmin && isSubscribed);
     ui->mBtnFork->setEnabled(mPendingForkPath.isEmpty());
-    ui->mBtnPush->setEnabled(isAdmin);
+    const bool unpublished = isAdmin && isCloned &&
+        hasUnpublishedRefs(QDir::cleanPath(path).toStdString(), RsGxsGroupId(mGroupId.toStdString()));
+    ui->mBtnPush->setEnabled(unpublished);
+    ui->mBtnPush->setToolTip(unpublished ? tr("Publish local commits to this repository.")
+        : tr("No unpublished local commits. Merged pull requests are already published."));
     ui->mBtnInitialize->setVisible(isAdmin && !isCloned);
     ui->mBtnInitialize->setEnabled(isAdmin && !isCloned);
     ui->mBtnClone->setVisible(!isAdmin && !isCloned);
     ui->mBtnPull->setEnabled(isCloned);
+    ui->mBtnPull->setText(isAdmin ? tr("Update Working Folder") : tr("Sync / Pull"));
+    ui->mBtnPull->setToolTip(isAdmin
+        ? tr("Apply published changes from RetroGit's local cache to your working folder.")
+        : tr("Download missing repository data and update your working folder."));
     if (!isSubscribed) {
         ui->mBtnClone->setEnabled(false);
     } else {
@@ -555,11 +599,10 @@ void GitWidget::onCommitClicked()
         authorEmail = details.mNickname + "@" + ownId.toStdString();
     }
 
-    // 1. Fetch branches from bare repository (source of truth for the project)
-    std::string barePath = GitManager::getBareRepoPath(mGroupId.toStdString());
+    // Commit targets must exist in the working repository, not just its serving cache.
     std::vector<std::string> branches;
     std::string currentBranch;
-    GitManager::getBranches(barePath, branches, currentBranch);
+    GitManager::getBranches(localPath.toStdString(), branches, currentBranch);
 
     // 2. Fetch current active branch from the local working directory
     std::vector<std::string> localBranches;
@@ -635,18 +678,11 @@ void GitWidget::onPushClicked()
                 tr("Add files and use Commit Changes to create your first commit before publishing."));
             return;
         }
-        // Unpack locally immediately so the owner's sync repo is instantly updated!
-        std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
-        if (!GitManager::unpackPackfile(bareRepoPath, packfileData, refUpdates)) {
-            QMessageBox::critical(this, tr("Push Failed"),
-                tr("Failed to update the local repository used to serve clones. Check disk space and file permissions, then retry."));
-            return;
-        }
-
         std::vector<RsGitUpdate> updates;
         if (rsGit) {
             rsGit->getUpdates(RsGxsGroupId(mGroupId.toStdString()), updates);
         }
+        std::vector<std::string> publishedRefs;
         bool allAlreadyPublished = true;
         for (const auto &pair : refUpdates) {
             bool thisRefPublished = false;
@@ -656,13 +692,21 @@ void GitWidget::onPushClicked()
                     break;
                 }
             }
-            if (!thisRefPublished) {
-                allAlreadyPublished = false;
-                break;
-            }
+            if (thisRefPublished) publishedRefs.push_back(pair.first);
+            else allAlreadyPublished = false;
         }
         if (allAlreadyPublished && !refUpdates.empty()) {
             QMessageBox::information(this, tr("Already Published"), tr("This commit history has already been published to GXS."));
+            return;
+        }
+
+        // Do not rewind published branches when pushing a different local branch.
+        for (const auto& name : publishedRefs) refUpdates.erase(name);
+        // Unpack locally immediately so the owner's sync repo is instantly updated!
+        std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
+        if (!GitManager::unpackPackfile(bareRepoPath, packfileData, refUpdates)) {
+            QMessageBox::critical(this, tr("Push Failed"),
+                tr("Failed to update the local repository used to serve clones. Check disk space and file permissions, then retry."));
             return;
         }
 
@@ -1041,7 +1085,7 @@ void GitWidget::populateCommitLog()
         ui->mCommitTable->setCellWidget(rowIdx, 4, btnStatus);
 
         if (!creatorId.isNull()) {
-            QPushButton *btnPull = new QPushButton(tr("Pull"), ui->mCommitTable);
+            QPushButton *btnPull = new QPushButton(isAdmin ? tr("Update Working Folder") : tr("Pull"), ui->mCommitTable);
             btnPull->setStyleSheet("QPushButton { font-weight: bold; color: #2980b9; }");
             QString localPath = mLocalPath;
             connect(btnPull, &QPushButton::clicked, [this, creatorId, ownId, localPath, repoName]() {
@@ -1163,7 +1207,8 @@ void GitWidget::populateCommitLog()
             ui->mCommitTable->setItem(rowIdx, 4, itemStatus);
         }
 
-        if (isAdmin && !hasGxsMsg && i == 0) {
+        if (isAdmin && !hasGxsMsg && i == 0 &&
+            hasUnpublishedRefs(QDir::cleanPath(mLocalPath).toStdString(), RsGxsGroupId(mGroupId.toStdString()))) {
             QPushButton *btnPushRow = new QPushButton(tr("Push"), ui->mCommitTable);
             btnPushRow->setStyleSheet("QPushButton { font-weight: bold; color: #27ae60; }");
             connect(btnPushRow, &QPushButton::clicked, this, &GitWidget::onPushClicked);
@@ -1177,7 +1222,11 @@ void GitWidget::populateCommitLog()
     bool hasPath = !rawPath.isEmpty();
     bool pathExists = hasPath && QDir(QDir::cleanPath(rawPath)).exists();
 
-    ui->mBtnPush->setEnabled(isAdmin);
+    const bool unpublished = isAdmin && pathExists &&
+        hasUnpublishedRefs(QDir::cleanPath(rawPath).toStdString(), RsGxsGroupId(mGroupId.toStdString()));
+    ui->mBtnPush->setEnabled(unpublished);
+    ui->mBtnPush->setToolTip(unpublished ? tr("Publish local commits to this repository.")
+        : tr("No unpublished local commits. Merged pull requests are already published."));
     ui->mBtnCommit->setEnabled(hasPath && pathExists && isAdmin && hasLocalChanges);
 }
 

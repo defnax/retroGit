@@ -170,6 +170,9 @@ void CodeWidget::refresh()
 
     // 1. Fetch branches and tags from bare repository
     std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
+    const QString workingPath = mMainWidget->getLocalPath();
+    if (!workingPath.isEmpty() && GitManager::isValidRepository(workingPath.toStdString()))
+        bareRepoPath = workingPath.toStdString();
     std::vector<std::string> branches;
     std::string currentBranch;
     std::vector<std::string> tags;
@@ -322,6 +325,9 @@ void CodeWidget::populateRepoBrowser(const QString &branchOrTag)
     if (mGroupId.isEmpty()) return;
 
     std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
+    const QString workingPath = mMainWidget->getLocalPath();
+    if (!workingPath.isEmpty() && GitManager::isValidRepository(workingPath.toStdString()))
+        bareRepoPath = workingPath.toStdString();
     std::vector<std::string> files;
 
     if (GitManager::getRepoFiles(bareRepoPath, files, branchOrTag.toStdString())) {
@@ -396,6 +402,13 @@ void CodeWidget::onCreateBranchClicked()
 
     // 1. Fetch current branches and active branch
     std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
+    const QString workingPath = mMainWidget->getLocalPath();
+    if (!workingPath.isEmpty() && GitManager::isValidRepository(workingPath.toStdString()))
+        bareRepoPath = workingPath.toStdString();
+    if (workingPath.isEmpty() || !GitManager::isValidRepository(workingPath.toStdString())) {
+        QMessageBox::warning(this, tr("Create Branch"), tr("Initialize or clone a local working repository before creating a branch."));
+        return;
+    }
     std::vector<std::string> branches;
     std::string currentBranch;
 
@@ -422,10 +435,11 @@ void CodeWidget::onCreateBranchClicked()
 
         // 3. Create the new branch and switch HEAD to it
         if (GitManager::createBranch(bareRepoPath, newBranchName.toStdString(), sourceBranchName.toStdString())) {
-            QMessageBox::information(this, tr("Success"), tr("Branch '%1' created successfully.").arg(newBranchName));
+            QMessageBox::information(this, tr("Success"), tr("Branch '%1' created in your working folder. Commit and publish to share it.").arg(newBranchName));
             refresh();
+            mMainWidget->refreshGitWidget();
         } else {
-            QMessageBox::critical(this, tr("Error"), tr("Failed to create branch."));
+            QMessageBox::critical(this, tr("Error"), tr("Failed to create branch. Check that the source exists and your working files can be checked out safely."));
         }
     }
 }
