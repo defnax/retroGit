@@ -131,6 +131,7 @@ private:
     QTreeWidgetItem *mActiveGroupsItem;
     int mGroupSet = 0;
     bool mInitialLoadDone = false;
+    bool mGroupMetaLoadPending = false;
 
     RsEventsHandlerId_t mEventHandlerId;
 

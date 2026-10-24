@@ -38,6 +38,9 @@
 
 #include <interface/rsGit.h>
 
+bool retroGitDebugEnabled();
+void setRetroGitDebugEnabled(bool enabled);
+
 class RetroGitNotify;
 
 class p3Git: public RsGenExchange, public RsGit, public p3Config, public RsGxsIfaceHelper, public RsGxsTunnelService::RsGxsTunnelClientService

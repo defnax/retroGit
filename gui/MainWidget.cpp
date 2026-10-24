@@ -81,6 +81,7 @@
 #include <QTabBar>
 #include <QFileInfo>
 #include <QShortcut>
+#include <QCheckBox>
 #include <retroshare/rsfiles.h>
 #include <retroshare/rsidentity.h>
 
@@ -133,6 +134,21 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
     connect(ui->rightPaneTabWidget, SIGNAL(tabCloseRequested(int)), this, SLOT(onTabCloseRequested(int)));
 
     processSettings(true);
+
+    // Verbose PR diagnostics are opt-in: message enumeration can be frequent.
+    auto *debugCheck = new QCheckBox(tr("RetroGit debug logging"), ui->titleBarFrame);
+    debugCheck->setToolTip(tr("Enable verbose RetroGit diagnostics in the debug log"));
+    ui->titleBarFrame->layout()->addWidget(debugCheck);
+    Settings->beginGroup("RetroGit");
+    debugCheck->setChecked(Settings->value("DebugLogging", false).toBool());
+    Settings->endGroup();
+    setRetroGitDebugEnabled(debugCheck->isChecked());
+    connect(debugCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        setRetroGitDebugEnabled(enabled);
+        Settings->beginGroup("RetroGit");
+        Settings->setValue("DebugLogging", enabled);
+        Settings->endGroup();
+    });
 
     connect(newGroupButton, SIGNAL(clicked()), this, SLOT(createGroup()));
     connect(ui->treeWidget->treeWidget(), SIGNAL(itemSelectionChanged()), this, SLOT(onTreeSelectionChanged()));
@@ -285,6 +301,8 @@ void MainWidget::createGroup()
 
 void MainWidget::loadGroupMeta()
 {
+    if (mGroupMetaLoadPending) return;
+    mGroupMetaLoadPending = true;
     std::cerr << "MainWidget::loadGroupMeta()";
     std::cerr << std::endl;
 
@@ -296,6 +314,7 @@ void MainWidget::loadGroupMeta()
     if (!rsGit->getGroups(groupIds, groups)) {
       std::cerr << "MainWidget::loadGroupMeta() Error getting groups from GXS"
                 << std::endl;
+      RsQThreadUtils::postToObject([this]() { mGroupMetaLoadPending = false; }, this);
       return;
     }
 
@@ -325,6 +344,7 @@ void MainWidget::loadGroupMeta()
     // Update UI in main thread
     RsQThreadUtils::postToObject(
         [this, groupMeta, groupUnreadCounts]() {
+           mGroupMetaLoadPending = false;
           if (groupMeta.size() > 0) {
             insertGroupsData(groupMeta);
             
@@ -970,16 +990,16 @@ void MainWidget::hashAndPublishPackfile(const QString &groupId, const std::strin
 
 bool MainWidget::publishPullRequestWithPack(RsGitPullRequest &pr, const std::string &pack)
 {
-    std::cerr << "RetroGit PR DEBUG: pack size=" << pack.size() << std::endl;
+    if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: pack size=" << pack.size() << std::endl;
     if (pack.size() <= 200000) pr.mPackfileData = pack;
     else {
         RsGxsFile attachment;
-        if (!preparePackAttachment(QString::fromStdString(pr.mMeta.mGroupId.toStdString()), pack, attachment)) { std::cerr << "RetroGit PR DEBUG: attachment preparation failed" << std::endl; return false; }
+        if (!preparePackAttachment(QString::fromStdString(pr.mMeta.mGroupId.toStdString()), pack, attachment)) { if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: attachment preparation failed" << std::endl; return false; }
         pr.mFiles.push_back(attachment);
     }
     uint32_t token;
     const bool ok = rsGit && rsGit->publishPullRequest(token, pr);
-    std::cerr << "RetroGit PR DEBUG: publishPullRequest=" << (ok ? "true" : "false") << std::endl;
+    if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: publishPullRequest=" << (ok ? "true" : "false") << std::endl;
     return ok;
 }
 

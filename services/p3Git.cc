@@ -23,6 +23,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <atomic>
 
 #include "gui/RetroGitNotify.h"
 #include "p3Git.h"
@@ -32,6 +33,10 @@
 #include <QVariantMap>
 
 RsGit *rsGit = NULL;
+
+static std::atomic_bool sRetroGitDebugEnabled(false);
+bool retroGitDebugEnabled() { return sRetroGitDebugEnabled.load(std::memory_order_relaxed); }
+void setRetroGitDebugEnabled(bool enabled) { sRetroGitDebugEnabled.store(enabled, std::memory_order_relaxed); }
 
 static uint32_t retroGitAuthenPolicy()
 {
@@ -562,13 +567,13 @@ bool p3Git::preparePullRequest(const RsGitPullRequest &pr)
 
 bool p3Git::publishPullRequest(uint32_t &token, RsGitPullRequest &pr)
 {
-    std::cerr << "RetroGit PR DEBUG: publish title='" << pr.mTitle << "' target=" << pr.mMeta.mGroupId.toStdString() << " source=" << pr.mSourceGroupId.toStdString() << " commit=" << pr.mSourceCommit << std::endl;
+    if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: publish title='" << pr.mTitle << "' target=" << pr.mMeta.mGroupId.toStdString() << " source=" << pr.mSourceGroupId.toStdString() << " commit=" << pr.mSourceCommit << std::endl;
     std::vector<RsGitGroup> sources;
     if (!pr.mSourceCommit.empty() &&
         (pr.mSourceGroupId.isNull() || !getGroups({pr.mSourceGroupId}, sources) || sources.empty() ||
          !IS_GROUP_ADMIN(sources.front().mMeta.mSubscribeFlags) ||
          !rsIdentity || !rsIdentity->isOwnId(pr.mMeta.mAuthorId) ||
-         pr.mMeta.mAuthorId != sources.front().mMeta.mAuthorId)) { std::cerr << "RetroGit PR DEBUG: source identity validation failed" << std::endl; return false; }
+         pr.mMeta.mAuthorId != sources.front().mMeta.mAuthorId)) { if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: source identity validation failed" << std::endl; return false; }
     std::vector<RsGitUpdate> updates;
     if (!getUpdates(pr.mMeta.mGroupId, updates) || updates.empty()) {
         // Older repositories may expose their Git history through child
@@ -576,13 +581,13 @@ bool p3Git::publishPullRequest(uint32_t &token, RsGitPullRequest &pr)
         // latest PR message as the thread parent instead of rejecting a valid PR.
         std::vector<RsGitPullRequest> existing;
         if (!getPullRequests(pr.mMeta.mGroupId, existing) || existing.empty()) {
-            std::cerr << "RetroGit PR DEBUG: target has no attachable messages" << std::endl;
+            if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: target has no attachable messages" << std::endl;
             return false;
         }
         pr.mMeta.mParentId = existing.back().mMeta.mMsgId;
         pr.mMeta.mThreadId = existing.back().mMeta.mThreadId.isNull()
             ? existing.back().mMeta.mMsgId : existing.back().mMeta.mThreadId;
-        std::cerr << "RetroGit PR DEBUG: using existing PR message as parent" << std::endl;
+        if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: using existing PR message as parent" << std::endl;
     }
     else {
         pr.mMeta.mParentId = updates.back().mMeta.mMsgId;
@@ -623,7 +628,7 @@ bool p3Git::publishPullRequest(uint32_t &token, RsGitPullRequest &pr)
     msgItem->mFiles = pr.mFiles;
     
     this->publishMsg(token, msgItem);
-    std::cerr << "RetroGit PR DEBUG: publishMsg queued" << std::endl;
+    if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: publishMsg queued" << std::endl;
     return true;
 }
 
@@ -733,9 +738,9 @@ bool p3Git::getUpdates(const RsGxsGroupId &groupId, std::vector<RsGitUpdate> &up
     std::map<RsGxsGroupId, std::vector<RsGitMsgItem*> > msgItems;
     if (getMsgDataT<RsGitMsgItem>(token, msgItems)) {
         auto &vec = msgItems[groupId];
-        std::cerr << "RetroGit PR DEBUG: target message count=" << vec.size() << std::endl;
+        if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: target message count=" << vec.size() << std::endl;
         for (auto *gitMsg : vec) {
-            if (gitMsg) std::cerr << "RetroGit PR DEBUG: target message type=" << gitMsg->mGitMsgType
+            if (retroGitDebugEnabled() && gitMsg) std::cerr << "RetroGit PR DEBUG: target message type=" << gitMsg->mGitMsgType
                                    << " parent=" << gitMsg->meta.mParentId.toStdString() << std::endl;
             if (gitMsg && gitMsg->mGitMsgType == 1) { // UPDATE (root or threaded update)
                 RsGitUpdate update;
@@ -770,16 +775,20 @@ bool p3Git::getPullRequests(const RsGxsGroupId &groupId, std::vector<RsGitPullRe
         const RsGxsId owner = groups.empty() ? RsGxsId() : groups.front().mMeta.mAuthorId;
         std::map<RsGxsMessageId, uint32_t> statusUpdates;
         std::map<RsGxsMessageId, rstime_t> statusTimes;
+        std::map<RsGxsMessageId, RsGitMsgItem*> proposalsById;
+        for (auto *proposal : vec)
+            if (proposal && proposal->mGitMsgType == 2)
+                proposalsById[proposal->meta.mMsgId] = proposal;
         for (auto *status : vec) {
             if (!status || status->mGitMsgType != 3 || (status->mStatus != 1 && status->mStatus != 2)) continue;
-            for (auto *proposal : vec) {
-                if (!proposal || proposal->mGitMsgType != 2 || proposal->meta.mMsgId != status->meta.mParentId) continue;
-                const bool authorized = (!owner.isNull() && status->meta.mAuthorId == owner) ||
-                    (status->mStatus == 1 && status->meta.mAuthorId == proposal->meta.mAuthorId);
-                if (authorized && status->meta.mPublishTs >= statusTimes[proposal->meta.mMsgId]) {
-                    statusUpdates[proposal->meta.mMsgId] = status->mStatus;
-                    statusTimes[proposal->meta.mMsgId] = status->meta.mPublishTs;
-                }
+            auto proposalIt = proposalsById.find(status->meta.mParentId);
+            if (proposalIt == proposalsById.end()) continue;
+            auto *proposal = proposalIt->second;
+            const bool authorized = (!owner.isNull() && status->meta.mAuthorId == owner) ||
+                (status->mStatus == 1 && status->meta.mAuthorId == proposal->meta.mAuthorId);
+            if (authorized && status->meta.mPublishTs >= statusTimes[proposal->meta.mMsgId]) {
+                statusUpdates[proposal->meta.mMsgId] = status->mStatus;
+                statusTimes[proposal->meta.mMsgId] = status->meta.mPublishTs;
             }
         }
 
