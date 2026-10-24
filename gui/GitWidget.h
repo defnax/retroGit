@@ -52,14 +52,19 @@ public:
 private slots:
     void onInitializeClicked();
     void onCloneClicked();
+    void onForkClicked();
     void onCommitClicked();
     void onPushClicked();
     void onPullClicked();
+    void onRebaseClicked();
     void onCommitSelectionChanged();
     void onCommitTableContextMenu(const QPoint &pos);
     void onCommitReadStatusToggled(const QString &msgIdStr, bool markRead);
 
 private:
+    void finishFork();
+    RsGitGroup mPendingFork;
+    QString mPendingForkPath;
     QString chooseRepositoryPath(bool clone);
     void setLocalPath(const QString &path);
     void populateCommitLog();

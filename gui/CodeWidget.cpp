@@ -147,7 +147,7 @@ void CodeWidget::refresh()
         for (const auto &pr : pullRequests) {
             bool isOpen = (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) && (pr.mStatus == 0);
             if (isOpen) {
-                if (GitManager::isBranchMerged(bareRepoPath, pr.mSourceBranch, pr.mTargetBranch)) {
+                if (GitManager::isBranchMerged(bareRepoPath, pr.sourceRef(), pr.mTargetBranch)) {
                     isOpen = false;
                     // Automatically mark as processed locally
                     uint32_t token;
@@ -163,13 +163,19 @@ void CodeWidget::refresh()
             }
         }
     }
-    ui->mBtnPullRequests->setText(tr("Pull requests (%1)").arg(openPRCount));
+    int unreadPRCount = 0;
+    for (const auto &pr : pullRequests)
+        if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) ++unreadPRCount;
+    ui->mBtnPullRequests->setText(tr("Pull requests (%1)").arg(unreadPRCount));
 
 
 
 
     // 1. Fetch branches and tags from bare repository
     std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
+    const QString workingPath = mMainWidget->getLocalPath();
+    if (!workingPath.isEmpty() && GitManager::isValidRepository(workingPath.toStdString()))
+        bareRepoPath = workingPath.toStdString();
     std::vector<std::string> branches;
     std::string currentBranch;
     std::vector<std::string> tags;
@@ -322,6 +328,9 @@ void CodeWidget::populateRepoBrowser(const QString &branchOrTag)
     if (mGroupId.isEmpty()) return;
 
     std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
+    const QString workingPath = mMainWidget->getLocalPath();
+    if (!workingPath.isEmpty() && GitManager::isValidRepository(workingPath.toStdString()))
+        bareRepoPath = workingPath.toStdString();
     std::vector<std::string> files;
 
     if (GitManager::getRepoFiles(bareRepoPath, files, branchOrTag.toStdString())) {
@@ -396,6 +405,13 @@ void CodeWidget::onCreateBranchClicked()
 
     // 1. Fetch current branches and active branch
     std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
+    const QString workingPath = mMainWidget->getLocalPath();
+    if (!workingPath.isEmpty() && GitManager::isValidRepository(workingPath.toStdString()))
+        bareRepoPath = workingPath.toStdString();
+    if (workingPath.isEmpty() || !GitManager::isValidRepository(workingPath.toStdString())) {
+        QMessageBox::warning(this, tr("Create Branch"), tr("Initialize or clone a local working repository before creating a branch."));
+        return;
+    }
     std::vector<std::string> branches;
     std::string currentBranch;
 
@@ -422,10 +438,11 @@ void CodeWidget::onCreateBranchClicked()
 
         // 3. Create the new branch and switch HEAD to it
         if (GitManager::createBranch(bareRepoPath, newBranchName.toStdString(), sourceBranchName.toStdString())) {
-            QMessageBox::information(this, tr("Success"), tr("Branch '%1' created successfully.").arg(newBranchName));
+            QMessageBox::information(this, tr("Success"), tr("Branch '%1' created in your working folder. Commit and publish to share it.").arg(newBranchName));
             refresh();
+            mMainWidget->refreshGitWidget();
         } else {
-            QMessageBox::critical(this, tr("Error"), tr("Failed to create branch."));
+            QMessageBox::critical(this, tr("Error"), tr("Failed to create branch. Check that the source exists and your working files can be checked out safely."));
         }
     }
 }

@@ -19,6 +19,7 @@
  *******************************************************************************/
 
 #include "MainWidget.h"
+#include <QUuid>
 #include "PullRequestsWidget.h"
 #include "PullRequestDetailsWidget.h"
 #include "GitCommitDialog.h"
@@ -80,6 +81,7 @@
 #include <QTabBar>
 #include <QFileInfo>
 #include <QShortcut>
+#include <QCheckBox>
 #include <retroshare/rsfiles.h>
 #include <retroshare/rsidentity.h>
 
@@ -132,6 +134,21 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
     connect(ui->rightPaneTabWidget, SIGNAL(tabCloseRequested(int)), this, SLOT(onTabCloseRequested(int)));
 
     processSettings(true);
+
+    // Verbose PR diagnostics are opt-in: message enumeration can be frequent.
+    auto *debugCheck = new QCheckBox(tr("RetroGit debug logging"), ui->titleBarFrame);
+    debugCheck->setToolTip(tr("Enable verbose RetroGit diagnostics in the debug log"));
+    ui->titleBarFrame->layout()->addWidget(debugCheck);
+    Settings->beginGroup("RetroGit");
+    debugCheck->setChecked(Settings->value("DebugLogging", false).toBool());
+    Settings->endGroup();
+    setRetroGitDebugEnabled(debugCheck->isChecked());
+    connect(debugCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        setRetroGitDebugEnabled(enabled);
+        Settings->beginGroup("RetroGit");
+        Settings->setValue("DebugLogging", enabled);
+        Settings->endGroup();
+    });
 
     connect(newGroupButton, SIGNAL(clicked()), this, SLOT(createGroup()));
     connect(ui->treeWidget->treeWidget(), SIGNAL(itemSelectionChanged()), this, SLOT(onTreeSelectionChanged()));
@@ -284,6 +301,8 @@ void MainWidget::createGroup()
 
 void MainWidget::loadGroupMeta()
 {
+    if (mGroupMetaLoadPending) return;
+    mGroupMetaLoadPending = true;
     std::cerr << "MainWidget::loadGroupMeta()";
     std::cerr << std::endl;
 
@@ -295,6 +314,7 @@ void MainWidget::loadGroupMeta()
     if (!rsGit->getGroups(groupIds, groups)) {
       std::cerr << "MainWidget::loadGroupMeta() Error getting groups from GXS"
                 << std::endl;
+      RsQThreadUtils::postToObject([this]() { mGroupMetaLoadPending = false; }, this);
       return;
     }
 
@@ -313,12 +333,18 @@ void MainWidget::loadGroupMeta()
               }
           }
       }
+      std::vector<RsGitPullRequest> pullRequests;
+      if (rsGit->getPullRequests(group.mMeta.mGroupId, pullRequests)) {
+          for (const auto &pr : pullRequests)
+              if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) ++unreadCount;
+      }
       groupUnreadCounts[QString::fromStdString(group.mMeta.mGroupId.toStdString())] = unreadCount;
     }
 
     // Update UI in main thread
     RsQThreadUtils::postToObject(
         [this, groupMeta, groupUnreadCounts]() {
+           mGroupMetaLoadPending = false;
           if (groupMeta.size() > 0) {
             insertGroupsData(groupMeta);
             
@@ -483,7 +509,7 @@ void MainWidget::handleEvent_main_thread(std::shared_ptr<const RsEvent> event)
                 for (auto &pr : pullRequests) {
                     bool isUnprocessed = (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED);
                     if (isUnprocessed) {
-                        if (GitManager::isBranchMerged(bareRepoPath, pr.mSourceBranch, pr.mTargetBranch) || pr.mStatus == 2) {
+                        if (GitManager::isBranchMerged(bareRepoPath, pr.sourceRef(), pr.mTargetBranch) || pr.mStatus == 2) {
                             // Automatically mark as processed locally
                             uint32_t token;
                             rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(e->mGitGroupId, pr.mMeta.mMsgId), true);
@@ -843,6 +869,26 @@ void MainWidget::logCloneAttempt(const QString &groupId, const QString &repoName
 
 void MainWidget::logPullAttempt(const QString &groupId, const QString &repoName, const QString &ownerId, const RsGxsId &ownId, const QString &localPath)
 {
+    if (!rsGit) return;
+    const std::string cached = GitManager::getBareRepoPath(groupId.toStdString());
+    std::vector<RsGitGroup> groups;
+    bool owner = rsGit->getGroups({RsGxsGroupId(groupId.toStdString())}, groups) && !groups.empty() &&
+        IS_GROUP_ADMIN(groups.front().mMeta.mSubscribeFlags);
+    bool available = false;
+    std::vector<RsGitUpdate> updates;
+    if (rsGit->getUpdates(RsGxsGroupId(groupId.toStdString()), updates) && !updates.empty()) {
+        available = true;
+        for (const auto &update : updates) for (const auto &ref : update.mRefUpdates)
+            if (!GitManager::hasCommit(cached, ref.second)) available = false;
+    }
+    if (owner || available) {
+        std::string error;
+        if (GitManager::pullRepository(localPath.toStdString(), cached, &error)) {
+            refreshCurrentRepo();
+            QMessageBox::information(this, tr("Working Folder Updated"), tr("The current branch is up to date with the locally stored repository."));
+        } else QMessageBox::warning(this, tr("Working Folder Not Updated"), QString::fromStdString(error));
+        return;
+    }
     PushesWidget::CloneRecord rec;
     rec.repoId = groupId;
     rec.repoName = repoName;
@@ -871,18 +917,21 @@ void MainWidget::logPullAttempt(const QString &groupId, const QString &repoName,
     }
 }
 
-void MainWidget::hashAndPublishPackfile(const QString &groupId, const std::string &packfileData, RsGitUpdate &update)
+bool MainWidget::preparePackAttachment(const QString &groupId, const std::string &packfileData, RsGxsFile &attachment)
 {
     QString tempDir = QDir::cleanPath(QString::fromStdString(RsAccounts::AccountDirectory()) + "/retrogit_temp/" + groupId);
     QDir().mkpath(tempDir);
-    QString tempFilePath = tempDir + QString("/pack_%1.pack").arg(QDateTime::currentMSecsSinceEpoch());
+    QString tempFilePath = tempDir + "/pack_" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".pack";
     
     QFile file(tempFilePath);
     if (!file.open(QIODevice::WriteOnly)) {
         QMessageBox::critical(this, tr("Push Failed"), tr("Failed to write temporary packfile to disk."));
-        return;
+        return false;
     }
-    file.write(packfileData.data(), packfileData.size());
+    if (file.write(packfileData.data(), packfileData.size()) != static_cast<qint64>(packfileData.size())) {
+        QMessageBox::critical(this, tr("Transfer Failed"), tr("Could not write the complete packfile."));
+        return false;
+    }
     file.close();
     
     if (rsFiles) {
@@ -890,7 +939,9 @@ void MainWidget::hashAndPublishPackfile(const QString &groupId, const std::strin
         rsFiles->ExtraFileHash(tempFilePath.toStdString(), 3600 * 24 * 30, flags);
         
         FileInfo fi;
-        int retries = 200;
+        // Large fork histories can take longer than ten seconds to hash,
+        // especially while the file-transfer service is busy.
+        int retries = 1200;
         bool hashOk = false;
         
         QProgressDialog progress(tr("Hashing packfile..."), tr("Cancel"), 0, retries, this);
@@ -912,26 +963,44 @@ void MainWidget::hashAndPublishPackfile(const QString &groupId, const std::strin
         progress.setValue(retries);
         
         if (!hashOk) {
-            QMessageBox::critical(this, tr("Push Failed"), tr("Hashing the packfile timed out or was canceled. Please try again."));
-            return;
+            QMessageBox::critical(this, tr("Packfile Hashing Failed"), tr("Hashing the packfile timed out or was canceled. The operation was not published. Please try again."));
+            return false;
         }
         
-        RsGxsFile attachment;
         attachment.mName = fi.fname;
         attachment.mSize = fi.size;
         attachment.mHash = fi.hash;
         
-        update.mFiles.push_back(attachment);
-        
-        uint32_t token;
-        if (rsGit) {
-            rsGit->publishGitUpdate(token, update);
-            QMessageBox::information(this, tr("Push Successful"), 
-                tr("Packfile of size %1 KB has been hashed and shared as a P2P attachment. Published metadata update successfully!").arg(packfileData.size() / 1024));
-        }
+        return true;
     } else {
         QMessageBox::critical(this, tr("Push Failed"), tr("RetroShare file transfer service is not available."));
     }
+    return false;
+}
+
+void MainWidget::hashAndPublishPackfile(const QString &groupId, const std::string &packfileData, RsGitUpdate &update)
+{
+    RsGxsFile attachment;
+    if (!preparePackAttachment(groupId, packfileData, attachment)) return;
+    update.mFiles.push_back(attachment);
+    uint32_t token;
+    if (rsGit && rsGit->publishGitUpdate(token, update))
+        QMessageBox::information(this, tr("Push Queued"), tr("Repository update queued for publication."));
+}
+
+bool MainWidget::publishPullRequestWithPack(RsGitPullRequest &pr, const std::string &pack)
+{
+    if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: pack size=" << pack.size() << std::endl;
+    if (pack.size() <= 200000) pr.mPackfileData = pack;
+    else {
+        RsGxsFile attachment;
+        if (!preparePackAttachment(QString::fromStdString(pr.mMeta.mGroupId.toStdString()), pack, attachment)) { if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: attachment preparation failed" << std::endl; return false; }
+        pr.mFiles.push_back(attachment);
+    }
+    uint32_t token;
+    const bool ok = rsGit && rsGit->publishPullRequest(token, pr);
+    if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: publishPullRequest=" << (ok ? "true" : "false") << std::endl;
+    return ok;
 }
 
 void MainWidget::refreshCurrentRepo()
@@ -945,6 +1014,8 @@ void MainWidget::showCommitDetails(const QString &fullHash, const QString &qRepo
 {
     mCurrentCommitHash = fullHash;
     std::string repoPath = qRepoPath.toStdString();
+    if (fullHash != "LOCAL_CHANGES" && !GitManager::hasCommit(repoPath, fullHash.toStdString()))
+        repoPath = GitManager::getBareRepoPath(getSelectedGroupId().toStdString());
     if (fullHash == "LOCAL_CHANGES") {
         mDetailsAuthorNameLabel->setText("");
         mDetailsAuthorEmailLabel->hide();
@@ -1180,6 +1251,9 @@ void MainWidget::showDiffForFile(const QString &filePath)
         }
     }
 
+    if (fullHash != "LOCAL_CHANGES" && !GitManager::hasCommit(repoPath, fullHash.toStdString()))
+        repoPath = GitManager::getBareRepoPath(groupId.toStdString());
+
     std::vector<GitDiffLine> diffLines;
     if (!GitManager::getFileDiff(repoPath, fullHash.toStdString(), filePath.toStdString(), diffLines)) {
         QMessageBox::warning(this, tr("Diff Error"), tr("Failed to retrieve diff for the selected file."));
@@ -1317,6 +1391,9 @@ void MainWidget::showDiffForCommit(const QString &commitHash)
             repoPath = localPath.toStdString();
         }
     }
+
+    if (commitHash != "LOCAL_CHANGES" && !GitManager::hasCommit(repoPath, commitHash.toStdString()))
+        repoPath = GitManager::getBareRepoPath(groupId.toStdString());
 
     std::vector<GitDiffLine> diffLines;
     if (!GitManager::getFileDiff(repoPath, commitHash.toStdString(), "", diffLines)) {

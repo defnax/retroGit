@@ -19,6 +19,8 @@
  ********************************************************************************/
 
 #include "PullRequestsWidget.h"
+#include "gui/settings/rsharesettings.h"
+#include <QInputDialog>
 #include "ui_PullRequestsWidget.h"
 #include "MainWidget.h"
 #include "GitNewPRDialog.h"
@@ -39,6 +41,7 @@
 #include <QHBoxLayout>
 
 extern RsGit *rsGit;
+extern RsIdentity *rsIdentity;
 
 PullRequestsWidget::PullRequestsWidget(const QString &groupId, MainWidget *mainWidget, QWidget *parent)
     : QWidget(parent)
@@ -102,48 +105,95 @@ void PullRequestsWidget::onNewPRClicked()
 {
     if (mGroupId.isEmpty()) return;
 
-    std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
-    std::vector<std::string> branches;
-    std::string currentBranch;
-
-    if (!GitManager::getBranches(bareRepoPath, branches, currentBranch)) {
-        QMessageBox::critical(this, tr("Error"), tr("Failed to read repository branches."));
+    if (!rsGit || !mMainWidget) return;
+    std::vector<RsGitGroup> groups;
+    if (!rsGit->getGroups({}, groups)) return;
+    // When opened on a fork, offer its upstream as the target. When opened on
+    // an original, offer owned forks as sources as well as an owned original.
+    RsGitGroup current;
+    bool found = false;
+    for (const auto &g : groups) if (g.mMeta.mGroupId.toStdString() == mGroupId.toStdString()) { current = g; found = true; }
+    if (!found) return;
+    RsGxsGroupId targetId = current.mUpstreamGroupId.isNull() ? current.mMeta.mGroupId : current.mUpstreamGroupId;
+    RsGitGroup target;
+    QStringList labels;
+    std::vector<RsGitGroup> sources;
+    for (const auto &g : groups) {
+        if (g.mMeta.mGroupId == targetId) target = g;
+        if (IS_GROUP_ADMIN(g.mMeta.mSubscribeFlags) &&
+            (g.mMeta.mGroupId == targetId || g.mUpstreamGroupId == targetId)) {
+            sources.push_back(g);
+            labels << QString::fromStdString(g.mGroupName) + " (" + QString::fromStdString(g.mMeta.mGroupId.toStdString().substr(0, 8)) + ")";
+        }
+    }
+    if (sources.empty() || target.mMeta.mGroupId.isNull()) {
+        QMessageBox::information(this, tr("Create Pull Request"), tr("Fork this repository first, then commit changes in your fork. The upstream repository must remain subscribed."));
         return;
     }
-
-    QStringList qBranches;
-    for (const std::string& b : branches) {
-        qBranches.append(QString::fromStdString(b));
+    int index = 0;
+    for (size_t i = 0; i < sources.size(); ++i) if (sources[i].mMeta.mGroupId == current.mMeta.mGroupId) index = static_cast<int>(i);
+    if (sources.size() > 1) {
+        bool ok = false;
+        const QString choice = QInputDialog::getItem(this, tr("Create Pull Request"), tr("Source repository"), labels, index, false, &ok);
+        if (!ok) return;
+        index = labels.indexOf(choice);
     }
-
-    GitNewPRDialog dlg(qBranches, QString::fromStdString(currentBranch), this);
-    if (dlg.exec() == QDialog::Accepted) {
-        QString title = dlg.getTitle();
-        QString desc = dlg.getDescription();
-        QString source = dlg.getSourceBranch();
-        QString target = dlg.getTargetBranch();
-
-        if (title.isEmpty()) {
-            QMessageBox::warning(this, tr("Warning"), tr("Title cannot be empty."));
-            return;
-        }
-
-        RsGitPullRequest pr;
-        pr.mMeta.mGroupId = RsGxsGroupId(mGroupId.toStdString());
-        pr.mTitle = title.toStdString();
-        pr.mDescription = desc.toStdString();
-        pr.mSourceBranch = source.toStdString();
-        pr.mTargetBranch = target.toStdString();
-        pr.mStatus = 0; // Open
-
-        uint32_t token;
-        if (rsGit && rsGit->publishPullRequest(token, pr)) {
-            QMessageBox::information(this, tr("Success"), tr("Pull request opened successfully."));
-            refresh();
-        } else {
-            QMessageBox::critical(this, tr("Error"), tr("Failed to open pull request."));
-        }
+    const auto sourceGroup = sources.at(index);
+    if (!rsIdentity || !rsIdentity->isOwnId(sourceGroup.mMeta.mAuthorId)) {
+        QMessageBox::warning(this, tr("Create Pull Request"),
+            tr("The selected fork is owned by %1. Select an identity that owns this fork before creating a Pull Request.")
+                .arg(QString::fromStdString(sourceGroup.mMeta.mAuthorId.toStdString().substr(0, 8))));
+        return;
     }
+    Settings->beginGroup("RetroGit_WorkingDirs");
+    const QString localPath = Settings->value(QString::fromStdString(sourceGroup.mMeta.mGroupId.toStdString())).toString();
+    Settings->endGroup();
+    const std::string sourcePath = localPath.isEmpty() ? GitManager::getBareRepoPath(sourceGroup.mMeta.mGroupId.toStdString()) : localPath.toStdString();
+    const std::string targetPath = GitManager::getBareRepoPath(targetId.toStdString());
+    std::vector<std::string> sourceBranches, targetBranches;
+    std::string currentBranch, targetBranch;
+    if (!GitManager::getBranches(sourcePath, sourceBranches, currentBranch) || sourceBranches.empty() ||
+        !GitManager::getBranches(targetPath, targetBranches, targetBranch) || targetBranches.empty()) {
+        QMessageBox::warning(this, tr("Create Pull Request"), tr("Commit your changes and download the upstream repository before creating a pull request."));
+        return;
+    }
+    QStringList src, dst;
+    for (const auto &branch : sourceBranches) src << QString::fromStdString(branch);
+    for (const auto &branch : targetBranches) dst << QString::fromStdString(branch);
+    GitNewPRDialog dlg(src, QString::fromStdString(currentBranch), this, dst,
+        QString::fromStdString(sourceGroup.mGroupName), QString::fromStdString(target.mGroupName));
+    if (dlg.exec() != QDialog::Accepted) return;
+    if (dlg.getTitle().isEmpty()) {
+        QMessageBox::warning(this, tr("Create Pull Request"), tr("Title cannot be empty."));
+        return;
+    }
+    RsGitPullRequest pr;
+    pr.mMeta.mGroupId = targetId;
+    pr.mMeta.mAuthorId = sourceGroup.mMeta.mAuthorId;
+    pr.mSourceGroupId = sourceGroup.mMeta.mGroupId;
+    pr.mTitle = dlg.getTitle().toStdString();
+    pr.mDescription = dlg.getDescription().toStdString();
+    pr.mSourceBranch = dlg.getSourceBranch().toStdString();
+    pr.mTargetBranch = dlg.getTargetBranch().toStdString();
+    std::string pack;
+    std::map<std::string, std::string> refs;
+    if (!GitManager::createPackfileForRef(sourcePath, pr.mSourceBranch, pack, refs) || refs.size() != 1) {
+        QMessageBox::critical(this, tr("Create Pull Request"), tr("Could not package the proposed commits."));
+        return;
+    }
+    pr.mSourceCommit = refs.begin()->second;
+    // Check the exact proposed snapshot against upstream without changing its branches.
+    const std::string reviewRef = "refs/retrogit/pull/preview";
+    if (!GitManager::unpackPackfile(targetPath, pack, {}) ||
+        !GitManager::setReviewRef(targetPath, reviewRef, pr.mSourceCommit) ||
+        GitManager::isBranchMerged(targetPath, reviewRef, pr.mTargetBranch)) {
+        QMessageBox::warning(this, tr("Create Pull Request"), tr("There are no new commits to propose, or the proposed commits could not be read."));
+        return;
+    }
+    if (mMainWidget->publishPullRequestWithPack(pr, pack)) {
+        QMessageBox::information(this, tr("Pull Request Queued"), tr("Your pull request was queued for publication to the upstream repository."));
+        mMainWidget->showPullRequests(QString::fromStdString(targetId.toStdString()));
+    } else QMessageBox::critical(this, tr("Create Pull Request"), tr("Could not queue the pull request. Check the RetroGit debug log for 'RetroGit PR DEBUG' messages."));
 }
 
 void PullRequestsWidget::onFilterTextChanged(const QString &text)
@@ -182,17 +232,6 @@ void PullRequestsWidget::populatePRList()
         return;
     }
 
-    // Mark all pull requests in this repository as read asynchronously
-    RsThread::async([pullRequests, groupId = mGroupId.toStdString()]() {
-        if (rsGit) {
-            for (const auto &pr : pullRequests) {
-                if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) {
-                    rsGit->setMessageReadStatus(RsGxsGrpMsgIdPair(RsGxsGroupId(groupId), pr.mMeta.mMsgId), true);
-                }
-            }
-        }
-    });
-
     // Determine admin status
     bool isAdmin = false;
     std::list<RsGxsGroupId> groupIds({RsGxsGroupId(mGroupId.toStdString())});
@@ -222,7 +261,7 @@ void PullRequestsWidget::populatePRList()
         bool isOpen = (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) && (pr.mStatus == 0);
         if (isOpen) {
             std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
-            if (GitManager::isBranchMerged(bareRepoPath, pr.mSourceBranch, pr.mTargetBranch)) {
+            if (GitManager::isBranchMerged(bareRepoPath, pr.sourceRef(), pr.mTargetBranch)) {
                 isOpen = false;
                 if (rsGit) {
                     uint32_t token;
@@ -266,7 +305,7 @@ void PullRequestsWidget::populatePRList()
         bool isOpen = (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) && (pr.mStatus == 0);
         if (isOpen) {
             std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
-            if (GitManager::isBranchMerged(bareRepoPath, pr.mSourceBranch, pr.mTargetBranch)) {
+            if (GitManager::isBranchMerged(bareRepoPath, pr.sourceRef(), pr.mTargetBranch)) {
                 isOpen = false;
             }
         }
@@ -291,14 +330,26 @@ void PullRequestsWidget::populatePRList()
 
         // Column 1: Info (Title & description metadata)
         QString titleStr = QString::fromStdString(pr.mTitle);
+        QString authorName = QString::fromStdString(pr.mMeta.mAuthorId.toStdString().substr(0, 8));
+        if (rsIdentity && !pr.mMeta.mAuthorId.isNull()) {
+            RsIdentityDetails identity;
+            if (rsIdentity->getIdDetails(pr.mMeta.mAuthorId, identity) && !identity.mNickname.empty())
+                authorName = QString::fromStdString(identity.mNickname);
+        }
         QString detailsStr = tr("#%1 opened %2 by %3 from %4 into %5")
             .arg(i + 1)
             .arg(QDateTime::fromTime_t(pr.mMeta.mPublishTs).toString("yyyy-MM-dd HH:mm"))
-            .arg(QString::fromStdString(pr.mMeta.mAuthorId.toStdString().substr(0, 8)))
+            .arg(authorName.toHtmlEscaped())
             .arg(QString::fromStdString(pr.mSourceBranch))
             .arg(QString::fromStdString(pr.mTargetBranch));
 
         QTableWidgetItem *itemInfo = new QTableWidgetItem("  " + titleStr + "\n  " + detailsStr);
+        QFont infoFont = itemInfo->font();
+        infoFont.setBold(true);
+        itemInfo->setFont(infoFont);
+        itemInfo->setToolTip(tr("<b>Pull Request #%1</b><br>Author: <b>%2</b><br>Identity: %3<br><i>Hover the author avatar for the RetroShare profile.</i>")
+            .arg(i + 1).arg(authorName.toHtmlEscaped())
+            .arg(QString::fromStdString(pr.mMeta.mAuthorId.toStdString()).toHtmlEscaped()));
         QFont font = itemInfo->font();
         font.setBold(isOpen);
         itemInfo->setFont(font);
@@ -322,7 +373,7 @@ void PullRequestsWidget::populatePRList()
 
             QPushButton *btnAction = new QPushButton(container);
             if (isOpen && isAdmin) {
-                btnAction->setText(tr("Merge"));
+                btnAction->setText(tr("Review"));
                 btnAction->setStyleSheet("QPushButton { background-color: #2da44e; color: white; border-radius: 6px; padding: 4px 12px; font-weight: bold; min-height: 26px; max-height: 26px; }"
                                         "QPushButton:hover { background-color: #2c974b; }"
                                         "QPushButton:pressed { background-color: #298e46; }");

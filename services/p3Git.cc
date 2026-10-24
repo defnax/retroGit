@@ -23,6 +23,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <atomic>
 
 #include "gui/RetroGitNotify.h"
 #include "p3Git.h"
@@ -32,6 +33,10 @@
 #include <QVariantMap>
 
 RsGit *rsGit = NULL;
+
+static std::atomic_bool sRetroGitDebugEnabled(false);
+bool retroGitDebugEnabled() { return sRetroGitDebugEnabled.load(std::memory_order_relaxed); }
+void setRetroGitDebugEnabled(bool enabled) { sRetroGitDebugEnabled.store(enabled, std::memory_order_relaxed); }
 
 static uint32_t retroGitAuthenPolicy()
 {
@@ -69,7 +74,7 @@ RsServiceInfo p3Git::getServiceInfo()
 {
     const std::string RETRO_GIT_APP_NAME = "RetroGit";
     const uint16_t RETRO_GIT_APP_MAJOR_VERSION = 1;
-    const uint16_t RETRO_GIT_APP_MINOR_VERSION = 0;
+    const uint16_t RETRO_GIT_APP_MINOR_VERSION = 1;
     const uint16_t RETRO_GIT_MIN_MAJOR_VERSION = 1;
     const uint16_t RETRO_GIT_MIN_MINOR_VERSION = 0;
 
@@ -233,7 +238,7 @@ void p3Git::service_tick()
         bool hasWorkingDir = !pp.localPath.empty() && GitManager::isValidRepository(pp.localPath);
         if (hasWorkingDir) {
             postCloneStatus(pp.groupId, "Offline sync: updating working tree...", false);
-            if (GitManager::pullRepository(pp.localPath)) {
+            if (GitManager::pullRepository(pp.localPath, GitManager::getBareRepoPath(pp.groupId.toStdString()))) {
                 postCloneStatus(pp.groupId, "Offline sync completed successfully!", true);
             } else {
                 postCloneStatus(pp.groupId, "Offline sync failed to update working tree.", false);
@@ -285,7 +290,7 @@ void p3Git::notifyChanges(std::vector<RsGxsNotify *> &changes)
         if (msgChange->mNewMsgItem) {
             RsGitMsgItem* gitMsg = dynamic_cast<RsGitMsgItem*>(msgChange->mNewMsgItem);
             if (gitMsg) {
-                if (gitMsg->mGitMsgType == 1) // UPDATE
+                if (gitMsg->mGitMsgType == 1 && gitMsg->meta.mParentId.isNull()) // Owner-signed root UPDATE
                 {
                     std::string repoPath = GitManager::getBareRepoPath(msgChange->mGroupId.toStdString());
                     if (!gitMsg->mFiles.empty()) {
@@ -395,7 +400,8 @@ void p3Git::notifyChanges(std::vector<RsGxsNotify *> &changes)
 bool p3Git::createGroup(RsGitGroup &group)
 {
     uint32_t token;
-    return createGroup(token, group) && waitToken(token) == RsTokenService::COMPLETE;
+    return createGroup(token, group) && waitToken(token) == RsTokenService::COMPLETE
+        && acknowledgeTokenGrp(token, group.mMeta.mGroupId);
 }
 
 bool p3Git::getGroups(const std::list<RsGxsGroupId> &groupIds,std::vector<RsGitGroup> &groups)
@@ -536,13 +542,62 @@ bool p3Git::publishGitUpdate(uint32_t &token, RsGitUpdate &update)
     return true;
 }
 
+bool p3Git::preparePullRequest(const RsGitPullRequest &pr)
+{
+    if (pr.mSourceCommit.empty()) return true; // Legacy same-repository PR.
+    if (pr.mMeta.mMsgId.isNull() || pr.mSourceGroupId.isNull()) return false;
+    const std::string path = GitManager::getBareRepoPath(pr.mMeta.mGroupId.toStdString());
+    if (GitManager::setReviewRef(path, pr.sourceRef(), pr.mSourceCommit)) return true;
+    // Import objects only: incoming branch names must never overwrite upstream branches.
+    bool imported = false;
+    if (!pr.mFiles.empty() && rsFiles) {
+        const auto &file = pr.mFiles.front();
+        FileInfo info;
+        if (rsFiles->alreadyHaveFile(file.mHash, info)) {
+            imported = GitManager::unpackPackfileFromFile(path, info.path, {});
+        } else {
+            std::list<RsPeerId> sources;
+            rsFiles->FileRequest(file.mName, file.mHash, file.mSize, "", RS_FILE_REQ_ANONYMOUS_ROUTING, sources);
+        }
+    } else if (!pr.mPackfileData.empty()) {
+        imported = GitManager::unpackPackfile(path, pr.mPackfileData, {});
+    }
+    return imported && GitManager::setReviewRef(path, pr.sourceRef(), pr.mSourceCommit);
+}
+
 bool p3Git::publishPullRequest(uint32_t &token, RsGitPullRequest &pr)
 {
+    if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: publish title='" << pr.mTitle << "' target=" << pr.mMeta.mGroupId.toStdString() << " source=" << pr.mSourceGroupId.toStdString() << " commit=" << pr.mSourceCommit << std::endl;
+    std::vector<RsGitGroup> sources;
+    if (!pr.mSourceCommit.empty() &&
+        (pr.mSourceGroupId.isNull() || !getGroups({pr.mSourceGroupId}, sources) || sources.empty() ||
+         !IS_GROUP_ADMIN(sources.front().mMeta.mSubscribeFlags) ||
+         !rsIdentity || !rsIdentity->isOwnId(pr.mMeta.mAuthorId) ||
+         pr.mMeta.mAuthorId != sources.front().mMeta.mAuthorId)) { if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: source identity validation failed" << std::endl; return false; }
+    std::vector<RsGitUpdate> updates;
+    if (!getUpdates(pr.mMeta.mGroupId, updates) || updates.empty()) {
+        // Older repositories may expose their Git history through child
+        // messages while root update metadata is unavailable locally. Use the
+        // latest PR message as the thread parent instead of rejecting a valid PR.
+        std::vector<RsGitPullRequest> existing;
+        if (!getPullRequests(pr.mMeta.mGroupId, existing) || existing.empty()) {
+            if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: target has no attachable messages" << std::endl;
+            return false;
+        }
+        pr.mMeta.mParentId = existing.back().mMeta.mMsgId;
+        pr.mMeta.mThreadId = existing.back().mMeta.mThreadId.isNull()
+            ? existing.back().mMeta.mMsgId : existing.back().mMeta.mThreadId;
+        if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: using existing PR message as parent" << std::endl;
+    }
+    else {
+        pr.mMeta.mParentId = updates.back().mMeta.mMsgId;
+        pr.mMeta.mThreadId = pr.mMeta.mParentId;
+    }
+    // Proposals are author-signed children of a published upstream update.
+    // Contributors do not possess the upstream root-message publishing key.
     RsGitMsgItem *msgItem = new RsGitMsgItem();
     msgItem->meta = pr.mMeta;
     
-    msgItem->meta.mParentId.clear();
-    msgItem->meta.mThreadId.clear();
     
     if (msgItem->meta.mMsgName.empty()) {
         msgItem->meta.mMsgName = pr.mTitle.empty() ? "Git Pull Request" : pr.mTitle;
@@ -566,30 +621,39 @@ bool p3Git::publishPullRequest(uint32_t &token, RsGitPullRequest &pr)
     msgItem->mDescription = pr.mDescription;
     msgItem->mTargetBranch = pr.mTargetBranch;
     msgItem->mSourceBranch = pr.mSourceBranch;
+    msgItem->mSourceGroupId = pr.mSourceGroupId;
+    msgItem->mSourceCommit = pr.mSourceCommit;
     msgItem->mPackfileData = pr.mPackfileData;
     msgItem->mStatus = pr.mStatus;
     msgItem->mFiles = pr.mFiles;
     
     this->publishMsg(token, msgItem);
+    if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: publishMsg queued" << std::endl;
     return true;
 }
 
 bool p3Git::closePullRequest(uint32_t &token, const RsGxsGroupId &groupId, const RsGxsMessageId &msgId, uint32_t status)
 {
+    if (!rsIdentity || (status != 1 && status != 2)) return false;
+    std::vector<RsGitPullRequest> prs;
+    std::vector<RsGitGroup> groups;
+    if (!getGroups({groupId}, groups) || groups.empty() || !getPullRequests(groupId, prs)) return false;
+    RsGxsId signer;
+    RsGxsMessageId threadId = msgId;
+    for (const auto &pr : prs) if (pr.mMeta.mMsgId == msgId) {
+        if (!pr.mMeta.mThreadId.isNull()) threadId = pr.mMeta.mThreadId;
+        if (rsIdentity->isOwnId(groups.front().mMeta.mAuthorId)) signer = groups.front().mMeta.mAuthorId;
+        else if (status == 1 && rsIdentity->isOwnId(pr.mMeta.mAuthorId)) signer = pr.mMeta.mAuthorId;
+    }
+    if (signer.isNull()) return false;
     RsGitMsgItem *msgItem = new RsGitMsgItem();
     msgItem->meta.mGroupId = groupId;
     msgItem->meta.mParentId = msgId;
     
-    msgItem->meta.mThreadId = msgId;
+    msgItem->meta.mThreadId = threadId;
     
-    if (rsIdentity) {
-        std::list<RsGxsId> ownIds;
-        rsIdentity->getOwnIds(ownIds);
-        if (!ownIds.empty()) {
-            msgItem->meta.mAuthorId = ownIds.front();
-        }
-    }
-    
+    msgItem->meta.mAuthorId = signer;
+
     msgItem->mGitMsgType = 3; // PULL_REQUEST_STATUS_UPDATE
     msgItem->mStatus = status; // 1 = Closed
     msgItem->meta.mMsgName = "PR Status Update";
@@ -674,8 +738,11 @@ bool p3Git::getUpdates(const RsGxsGroupId &groupId, std::vector<RsGitUpdate> &up
     std::map<RsGxsGroupId, std::vector<RsGitMsgItem*> > msgItems;
     if (getMsgDataT<RsGitMsgItem>(token, msgItems)) {
         auto &vec = msgItems[groupId];
+        if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: target message count=" << vec.size() << std::endl;
         for (auto *gitMsg : vec) {
-            if (gitMsg && gitMsg->mGitMsgType == 1) { // UPDATE
+            if (retroGitDebugEnabled() && gitMsg) std::cerr << "RetroGit PR DEBUG: target message type=" << gitMsg->mGitMsgType
+                                   << " parent=" << gitMsg->meta.mParentId.toStdString() << std::endl;
+            if (gitMsg && gitMsg->mGitMsgType == 1) { // UPDATE (root or threaded update)
                 RsGitUpdate update;
                 update.mMeta = gitMsg->meta;
                 update.mPackfileData = gitMsg->mPackfileData;
@@ -703,16 +770,28 @@ bool p3Git::getPullRequests(const RsGxsGroupId &groupId, std::vector<RsGitPullRe
     if (getMsgDataT<RsGitMsgItem>(token, msgItems)) {
         auto &vec = msgItems[groupId];
         
-        // Map to store status updates: key is ParentId (PR's MsgId), value is status (e.g. 1 = Closed)
+        std::vector<RsGitGroup> groups;
+        getGroups({groupId}, groups);
+        const RsGxsId owner = groups.empty() ? RsGxsId() : groups.front().mMeta.mAuthorId;
         std::map<RsGxsMessageId, uint32_t> statusUpdates;
-        
-        // First pass: collect status updates
-        for (auto *gitMsg : vec) {
-            if (gitMsg && gitMsg->mGitMsgType == 3) { // STATUS_UPDATE
-                statusUpdates[gitMsg->meta.mParentId] = gitMsg->mStatus;
+        std::map<RsGxsMessageId, rstime_t> statusTimes;
+        std::map<RsGxsMessageId, RsGitMsgItem*> proposalsById;
+        for (auto *proposal : vec)
+            if (proposal && proposal->mGitMsgType == 2)
+                proposalsById[proposal->meta.mMsgId] = proposal;
+        for (auto *status : vec) {
+            if (!status || status->mGitMsgType != 3 || (status->mStatus != 1 && status->mStatus != 2)) continue;
+            auto proposalIt = proposalsById.find(status->meta.mParentId);
+            if (proposalIt == proposalsById.end()) continue;
+            auto *proposal = proposalIt->second;
+            const bool authorized = (!owner.isNull() && status->meta.mAuthorId == owner) ||
+                (status->mStatus == 1 && status->meta.mAuthorId == proposal->meta.mAuthorId);
+            if (authorized && status->meta.mPublishTs >= statusTimes[proposal->meta.mMsgId]) {
+                statusUpdates[proposal->meta.mMsgId] = status->mStatus;
+                statusTimes[proposal->meta.mMsgId] = status->meta.mPublishTs;
             }
         }
-        
+
         // Second pass: build pull requests
         for (auto *gitMsg : vec) {
             if (gitMsg && gitMsg->mGitMsgType == 2) { // PULL_REQUEST
@@ -722,8 +801,10 @@ bool p3Git::getPullRequests(const RsGxsGroupId &groupId, std::vector<RsGitPullRe
                 pr.mDescription = gitMsg->mDescription;
                 pr.mTargetBranch = gitMsg->mTargetBranch;
                 pr.mSourceBranch = gitMsg->mSourceBranch;
+                pr.mSourceGroupId = gitMsg->mSourceGroupId;
+                pr.mSourceCommit = gitMsg->mSourceCommit;
                 pr.mPackfileData = gitMsg->mPackfileData;
-                pr.mStatus = gitMsg->mStatus;
+                pr.mStatus = 0; // Only authenticated status replies can close or merge a proposal.
                 pr.mFiles = gitMsg->mFiles;
                 
                 // Override status if there is an update message on GXS
@@ -990,7 +1071,7 @@ bool p3Git::requestOfflinePull(const RsGxsGroupId &groupId, const std::string &l
         bool hasWorkingDir = !localPath.empty() && GitManager::isValidRepository(localPath);
         if (hasWorkingDir) {
             postCloneStatus(groupId, "Offline sync: updating working tree...", false);
-            if (GitManager::pullRepository(localPath)) {
+            if (GitManager::pullRepository(localPath, barePath)) {
                 postCloneStatus(groupId, "Offline sync completed successfully!", true);
                 return true;
             } else {
@@ -1161,6 +1242,15 @@ void p3Git::notifyTunnelStatus(const RsGxsTunnelId& tunnel_id, uint32_t tunnel_s
         req["type"] = isPull ? "pull_req" : "clone_req";
         req["group_id"] = QString::fromStdString(groupId.toStdString());
         req["chunked"] = true;
+        if (isPull) {
+            // Only advertise objects in the cache where the response is imported.
+            QVariantList have;
+            for (const auto& tip : GitManager::knownTips(GitManager::getBareRepoPath(groupId.toStdString()))) {
+                if (have.size() >= 256) break;
+                have.append(QString::fromStdString(tip));
+            }
+            req["have"] = have;
+        }
 
         QJsonDocument doc = QJsonDocument::fromVariant(req);
         std::string msg = doc.toJson().toStdString();
@@ -1304,7 +1394,15 @@ void p3Git::receiveData(const RsGxsTunnelId& id, unsigned char *data, uint32_t d
 
         std::string packfileData;
         std::map<std::string, std::string> refUpdates;
-        if (GitManager::createPackfile(barePath, packfileData, refUpdates)) {
+        std::set<std::string> known;
+        if (type == "pull_req") {
+            const QVariantList have = map["have"].toList();
+            for (int i = 0; i < have.size() && i < 256; ++i) {
+                const std::string tip = have[i].toString().toStdString();
+                if (tip.size() == 40) known.insert(tip);
+            }
+        }
+        if (GitManager::createPackfile(barePath, packfileData, refUpdates, known)) {
             if (refUpdates.empty()) {
                 sendError("Repository has no published commits. Commit and Push / Publish on the owner first.");
                 return;
@@ -1459,7 +1557,7 @@ void p3Git::receiveData(const RsGxsTunnelId& id, unsigned char *data, uint32_t d
             bool pullSuccess = false;
             if (hasWorkingDir) {
                 postCloneStatus(groupId, "Syncing working tree...", false);
-                if (GitManager::pullRepository(pp.localPath)) {
+                if (GitManager::pullRepository(pp.localPath, GitManager::getBareRepoPath(pp.groupId.toStdString()))) {
                     postCloneStatus(groupId, "Sync completed successfully!", true);
                     pullSuccess = true;
                 } else {
