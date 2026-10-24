@@ -163,7 +163,10 @@ void CodeWidget::refresh()
             }
         }
     }
-    ui->mBtnPullRequests->setText(tr("Pull requests (%1)").arg(openPRCount));
+    int unreadPRCount = 0;
+    for (const auto &pr : pullRequests)
+        if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) ++unreadPRCount;
+    ui->mBtnPullRequests->setText(tr("Pull requests (%1)").arg(unreadPRCount));
 
 
 

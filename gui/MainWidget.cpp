@@ -314,6 +314,11 @@ void MainWidget::loadGroupMeta()
               }
           }
       }
+      std::vector<RsGitPullRequest> pullRequests;
+      if (rsGit->getPullRequests(group.mMeta.mGroupId, pullRequests)) {
+          for (const auto &pr : pullRequests)
+              if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) ++unreadCount;
+      }
       groupUnreadCounts[QString::fromStdString(group.mMeta.mGroupId.toStdString())] = unreadCount;
     }
 

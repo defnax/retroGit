@@ -56,6 +56,7 @@ private slots:
     void onCommitClicked();
     void onPushClicked();
     void onPullClicked();
+    void onRebaseClicked();
     void onCommitSelectionChanged();
     void onCommitTableContextMenu(const QPoint &pos);
     void onCommitReadStatusToggled(const QString &msgIdStr, bool markRead);

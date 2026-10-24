@@ -225,17 +225,6 @@ void PullRequestsWidget::populatePRList()
         return;
     }
 
-    // Mark all pull requests in this repository as read asynchronously
-    RsThread::async([pullRequests, groupId = mGroupId.toStdString()]() {
-        if (rsGit) {
-            for (const auto &pr : pullRequests) {
-                if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) {
-                    rsGit->setMessageReadStatus(RsGxsGrpMsgIdPair(RsGxsGroupId(groupId), pr.mMeta.mMsgId), true);
-                }
-            }
-        }
-    });
-
     // Determine admin status
     bool isAdmin = false;
     std::list<RsGxsGroupId> groupIds({RsGxsGroupId(mGroupId.toStdString())});

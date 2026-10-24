@@ -1064,13 +1064,43 @@ bool GitManager::pullRepository(const std::string& localPath, const std::string&
     }
     auto fail = [&](const char *message) { if (errorMessage) *errorMessage = message; git_repository_free(repo); return false; };
     git_reference *head = nullptr;
-    if (git_repository_head(&head, repo) != 0 || !git_reference_is_branch(head)) {
-        git_reference_free(head); return fail("Check out a local branch before pulling.");
+    std::string branch;
+    if (git_repository_head(&head, repo) == 0 && git_reference_is_branch(head)) {
+        branch = git_reference_shorthand(head);
     }
-    const std::string branchRef = git_reference_name(head);
-    const std::string branch = branchRef.substr(11);
-    const git_oid previous = *git_reference_target(head);
     git_reference_free(head);
+    if (branch.empty()) {
+        const std::vector<std::string> candidates = expectedBranch.empty()
+            ? std::vector<std::string>{"master", "main"} : std::vector<std::string>{expectedBranch};
+        for (const auto& candidate : candidates) {
+            git_reference *candidateRef = nullptr;
+            if (git_reference_lookup(&candidateRef, repo, ("refs/heads/" + candidate).c_str()) == 0) {
+                branch = candidate;
+                git_reference_free(candidateRef);
+                if (git_repository_set_head(repo, ("refs/heads/" + branch).c_str()) == 0) break;
+            }
+            git_reference_free(candidateRef);
+        }
+        // Older fork clones may contain only a detached HEAD or an origin
+        // remote branch. Materialize the selected local branch at HEAD.
+        if (branch.empty()) {
+            git_oid headId;
+            if (git_reference_name_to_id(&headId, repo, "HEAD") == 0) {
+                const std::string candidate = expectedBranch.empty() ? "master" : expectedBranch;
+                git_reference *created = nullptr;
+                if (git_reference_create(&created, repo, ("refs/heads/" + candidate).c_str(),
+                                         &headId, 0, "Attach fork branch") == 0) {
+                    branch = candidate;
+                }
+                git_reference_free(created);
+            }
+        }
+    }
+    if (branch.empty()) return fail("The local fork branch could not be detected.");
+    const std::string branchRef = "refs/heads/" + branch;
+    git_oid previous;
+    if (git_reference_name_to_id(&previous, repo, branchRef.c_str()) != 0)
+        return fail("The local fork branch has no commit yet.");
     if (!expectedBranch.empty() && branch != expectedBranch)
         return fail("The merged branch is not checked out. Switch to the target branch and pull to update its working files.");
     git_status_options statusOptions = GIT_STATUS_OPTIONS_INIT;
@@ -1301,6 +1331,111 @@ bool GitManager::mergeBranch(const std::string& repoPath, const std::string& sou
     git_reference_free(new_ref);
     git_repository_free(repo);
     return true;
+}
+
+bool GitManager::rebaseBranch(const std::string& repoPath, const std::string& upstreamPath,
+    const std::string& branchName, const std::string& upstreamBranch, std::string* errorMessage)
+{
+    if (errorMessage) errorMessage->clear();
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normalizePath(repoPath).c_str()) != 0) {
+        if (errorMessage) *errorMessage = "Cannot open the fork repository.";
+        return false;
+    }
+    auto fail = [&](const char *message) { if (errorMessage) *errorMessage = message; git_repository_free(repo); return false; };
+    git_status_options status = GIT_STATUS_OPTIONS_INIT;
+    status.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED | GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS;
+    git_status_list *changes = nullptr;
+    if (git_status_list_new(&changes, repo, &status) != 0 || git_status_list_entrycount(changes) != 0) {
+        git_status_list_free(changes); return fail("Commit or stash local changes before rebasing.");
+    }
+    git_status_list_free(changes);
+    git_reference *head = nullptr;
+    bool checkedOut = git_repository_head(&head, repo) == 0 && git_reference_is_branch(head) &&
+        branchName == git_reference_shorthand(head);
+    git_reference_free(head);
+    // Some older forks were cloned with a detached HEAD. If the requested
+    // branch points at that HEAD, attach HEAD to it before rebasing.
+    if (!checkedOut) {
+        git_oid branchId;
+        if (git_reference_name_to_id(&branchId, repo, ("refs/heads/" + branchName).c_str()) != 0) {
+            if (git_reference_name_to_id(&branchId, repo, "HEAD") != 0)
+                return fail("The fork branch could not be selected automatically.");
+        }
+        // Preserve a detached HEAD as the branch tip. Do not check out an
+        // older branch tip over the working files.
+        git_oid headId;
+        if (git_reference_name_to_id(&headId, repo, "HEAD") == 0 && !git_oid_equal(&headId, &branchId))
+            branchId = headId;
+        git_reference *attached = nullptr;
+        if (git_reference_create(&attached, repo, ("refs/heads/" + branchName).c_str(), &branchId, 1,
+                                  "Attach fork branch") != 0 ||
+            git_repository_set_head(repo, ("refs/heads/" + branchName).c_str()) != 0) {
+            git_reference_free(attached);
+            return fail("The fork branch could not be selected automatically.");
+        }
+        git_reference_free(attached);
+        git_object *branchObject = nullptr;
+        if (git_object_lookup(&branchObject, repo, &branchId, GIT_OBJECT_COMMIT) != 0) return fail("The fork branch commit is unavailable.");
+        git_checkout_options checkout = GIT_CHECKOUT_OPTIONS_INIT;
+        checkout.checkout_strategy = GIT_CHECKOUT_SAFE;
+        const int checkoutResult = git_checkout_tree(repo, branchObject, &checkout);
+        git_object_free(branchObject);
+        if (checkoutResult != 0) return fail("The fork branch working files could not be checked out.");
+    }
+    git_remote *remote = nullptr;
+    if (git_remote_create_anonymous(&remote, repo, normalizePath(upstreamPath).c_str()) != 0)
+        return fail("The upstream repository is unavailable.");
+    std::string spec = "+refs/heads/" + upstreamBranch + ":refs/remotes/retrogit-upstream/" + upstreamBranch;
+    char *specText = &spec[0]; git_strarray specs{&specText, 1};
+    git_fetch_options fetch = GIT_FETCH_OPTIONS_INIT;
+    if (git_remote_fetch(remote, &specs, &fetch, "RetroGit upstream rebase") != 0) {
+        git_remote_free(remote); return fail("Could not fetch the latest upstream branch.");
+    }
+    git_remote_free(remote);
+    git_annotated_commit *branch = nullptr, *upstream = nullptr;
+    const std::string upstreamRef = "refs/remotes/retrogit-upstream/" + upstreamBranch;
+    bool ok = git_annotated_commit_from_revspec(&branch, repo, ("refs/heads/" + branchName).c_str()) == 0 &&
+              git_annotated_commit_from_revspec(&upstream, repo, upstreamRef.c_str()) == 0;
+    if (ok) {
+        const git_oid *localId = git_annotated_commit_id(branch);
+        const git_oid *upstreamId = git_annotated_commit_id(upstream);
+        if (git_oid_equal(localId, upstreamId)) {
+            git_annotated_commit_free(branch); git_annotated_commit_free(upstream);
+            git_repository_free(repo); return true;
+        }
+        if (git_graph_descendant_of(repo, upstreamId, localId) == 1) {
+            git_object *object = nullptr;
+            if (git_object_lookup(&object, repo, upstreamId, GIT_OBJECT_COMMIT) != 0) ok = false;
+            git_checkout_options checkout = GIT_CHECKOUT_OPTIONS_INIT;
+            checkout.checkout_strategy = GIT_CHECKOUT_SAFE;
+            if (ok && git_checkout_tree(repo, object, &checkout) != 0) ok = false;
+            git_object_free(object);
+            git_reference *updated = nullptr;
+            if (ok && git_reference_create(&updated, repo, ("refs/heads/" + branchName).c_str(), upstreamId, 1,
+                                            "Fast-forward fork to upstream") != 0) ok = false;
+            git_reference_free(updated);
+            git_annotated_commit_free(branch); git_annotated_commit_free(upstream);
+            if (!ok) return fail("The fork working tree could not be fast-forwarded to upstream.");
+            git_repository_free(repo); return true;
+        }
+    }
+    git_rebase *rebase = nullptr;
+    git_rebase_options options = GIT_REBASE_OPTIONS_INIT;
+    if (ok) ok = git_rebase_init(&rebase, repo, branch, upstream, nullptr, &options) == 0;
+    git_annotated_commit_free(branch); git_annotated_commit_free(upstream);
+    if (!ok) return fail("The fork and upstream history could not be prepared for rebase.");
+    git_rebase_operation *operation = nullptr;
+    while ((ok = git_rebase_next(&operation, rebase)) == 0) {
+        if (git_rebase_commit(nullptr, rebase, nullptr, nullptr, nullptr, nullptr) != 0) { ok = false; break; }
+    }
+    if (ok && git_rebase_finish(rebase, nullptr) != 0) ok = false;
+    if (!ok) {
+        git_rebase_abort(rebase); git_rebase_free(rebase);
+        if (errorMessage) *errorMessage = "Rebase stopped because the upstream changes conflict with your branch.";
+        git_repository_free(repo); return false;
+    }
+    git_rebase_free(rebase); git_repository_free(repo); return true;
 }
 
 bool GitManager::isBranchMerged(const std::string& repoPath, const std::string& sourceBranch, const std::string& targetBranch)

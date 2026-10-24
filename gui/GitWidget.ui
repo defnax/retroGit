@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>658</width>
+    <width>765</width>
     <height>400</height>
    </rect>
   </property>
@@ -99,6 +99,17 @@
        <property name="icon">
         <iconset resource="images.qrc">
          <normaloff>:/images/sync.png</normaloff>:/images/sync.png</iconset>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="mBtnRebase">
+       <property name="text">
+        <string>Rebase on Upstream</string>
+       </property>
+       <property name="icon">
+        <iconset resource="images.qrc">
+         <normaloff>:/images/git-compare.png</normaloff>:/images/git-compare.png</iconset>
        </property>
       </widget>
      </item>

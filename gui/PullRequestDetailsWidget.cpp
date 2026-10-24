@@ -106,6 +106,10 @@ void PullRequestDetailsWidget::loadPRDetails()
             if (pr.mMeta.mMsgId == mMsgId) {
                 mPR = pr;
                 mLoaded = true;
+                if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) {
+                    uint32_t token;
+                    rsGit->setMessageReadStatus(RsGxsGrpMsgIdPair(RsGxsGroupId(mGroupId.toStdString()), pr.mMeta.mMsgId), true);
+                }
                 break;
             }
         }
@@ -358,7 +362,13 @@ void PullRequestDetailsWidget::onMergeClicked()
     RsGitUpdate update;
     update.mMeta.mGroupId = RsGxsGroupId(mGroupId.toStdString());
     update.mMeta.mAuthorId = groups.front().mMeta.mAuthorId;
-    update.mMeta.mMsgName = "Merge PR: " + mPR.mTitle;
+    size_t prNumber = 1;
+    std::vector<RsGitPullRequest> allPullRequests;
+    if (rsGit->getPullRequests(RsGxsGroupId(mGroupId.toStdString()), allPullRequests)) {
+        for (size_t i = 0; i < allPullRequests.size(); ++i)
+            if (allPullRequests[i].mMeta.mMsgId == mPR.mMeta.mMsgId) { prNumber = i + 1; break; }
+    }
+    update.mMeta.mMsgName = "Merge PR #" + std::to_string(prNumber) + ": " + mPR.mTitle;
     const auto snapshot = refs.find(mPR.sourceRef().rfind("refs/", 0) == 0 ? mPR.sourceRef() : "refs/heads/" + mPR.sourceRef());
     if (snapshot == refs.end()) return;
     update.mRefUpdates["refs/heads/" + mPR.mTargetBranch] = snapshot->second;
