@@ -80,6 +80,8 @@ public:
     void logCloneAttempt(const QString &groupId, const QString &repoName, const QString &ownerId, const RsGxsId &ownId, const QString &localPath);
     void logPullAttempt(const QString &groupId, const QString &repoName, const QString &ownerId, const RsGxsId &ownId, const QString &localPath);
     void hashAndPublishPackfile(const QString &groupId, const std::string &packfileData, RsGitUpdate &update);
+    bool publishPullRequestWithPack(RsGitPullRequest &pr, const std::string &pack);
+    bool preparePackAttachment(const QString &groupId, const std::string &pack, RsGxsFile &attachment);
     void refreshGitWidget();
     void refreshCodeWidget();
     void showCommitDetails(const QString &commitHash, const QString &repoPath);

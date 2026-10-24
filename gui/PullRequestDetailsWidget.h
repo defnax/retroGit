@@ -60,6 +60,7 @@ private:
 
     RsGitPullRequest mPR;
     bool mLoaded;
+    bool mReviewReady = false;
 };
 
 #endif // PULLREQUESTDETAILSWIDGET_H

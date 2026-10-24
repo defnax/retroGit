@@ -29,7 +29,7 @@
 #include <QPushButton>
 #include <QFrame>
 
-GitNewPRDialog::GitNewPRDialog(const QStringList& branches, const QString& currentBranch, QWidget *parent)
+GitNewPRDialog::GitNewPRDialog(const QStringList& branches, const QString& currentBranch, QWidget *parent, const QStringList& targetBranches, const QString& sourceName, const QString& targetName)
     : QDialog(parent)
 {
     setWindowTitle(tr("Open a pull request"));
@@ -84,8 +84,13 @@ GitNewPRDialog::GitNewPRDialog(const QStringList& branches, const QString& curre
 
     for (const QString& branch : branches) {
         mSourceCombo->addItem(QIcon(":/images/git-branch.png"), branch);
-        mTargetCombo->addItem(QIcon(":/images/git-branch.png"), branch);
+
     }
+
+    for (const QString& branch : (targetBranches.isEmpty() ? branches : targetBranches))
+        mTargetCombo->addItem(QIcon(":/images/git-branch.png"), branch);
+    if (!sourceName.isEmpty()) formLayout->addRow(tr("Source repository"), new QLabel(sourceName, this));
+    if (!targetName.isEmpty()) formLayout->addRow(tr("Target repository"), new QLabel(targetName, this));
 
     // Set defaults
     int idxSrc = mSourceCombo->findText(currentBranch);
