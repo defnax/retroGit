@@ -562,18 +562,34 @@ bool p3Git::preparePullRequest(const RsGitPullRequest &pr)
 
 bool p3Git::publishPullRequest(uint32_t &token, RsGitPullRequest &pr)
 {
+    std::cerr << "RetroGit PR DEBUG: publish title='" << pr.mTitle << "' target=" << pr.mMeta.mGroupId.toStdString() << " source=" << pr.mSourceGroupId.toStdString() << " commit=" << pr.mSourceCommit << std::endl;
     std::vector<RsGitGroup> sources;
     if (!pr.mSourceCommit.empty() &&
         (pr.mSourceGroupId.isNull() || !getGroups({pr.mSourceGroupId}, sources) || sources.empty() ||
          !IS_GROUP_ADMIN(sources.front().mMeta.mSubscribeFlags) ||
          !rsIdentity || !rsIdentity->isOwnId(pr.mMeta.mAuthorId) ||
-         pr.mMeta.mAuthorId != sources.front().mMeta.mAuthorId)) return false;
+         pr.mMeta.mAuthorId != sources.front().mMeta.mAuthorId)) { std::cerr << "RetroGit PR DEBUG: source identity validation failed" << std::endl; return false; }
     std::vector<RsGitUpdate> updates;
-    if (!getUpdates(pr.mMeta.mGroupId, updates) || updates.empty()) return false;
+    if (!getUpdates(pr.mMeta.mGroupId, updates) || updates.empty()) {
+        // Older repositories may expose their Git history through child
+        // messages while root update metadata is unavailable locally. Use the
+        // latest PR message as the thread parent instead of rejecting a valid PR.
+        std::vector<RsGitPullRequest> existing;
+        if (!getPullRequests(pr.mMeta.mGroupId, existing) || existing.empty()) {
+            std::cerr << "RetroGit PR DEBUG: target has no attachable messages" << std::endl;
+            return false;
+        }
+        pr.mMeta.mParentId = existing.back().mMeta.mMsgId;
+        pr.mMeta.mThreadId = existing.back().mMeta.mThreadId.isNull()
+            ? existing.back().mMeta.mMsgId : existing.back().mMeta.mThreadId;
+        std::cerr << "RetroGit PR DEBUG: using existing PR message as parent" << std::endl;
+    }
+    else {
+        pr.mMeta.mParentId = updates.back().mMeta.mMsgId;
+        pr.mMeta.mThreadId = pr.mMeta.mParentId;
+    }
     // Proposals are author-signed children of a published upstream update.
     // Contributors do not possess the upstream root-message publishing key.
-    pr.mMeta.mParentId = updates.back().mMeta.mMsgId;
-    pr.mMeta.mThreadId = pr.mMeta.mParentId;
     RsGitMsgItem *msgItem = new RsGitMsgItem();
     msgItem->meta = pr.mMeta;
     
@@ -607,6 +623,7 @@ bool p3Git::publishPullRequest(uint32_t &token, RsGitPullRequest &pr)
     msgItem->mFiles = pr.mFiles;
     
     this->publishMsg(token, msgItem);
+    std::cerr << "RetroGit PR DEBUG: publishMsg queued" << std::endl;
     return true;
 }
 
@@ -716,8 +733,11 @@ bool p3Git::getUpdates(const RsGxsGroupId &groupId, std::vector<RsGitUpdate> &up
     std::map<RsGxsGroupId, std::vector<RsGitMsgItem*> > msgItems;
     if (getMsgDataT<RsGitMsgItem>(token, msgItems)) {
         auto &vec = msgItems[groupId];
+        std::cerr << "RetroGit PR DEBUG: target message count=" << vec.size() << std::endl;
         for (auto *gitMsg : vec) {
-            if (gitMsg && gitMsg->mGitMsgType == 1 && gitMsg->meta.mParentId.isNull()) { // UPDATE
+            if (gitMsg) std::cerr << "RetroGit PR DEBUG: target message type=" << gitMsg->mGitMsgType
+                                   << " parent=" << gitMsg->meta.mParentId.toStdString() << std::endl;
+            if (gitMsg && gitMsg->mGitMsgType == 1) { // UPDATE (root or threaded update)
                 RsGitUpdate update;
                 update.mMeta = gitMsg->meta;
                 update.mPackfileData = gitMsg->mPackfileData;

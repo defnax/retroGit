@@ -168,8 +168,16 @@ void PullRequestDetailsWidget::refresh()
 
 void PullRequestDetailsWidget::populateConversationTab()
 {
+    // Recreate the immutable review ref when reopening a merged PR. The target
+    // branch may have moved, but the PR snapshot must remain available.
+    if (rsGit) rsGit->preparePullRequest(mPR);
     // A. Description Comment
     QString authorStr = QString::fromStdString(mPR.mMeta.mAuthorId.toStdString().substr(0, 8));
+    if (rsIdentity && !mPR.mMeta.mAuthorId.isNull()) {
+        RsIdentityDetails identity;
+        if (rsIdentity->getIdDetails(mPR.mMeta.mAuthorId, identity) && !identity.mNickname.empty())
+            authorStr = QString::fromStdString(identity.mNickname);
+    }
     QString dateStr = QDateTime::fromTime_t(mPR.mMeta.mPublishTs).toString("yyyy-MM-dd HH:mm");
     ui->mLblCommentHeader->setText(tr("%1 commented on %2").arg(authorStr).arg(dateStr));
     
@@ -267,6 +275,7 @@ void PullRequestDetailsWidget::populateConversationTab()
 
 void PullRequestDetailsWidget::populateFilesChangedTab()
 {
+    if (rsGit) rsGit->preparePullRequest(mPR);
     ui->mFilesTree->clear();
     std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
     std::vector<GitCommitFileChange> changedFiles;

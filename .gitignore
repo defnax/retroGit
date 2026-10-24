@@ -58,3 +58,6 @@ temp/ui/ui_PullRequestDetailsWidget.h
 
 temp/ForkWorkflowTest.exe
 temp/obj/ForkWorkflowTest.o
+
+temp/AncestryTest.exe
+temp/obj/AncestryTest.o

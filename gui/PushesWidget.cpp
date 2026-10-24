@@ -138,7 +138,8 @@ void PushesWidget::handleGitEvent(const RsGitEvent *e)
 
         if (e->mCloneSuccess) {
             if (status.contains("sync", Qt::CaseInsensitive)) {
-                QMessageBox::information(this, tr("Sync Successful"), tr("Successfully synchronized decentral repository."));
+                // The completed transfer is already shown in the table. Avoid
+                // interrupting the user with a popup for every synchronized pack.
             } else {
                 QMessageBox::information(this, tr("Clone Successful"), tr("Successfully cloned decentral repository."));
             }

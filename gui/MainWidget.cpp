@@ -919,7 +919,9 @@ bool MainWidget::preparePackAttachment(const QString &groupId, const std::string
         rsFiles->ExtraFileHash(tempFilePath.toStdString(), 3600 * 24 * 30, flags);
         
         FileInfo fi;
-        int retries = 200;
+        // Large fork histories can take longer than ten seconds to hash,
+        // especially while the file-transfer service is busy.
+        int retries = 1200;
         bool hashOk = false;
         
         QProgressDialog progress(tr("Hashing packfile..."), tr("Cancel"), 0, retries, this);
@@ -941,7 +943,7 @@ bool MainWidget::preparePackAttachment(const QString &groupId, const std::string
         progress.setValue(retries);
         
         if (!hashOk) {
-            QMessageBox::critical(this, tr("Push Failed"), tr("Hashing the packfile timed out or was canceled. Please try again."));
+            QMessageBox::critical(this, tr("Packfile Hashing Failed"), tr("Hashing the packfile timed out or was canceled. The operation was not published. Please try again."));
             return false;
         }
         
@@ -968,14 +970,17 @@ void MainWidget::hashAndPublishPackfile(const QString &groupId, const std::strin
 
 bool MainWidget::publishPullRequestWithPack(RsGitPullRequest &pr, const std::string &pack)
 {
+    std::cerr << "RetroGit PR DEBUG: pack size=" << pack.size() << std::endl;
     if (pack.size() <= 200000) pr.mPackfileData = pack;
     else {
         RsGxsFile attachment;
-        if (!preparePackAttachment(QString::fromStdString(pr.mMeta.mGroupId.toStdString()), pack, attachment)) return false;
+        if (!preparePackAttachment(QString::fromStdString(pr.mMeta.mGroupId.toStdString()), pack, attachment)) { std::cerr << "RetroGit PR DEBUG: attachment preparation failed" << std::endl; return false; }
         pr.mFiles.push_back(attachment);
     }
     uint32_t token;
-    return rsGit && rsGit->publishPullRequest(token, pr);
+    const bool ok = rsGit && rsGit->publishPullRequest(token, pr);
+    std::cerr << "RetroGit PR DEBUG: publishPullRequest=" << (ok ? "true" : "false") << std::endl;
+    return ok;
 }
 
 void MainWidget::refreshCurrentRepo()

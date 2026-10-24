@@ -198,8 +198,10 @@ void GitWidget::refresh()
         : tr("<b>For Subscribers:</b> Click <b>Clone Repository</b> and choose an empty local folder to download the code."));
 
     if (isAdmin && !groups.empty() && !groups.front().mUpstreamGroupId.isNull()) {
-        ui->mLblOwnerInfo->setText(tr("<b>Fork of %1</b>: Commit and publish changes in your fork, then open Pull Requests to propose them upstream.")
-            .arg(QString::fromStdString(groups.front().mUpstreamGroupId.toStdString()).toHtmlEscaped()));
+        const QString forkName = QString::fromStdString(groups.front().mGroupName).toHtmlEscaped();
+        const QString upstreamId = QString::fromStdString(groups.front().mUpstreamGroupId.toStdString()).toHtmlEscaped();
+        ui->mLblOwnerInfo->setText(tr("<b>Fork: %1</b>: Commit and publish changes in your fork, then open Pull Requests to propose them upstream.").arg(forkName));
+        ui->mLblOwnerInfo->setToolTip(tr("Fork repository: %1\nUpstream repository ID: %2").arg(forkName, upstreamId));
     }
 
     populateCommitLog();
@@ -499,7 +501,7 @@ void GitWidget::finishFork()
         rsGit->publishGitUpdate(token, update);
     } else mMainWidget->hashAndPublishPackfile(id, pack, update);
     mMainWidget->updateDisplay();
-    QMessageBox::information(this, tr("Fork Created"), tr("Your fork is available under My Repositories. Create a branch, commit your changes, then open Pull Requests to propose them to the original repository."));
+    ui->mLblOwnerInfo->setText(tr("<b>Fork created:</b> It is available under My Repositories. Create a branch, commit your changes, then open Pull Requests to propose them upstream."));
 }
 
 void GitWidget::onPullClicked()

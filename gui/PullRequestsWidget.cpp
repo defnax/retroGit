@@ -41,6 +41,7 @@
 #include <QHBoxLayout>
 
 extern RsGit *rsGit;
+extern RsIdentity *rsIdentity;
 
 PullRequestsWidget::PullRequestsWidget(const QString &groupId, MainWidget *mainWidget, QWidget *parent)
     : QWidget(parent)
@@ -138,6 +139,12 @@ void PullRequestsWidget::onNewPRClicked()
         index = labels.indexOf(choice);
     }
     const auto sourceGroup = sources.at(index);
+    if (!rsIdentity || !rsIdentity->isOwnId(sourceGroup.mMeta.mAuthorId)) {
+        QMessageBox::warning(this, tr("Create Pull Request"),
+            tr("The selected fork is owned by %1. Select an identity that owns this fork before creating a Pull Request.")
+                .arg(QString::fromStdString(sourceGroup.mMeta.mAuthorId.toStdString().substr(0, 8))));
+        return;
+    }
     Settings->beginGroup("RetroGit_WorkingDirs");
     const QString localPath = Settings->value(QString::fromStdString(sourceGroup.mMeta.mGroupId.toStdString())).toString();
     Settings->endGroup();
@@ -186,7 +193,7 @@ void PullRequestsWidget::onNewPRClicked()
     if (mMainWidget->publishPullRequestWithPack(pr, pack)) {
         QMessageBox::information(this, tr("Pull Request Queued"), tr("Your pull request was queued for publication to the upstream repository."));
         mMainWidget->showPullRequests(QString::fromStdString(targetId.toStdString()));
-    } else QMessageBox::critical(this, tr("Create Pull Request"), tr("Could not queue the pull request."));
+    } else QMessageBox::critical(this, tr("Create Pull Request"), tr("Could not queue the pull request. Check the RetroGit debug log for 'RetroGit PR DEBUG' messages."));
 }
 
 void PullRequestsWidget::onFilterTextChanged(const QString &text)
@@ -323,14 +330,26 @@ void PullRequestsWidget::populatePRList()
 
         // Column 1: Info (Title & description metadata)
         QString titleStr = QString::fromStdString(pr.mTitle);
+        QString authorName = QString::fromStdString(pr.mMeta.mAuthorId.toStdString().substr(0, 8));
+        if (rsIdentity && !pr.mMeta.mAuthorId.isNull()) {
+            RsIdentityDetails identity;
+            if (rsIdentity->getIdDetails(pr.mMeta.mAuthorId, identity) && !identity.mNickname.empty())
+                authorName = QString::fromStdString(identity.mNickname);
+        }
         QString detailsStr = tr("#%1 opened %2 by %3 from %4 into %5")
             .arg(i + 1)
             .arg(QDateTime::fromTime_t(pr.mMeta.mPublishTs).toString("yyyy-MM-dd HH:mm"))
-            .arg(QString::fromStdString(pr.mMeta.mAuthorId.toStdString().substr(0, 8)))
+            .arg(authorName.toHtmlEscaped())
             .arg(QString::fromStdString(pr.mSourceBranch))
             .arg(QString::fromStdString(pr.mTargetBranch));
 
         QTableWidgetItem *itemInfo = new QTableWidgetItem("  " + titleStr + "\n  " + detailsStr);
+        QFont infoFont = itemInfo->font();
+        infoFont.setBold(true);
+        itemInfo->setFont(infoFont);
+        itemInfo->setToolTip(tr("<b>Pull Request #%1</b><br>Author: <b>%2</b><br>Identity: %3<br><i>Hover the author avatar for the RetroShare profile.</i>")
+            .arg(i + 1).arg(authorName.toHtmlEscaped())
+            .arg(QString::fromStdString(pr.mMeta.mAuthorId.toStdString()).toHtmlEscaped()));
         QFont font = itemInfo->font();
         font.setBold(isOpen);
         itemInfo->setFont(font);
