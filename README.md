@@ -1,6 +1,23 @@
-# RetroShare 0.6 Git Plugin
+# RetroShare Git Plugin
 
-Distributed Git repository sharing over the GXS (Generic eXchange System) network.
+RetroGit is a decentralized Git collaboration plugin for RetroShare.
+
+# Features
+
+- Create and initialize local Git repositories.
+- Clone repositories from RetroShare peers.
+- Publish commits and branches through GXS.
+- Synchronize repository updates without a central server.
+- Fork another user’s repository.
+- Create branches and commit local changes.
+- Rebase a fork onto the upstream repository.
+- Create, review, merge, and close pull requests.
+- View commit history, changed files, and diffs.
+- Download repository packs and update working folders.
+- Show repository, commit, pull-request, and notification status.
+- Display author identities and avatars from RetroShare.
+- Transfer repositories through decentralized GXS tunnels.
+- Optional debug logging for diagnosing synchronization and pull-request issues.
 
 # Dependencies 
 
