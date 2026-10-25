@@ -51,9 +51,6 @@ PullRequestsWidget::PullRequestsWidget(const QString &groupId, MainWidget *mainW
 {
     ui->setupUi(this);
 
-    // Styling Title (GitHub-like)
-    ui->mLblTitle->setStyleSheet("font-size: 18px; font-weight: bold; color: #24292f;");
-
     // New PR button styling (GitHub-like green)
     ui->mBtnNewPR->setStyleSheet("QPushButton { background-color: #2da44e; color: white; border-radius: 6px; padding: 6px 12px; font-weight: bold; border: 1px solid rgba(27, 31, 36, 0.15); }"
                                 "QPushButton:hover { background-color: #2c974b; }"
@@ -79,7 +76,7 @@ PullRequestsWidget::PullRequestsWidget(const QString &groupId, MainWidget *mainW
     ui->mPRTable->setColumnWidth(3, 110); // Proper width for Merge button and status labels
     ui->mPRTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     ui->mPRTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    ui->mPRTable->setStyleSheet("QTableWidget { border: 1px solid #d0d7de; border-radius: 6px; background-color: white; }"
+    ui->mPRTable->setStyleSheet("QTableWidget { border: 1px solid palette(mid); border-radius: 6px; background-color: transparent; color: palette(text); }"
                                 "QTableWidget::item { border-bottom: 1px solid #d0d7de; }");
 
     connect(ui->mBtnNewPR, &QPushButton::clicked, this, &PullRequestsWidget::onNewPRClicked);

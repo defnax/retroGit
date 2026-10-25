@@ -101,6 +101,7 @@ public slots:
 
 protected:
     virtual void showEvent(QShowEvent *event) override;
+    virtual void changeEvent(QEvent *event) override;
 
 private slots:
     void createGroup();
@@ -127,6 +128,7 @@ private:
                                     GroupItemInfo &groupItemInfo);
     void handleEvent_main_thread(std::shared_ptr<const RsEvent> event);
     void processSettings(bool load);
+    void applyRetroGitLightStyles();
 
     QTreeWidgetItem *mActiveGroupsItem;
     int mGroupSet = 0;

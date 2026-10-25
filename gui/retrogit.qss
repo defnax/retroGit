@@ -1,0 +1,53 @@
+QFrame#mRepoSummaryFrame {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 5px;
+}
+
+QFrame#mMergePanel[mergeStatus="open"] {
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background-color: #f6f8fa;
+}
+
+QFrame#mMergePanel[mergeStatus="closed"] {
+    border: 1px solid #ffc1c0;
+    border-radius: 6px;
+    background-color: #ffebe9;
+}
+
+QFrame#mMergePanel[mergeStatus="merged"] {
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background-color: #fbe8ff;
+}
+
+QFrame#commentFrame {
+    border: 1px solid palette(mid);
+    border-radius: 6px;
+    background: palette(base);
+}
+
+QLabel#mLblTitle {
+    color: #24292f;
+    font-size: 20px;
+    font-weight: bold;
+}
+
+QLabel#mLblCommentHeader {
+    background: palette(alternate-base);
+    color: palette(text);
+    border-bottom: 1px solid palette(mid);
+    padding: 8px;
+    font-weight: bold;
+    border-top-left-radius: 5px;
+    border-top-right-radius: 5px;
+}
+
+QTextEdit#mTxtCommentBody {
+    border: none;
+    background: transparent;
+    color: palette(text);
+    padding: 12px;
+    font-size: 14px;
+}

@@ -23,6 +23,7 @@
 #include "MainWidget.h"
 #include "GitBranchDialog.h"
 #include "services/GitManager.h"
+#include "gui/gxs/GxsIdDetails.h"
 #include <QDir>
 #include <QPushButton>
 #include <QMenu>
@@ -33,6 +34,7 @@
 #include <QTreeWidgetItem>
 #include <QApplication>
 #include <QStyle>
+#include <QLabel>
 #include <retroshare/rsinit.h>
 
 extern RsGit *rsGit;
@@ -63,6 +65,13 @@ CodeWidget::CodeWidget(MainWidget *mainWidget, QWidget *parent)
 {
     ui->setupUi(this);
 
+    mRepoAvatarLabel = ui->mRepoAvatarLabel;
+    mRepoAuthorLabel = ui->mRepoAuthorLabel;
+    mRepoMessageLabel = ui->mRepoMessageLabel;
+    mRepoHashLabel = ui->mRepoHashLabel;
+    mRepoDateLabel = ui->mRepoDateLabel;
+    mRepoCommitCountLabel = ui->mRepoCommitCountLabel;
+
     ui->mRepoBrowserList->setContextMenuPolicy(Qt::CustomContextMenu);
     ui->mRepoBrowserList->setHeaderHidden(true);
     connect(ui->mRepoBrowserList, &QTreeWidget::customContextMenuRequested, this, &CodeWidget::onRepoBrowserContextMenu);
@@ -78,8 +87,6 @@ CodeWidget::CodeWidget(MainWidget *mainWidget, QWidget *parent)
     QIcon prIcon(":/images/git-pull-request.png");
     ui->mBtnPullRequests->setIcon(prIcon);
     ui->mBtnPullRequests->setIconSize(QSize(iconSize, iconSize));
-    ui->mBtnPullRequests->setStyleSheet("QPushButton { border: none; background-color: transparent; padding: 4px 8px; font-weight: bold; color: #24292f; }"
-                                       "QPushButton:hover { background-color: #f3f4f6; border-radius: 6px; }");
 
     clear();
 }
@@ -107,6 +114,12 @@ void CodeWidget::clear()
     ui->mTagCountLabel->setText("0 Tags");
     mGroupId.clear();
     mSelectedBranchOrTag.clear();
+    if (mRepoAvatarLabel) mRepoAvatarLabel->clear();
+    if (mRepoAuthorLabel) mRepoAuthorLabel->clear();
+    if (mRepoMessageLabel) mRepoMessageLabel->clear();
+    if (mRepoHashLabel) mRepoHashLabel->clear();
+    if (mRepoDateLabel) mRepoDateLabel->clear();
+    if (mRepoCommitCountLabel) mRepoCommitCountLabel->clear();
 }
 
 void CodeWidget::setGroupId(const QString &groupId)
@@ -124,6 +137,16 @@ void CodeWidget::refresh()
 {
     if (mGroupId.isEmpty()) return;
 
+    // Reset repository summary before loading the newly selected repository.
+    // Otherwise values from the previous repository remain visible when the
+    // new repository has no commits or is still being populated.
+    if (mRepoAvatarLabel) mRepoAvatarLabel->clear();
+    if (mRepoAuthorLabel) mRepoAuthorLabel->clear();
+    if (mRepoMessageLabel) mRepoMessageLabel->clear();
+    if (mRepoHashLabel) mRepoHashLabel->clear();
+    if (mRepoDateLabel) mRepoDateLabel->clear();
+    if (mRepoCommitCountLabel) mRepoCommitCountLabel->clear();
+
     // Check if user is Admin of the repository
     bool isAdmin = false;
     std::list<RsGxsGroupId> groupIds({RsGxsGroupId(mGroupId.toStdString())});
@@ -131,6 +154,8 @@ void CodeWidget::refresh()
     if (rsGit && rsGit->getGroups(groupIds, groups) && !groups.empty()) {
         uint32_t flags = groups[0].mMeta.mSubscribeFlags;
         isAdmin = IS_GROUP_ADMIN(flags);
+        if (mRepoAvatarLabel)
+            mRepoAvatarLabel->setPixmap(GxsIdDetails::makeDefaultIcon(groups[0].mMeta.mAuthorId, GxsIdDetails::SMALL));
     }
 
     QString rawPath = mMainWidget->getLocalPath();
@@ -236,6 +261,21 @@ void CodeWidget::refresh()
     ui->mBranchCombo->blockSignals(false);
 
     // 2. Populate file list for selected branch/tag
+    std::vector<GitCommitInfo> summaryCommits;
+    if (GitManager::getCommitLog(bareRepoPath, summaryCommits, mSelectedBranchOrTag.toStdString()) && !summaryCommits.empty()) {
+        const auto &latest = summaryCommits.front();
+        const QString message = QString::fromStdString(latest.message).toHtmlEscaped();
+        const QString author = QString::fromStdString(latest.author).toHtmlEscaped();
+        const QString hash = QString::fromStdString(latest.hash).toHtmlEscaped();
+        const QString date = QString::fromStdString(latest.date).toHtmlEscaped();
+        mRepoAuthorLabel->setText(author);
+        mRepoMessageLabel->setText(message);
+        mRepoHashLabel->setText(hash);
+        mRepoDateLabel->setText(date);
+        mRepoCommitCountLabel->setText(tr("%1 Commits").arg(summaryCommits.size()));
+    } else {
+        mRepoMessageLabel->setText(tr("No commits available"));
+    }
     populateRepoBrowser(mSelectedBranchOrTag);
 
     if (mMainWidget) {

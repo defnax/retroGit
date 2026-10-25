@@ -82,6 +82,7 @@
 #include <QFileInfo>
 #include <QShortcut>
 #include <QCheckBox>
+#include <QEvent>
 #include <retroshare/rsfiles.h>
 #include <retroshare/rsidentity.h>
 
@@ -94,6 +95,8 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
 {
     (void)notify;
     ui->setupUi(this);
+
+    setProperty("retroLight", palette().base().color().lightness() >= 128);
 
     /* Set initial size the splitter */
     ui->splitter->setStretchFactor(0, 0);
@@ -125,6 +128,8 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
     mGitWidget = new GitWidget(this, ui->rightPaneTabWidget);
     mCodeWidget = new CodeWidget(this, ui->rightPaneTabWidget);
     mPushesWidget = new PushesWidget(this, ui->rightPaneTabWidget);
+
+    applyRetroGitLightStyles();
     
     ui->rightPaneTabWidget->addTab(mGitWidget, QIcon(":/images/git.png"), tr("Working Directory"));
     ui->rightPaneTabWidget->addTab(mCodeWidget, QIcon(":/images/code-16_.png"), tr("Code"));
@@ -241,6 +246,28 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
     }
     
     mFontSizeHandler.registerFontSize(ui->treeWidget->treeWidget(), 1.2f);
+}
+
+void MainWidget::changeEvent(QEvent *event)
+{
+    MainPage::changeEvent(event);
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange)
+        applyRetroGitLightStyles();
+}
+
+void MainWidget::applyRetroGitLightStyles()
+{
+    const bool light = palette().base().color().lightness() >= 128;
+    setProperty("retroLight", light);
+    QWidget *summaryFrame = mCodeWidget ? mCodeWidget->findChild<QWidget*>("mRepoSummaryFrame") : nullptr;
+    if (!summaryFrame) return;
+    if (!light) {
+        summaryFrame->setStyleSheet(QString());
+        return;
+    }
+    QFile styleFile(":/retrogit.qss");
+    if (styleFile.open(QIODevice::ReadOnly | QIODevice::Text))
+        summaryFrame->setStyleSheet(QString::fromUtf8(styleFile.readAll()));
 }
 
 MainWidget::~MainWidget()

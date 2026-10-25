@@ -37,6 +37,7 @@
 #include <QApplication>
 #include <QStyle>
 #include <QScrollBar>
+#include <QFile>
 #include <QHBoxLayout>
 #include <retroshare/rsinit.h>
 
@@ -54,18 +55,24 @@ PullRequestDetailsWidget::PullRequestDetailsWidget(const QString &groupId, const
 {
     ui->setupUi(this);
 
+    if (QApplication::palette().base().color().lightness() >= 128) {
+        QFile styleFile(":/retrogit.qss");
+        if (styleFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QString styleSheet = QString::fromUtf8(styleFile.readAll());
+            ui->mMergePanel->setStyleSheet(styleSheet);
+            ui->commentFrame->setStyleSheet(styleSheet);
+            ui->mLblTitle->setStyleSheet(styleSheet);
+        }
+    }
+
     // Set tab icons
     ui->mPRTabs->setTabIcon(0, QIcon(":/images/comment-discussion-16_.png"));
     ui->mPRTabs->setTabIcon(1, QIcon(":/images/commit-24_.png"));
     ui->mPRTabs->setTabIcon(2, QIcon(":/images/file-diff-24_.png"));
 
-    // Styling Title & Status Badge (GitHub-like)
-    ui->mLblTitle->setStyleSheet("font-size: 20px; font-weight: bold; color: #24292f;");
-    
-    // Boxed comment styling
-    ui->commentFrame->setStyleSheet("QFrame#commentFrame { border: 1px solid #d0d7de; border-radius: 6px; background-color: white; }");
-    ui->mLblCommentHeader->setStyleSheet("QLabel#mLblCommentHeader { background-color: #f6f8fa; border-bottom: 1px solid #d0d7de; padding: 8px; font-weight: bold; color: #57606a; border-top-left-radius: 5px; border-top-right-radius: 5px; }");
-    ui->mTxtCommentBody->setStyleSheet("QTextEdit#mTxtCommentBody { border: none; background-color: transparent; padding: 12px; font-size: 14px; color: #24292f; }");
+    // Styling Title & Status Badge
+    //ui->mLblTitle->setStyleSheet("font-size: 20px; font-weight: bold; color: palette(text);");
+
     // ScrollArea styling
     ui->scrollArea->setStyleSheet("QScrollArea { background-color: transparent; }");
 
@@ -237,7 +244,9 @@ void PullRequestDetailsWidget::populateConversationTab()
 
     int badgeSize = 24;
     if (isOpen) {
-        ui->mMergePanel->setStyleSheet("QFrame#mMergePanel { border: 1px solid #d0d7de; border-radius: 6px; background-color: #f6f8fa; }");
+        ui->mMergePanel->setProperty("mergeStatus", "open");
+        ui->mMergePanel->style()->unpolish(ui->mMergePanel);
+        ui->mMergePanel->style()->polish(ui->mMergePanel);
         ui->mLblMergeIcon->setPixmap(QIcon(":/images/git-pull-request-green.png").pixmap(badgeSize, badgeSize));
         
         if (isAdmin) {
@@ -262,11 +271,15 @@ void PullRequestDetailsWidget::populateConversationTab()
     } else {
         ui->mBtnMerge->setVisible(false);
         if (mPR.mStatus == 1) {
-            ui->mMergePanel->setStyleSheet("QFrame#mMergePanel { border: 1px solid #ffc1c0; border-radius: 6px; background-color: #ffebe9; }");
+            ui->mMergePanel->setProperty("mergeStatus", "closed");
+            ui->mMergePanel->style()->unpolish(ui->mMergePanel);
+            ui->mMergePanel->style()->polish(ui->mMergePanel);
             ui->mLblMergeIcon->setPixmap(QIcon(":/images/git-pull-request-closed.png").pixmap(badgeSize, badgeSize));
             ui->mLblMergeStatus->setText(tr("<span style='color: #cf222e; font-weight: bold;'>Pull request successfully closed.</span><br>Changes were not merged."));
         } else {
-            ui->mMergePanel->setStyleSheet("QFrame#mMergePanel { border: 1px solid #d0d7de; border-radius: 6px; background-color: #fbe8ff; }");
+            ui->mMergePanel->setProperty("mergeStatus", "merged");
+            ui->mMergePanel->style()->unpolish(ui->mMergePanel);
+            ui->mMergePanel->style()->polish(ui->mMergePanel);
             ui->mLblMergeIcon->setPixmap(QIcon(":/images/git-merge-pink.png").pixmap(badgeSize, badgeSize));
             ui->mLblMergeStatus->setText(tr("<span style='color: #8250df; font-weight: bold;'>Pull request successfully merged.</span><br>Changes are now integrated into the target branch."));
         }

@@ -30,6 +30,7 @@ class CodeWidget;
 }
 
 class MainWidget;
+class QLabel;
 
 class CodeWidget : public QWidget
 {
@@ -60,6 +61,12 @@ private:
     MainWidget *mMainWidget;
     QString mGroupId;
     QString mSelectedBranchOrTag;
+    QLabel *mRepoAvatarLabel = nullptr;
+    QLabel *mRepoAuthorLabel = nullptr;
+    QLabel *mRepoMessageLabel = nullptr;
+    QLabel *mRepoHashLabel = nullptr;
+    QLabel *mRepoDateLabel = nullptr;
+    QLabel *mRepoCommitCountLabel = nullptr;
 };
 
 #endif // CODEWIDGET_H

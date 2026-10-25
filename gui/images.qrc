@@ -26,5 +26,6 @@
     <file>images/file-added-16_.png</file>
     <file>images/sync.png</file>
     <file>images/repo-push.png</file>
+    <file>retrogit.qss</file>
   </qresource>
 </RCC>
