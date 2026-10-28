@@ -984,6 +984,16 @@ bool p3Git::requestOfflineClone(const RsGxsGroupId &groupId, const std::string &
     }
 }
 
+bool p3Git::isCloneInProgress(const RsGxsGroupId &groupId)
+{
+    RS_STACK_MUTEX(mRetroGitMtx);
+    for (const auto &clone : mPendingClones)
+        if (clone.second.groupId == groupId) return true;
+    for (const auto &clone : mPendingOfflineClones)
+        if (clone.groupId == groupId) return true;
+    return false;
+}
+
 bool p3Git::requestOfflinePull(const RsGxsGroupId &groupId, const std::string &localPath)
 {
     std::string barePath = GitManager::getBareRepoPath(groupId.toStdString());

@@ -119,6 +119,9 @@ public:
     virtual bool requestOfflineClone(const RsGxsGroupId &groupId, const std::string &localPath) = 0;
     virtual bool requestOfflinePull(const RsGxsGroupId &groupId, const std::string &localPath) = 0;
 
+    /** Return true while a clone for this repository is still transferring or being written. */
+    virtual bool isCloneInProgress(const RsGxsGroupId &groupId) = 0;
+
     /**
     * @brief Create a new RetroGit group/repository.
     * @param[out] token A token to track the progress of the creation.

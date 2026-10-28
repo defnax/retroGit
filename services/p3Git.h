@@ -94,6 +94,7 @@ public:
 
     virtual bool requestOfflineClone(const RsGxsGroupId &groupId, const std::string &localPath) override;
     virtual bool requestOfflinePull(const RsGxsGroupId &groupId, const std::string &localPath) override;
+    virtual bool isCloneInProgress(const RsGxsGroupId &groupId) override;
 
     virtual bool getGitStatistics(GxsServiceStatistic &stats) override;
 

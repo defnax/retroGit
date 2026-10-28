@@ -176,12 +176,19 @@ void GitWidget::refresh()
     ui->mBtnInitialize->setVisible(isAdmin && !isCloned);
     ui->mBtnInitialize->setEnabled(isAdmin && !isCloned);
     ui->mBtnClone->setVisible(!isAdmin && !isCloned);
+    ui->mBtnClone->setText(tr("Clone Repository"));
+    ui->mBtnClone->setToolTip(tr("Download this repository to a local folder."));
     ui->mBtnPull->setEnabled(isCloned);
     ui->mBtnPull->setText(isAdmin ? tr("Update Working Folder") : tr("Sync / Pull"));
     ui->mBtnPull->setToolTip(isAdmin
         ? tr("Apply published changes from RetroGit's local cache to your working folder.")
         : tr("Download missing repository data and update your working folder."));
-    if (!isSubscribed) {
+    const bool cloneInProgress = rsGit && rsGit->isCloneInProgress(RsGxsGroupId(mGroupId.toStdString()));
+    if (cloneInProgress) {
+        ui->mBtnClone->setEnabled(false);
+        ui->mBtnClone->setText(tr("Cloning..."));
+        ui->mBtnClone->setToolTip(tr("A repository clone is already in progress. Please wait for it to finish."));
+    } else if (!isSubscribed) {
         ui->mBtnClone->setEnabled(false);
     } else {
         ui->mBtnClone->setEnabled(!isAdmin && !isCloned);
