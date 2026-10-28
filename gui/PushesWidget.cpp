@@ -24,6 +24,7 @@
 #include "services/GitManager.h"
 #include <QTimer>
 #include <QDateTime>
+#include <QLocale>
 #include <QHeaderView>
 #include <QMenu>
 #include <QMessageBox>
@@ -400,7 +401,9 @@ void PushesWidget::populatePackfiles()
 #if QT_VERSION >= QT_VERSION_CHECK(5, 8, 0)
         QString dateStr = QLocale().toString(QDateTime::fromSecsSinceEpoch(update.mMeta.mPublishTs), QLocale::ShortFormat);
 #else
-        QString dateStr = QDateTime::fromTime_t(update.mMeta.mPublishTs).toString(Qt::SystemLocaleShortDate);
+        QString dateStr = QLocale::system().toString(
+            QDateTime::fromSecsSinceEpoch(static_cast<qint64>(update.mMeta.mPublishTs)),
+            QLocale::ShortFormat);
 #endif
         QTableWidgetItem *itemDate = new QTableWidgetItem(dateStr);
 

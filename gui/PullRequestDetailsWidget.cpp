@@ -185,7 +185,7 @@ void PullRequestDetailsWidget::populateConversationTab()
         if (rsIdentity->getIdDetails(mPR.mMeta.mAuthorId, identity) && !identity.mNickname.empty())
             authorStr = QString::fromStdString(identity.mNickname);
     }
-    QString dateStr = QDateTime::fromTime_t(mPR.mMeta.mPublishTs).toString("yyyy-MM-dd HH:mm");
+    QString dateStr = QDateTime::fromSecsSinceEpoch(static_cast<qint64>(mPR.mMeta.mPublishTs)).toString("yyyy-MM-dd HH:mm");
     ui->mLblCommentHeader->setText(tr("%1 commented on %2").arg(authorStr).arg(dateStr));
     
     QString desc = QString::fromStdString(mPR.mDescription);

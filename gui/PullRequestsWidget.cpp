@@ -335,7 +335,7 @@ void PullRequestsWidget::populatePRList()
         }
         QString detailsStr = tr("#%1 opened %2 by %3 from %4 into %5")
             .arg(i + 1)
-            .arg(QDateTime::fromTime_t(pr.mMeta.mPublishTs).toString("yyyy-MM-dd HH:mm"))
+            .arg(QDateTime::fromSecsSinceEpoch(static_cast<qint64>(pr.mMeta.mPublishTs)).toString("yyyy-MM-dd HH:mm"))
             .arg(authorName.toHtmlEscaped())
             .arg(QString::fromStdString(pr.mSourceBranch))
             .arg(QString::fromStdString(pr.mTargetBranch));
