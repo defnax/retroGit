@@ -65,6 +65,8 @@ private slots:
     void pollWorkingTree();
 
 private:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+    bool mNeedsSubscription = false;
     void finishFork();
     RsGitGroup mPendingFork;
     QString mPendingForkPath;

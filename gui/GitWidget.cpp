@@ -47,6 +47,8 @@
 #include <QTimer>
 #include <QPointer>
 #include <QApplication>
+#include <QPainter>
+#include <QEvent>
 #include <iostream>
 #include <set>
 #include "util/qtthreadsutils.h"
@@ -76,6 +78,7 @@ GitWidget::GitWidget(MainWidget *mainWidget, QWidget *parent)
     , mMainWidget(mainWidget)
 {
     ui->setupUi(this);
+    ui->mCommitTable->viewport()->installEventFilter(this);
 
     // Configure Commit Table
     ui->mCommitTable->setColumnCount(6);
@@ -106,6 +109,7 @@ GitWidget::GitWidget(MainWidget *mainWidget, QWidget *parent)
 
 GitWidget::~GitWidget()
 {
+    ui->mCommitTable->viewport()->removeEventFilter(this);
     delete ui;
 }
 
@@ -124,6 +128,10 @@ void GitWidget::clear()
     ui->mBtnRebase->setEnabled(false);
     ui->mLblOwnerInfo->setVisible(false);
     ui->mLblSubscriberInfo->setVisible(false);
+    mNeedsSubscription = false;
+    ui->mCommitTable->viewport()->update();
+    ui->lblLog->show();
+    ui->mCommitTable->show();
     ui->mCommitTable->setRowCount(0);
     mGroupId.clear();
 
@@ -168,6 +176,13 @@ void GitWidget::refresh()
         isSubscribed = IS_GROUP_SUBSCRIBED(flags);
     }
 
+    const bool needsSubscription = !groups.empty() && !isAdmin && !isSubscribed;
+    if (mNeedsSubscription != needsSubscription) {
+        mNeedsSubscription = needsSubscription;
+        mLastGroupId.clear(); // Rebuild the commit rows after subscribing.
+        ui->mCommitTable->viewport()->update();
+    }
+
     if (hasPath) {
         QString cleanPath = QDir::cleanPath(path);
         pathExists = QDir(cleanPath).exists();
@@ -204,6 +219,7 @@ void GitWidget::refresh()
         ? tr("Apply published changes from RetroGit's local cache to your working folder.")
         : tr("Download missing repository data and update your working folder."));
     const bool cloneInProgress = rsGit && rsGit->isCloneInProgress(RsGxsGroupId(mGroupId.toStdString()));
+    ui->mBtnClone->setProperty("cloneInProgress", cloneInProgress);
     if (cloneInProgress) {
         ui->mBtnClone->setEnabled(false);
         ui->mBtnClone->setText(tr("Cloning..."));
@@ -231,7 +247,10 @@ void GitWidget::refresh()
         ui->mLblOwnerInfo->setToolTip(tr("Fork repository: %1\nUpstream repository ID: %2").arg(forkName, upstreamId));
     }
 
-    populateCommitLog(localChangesKnown ? &localChanges : nullptr);
+    if (mNeedsSubscription)
+        ui->mCommitTable->setRowCount(0);
+    else
+        populateCommitLog(localChangesKnown ? &localChanges : nullptr);
 
     if (ui->mCommitTable->rowCount() == 0) {
         ui->mBtnPush->setText(tr("Push & Publish"));
@@ -240,8 +259,31 @@ void GitWidget::refresh()
     }
 }
 
+bool GitWidget::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == ui->mCommitTable->viewport() &&
+        event->type() == QEvent::Paint && mNeedsSubscription) {
+        QWidget *viewport = ui->mCommitTable->viewport();
+        QPainter painter(viewport);
+        painter.fillRect(viewport->rect(), viewport->palette().base());
+        painter.setPen(viewport->palette().color(QPalette::Text));
+        painter.drawText(viewport->rect().adjusted(20, 20, -20, -20),
+                        Qt::AlignCenter | Qt::TextWordWrap,
+                        tr("Subscribe to this repository to clone its code and receive updates.\n"
+                           "Right-click the repository in the list and choose Subscribe."));
+        return true;
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
 void GitWidget::pollWorkingTree()
 {
+    // Transfers can change state before a working tree exists or changes.
+    if (isVisible() && !mGroupId.isEmpty() && rsGit) {
+        const bool cloning = rsGit->isCloneInProgress(RsGxsGroupId(mGroupId.toStdString()));
+        if (cloning != ui->mBtnClone->property("cloneInProgress").toBool())
+            refresh();
+    }
     if (mPollInFlight || !isVisible() || mGroupId.isEmpty() || mLocalPath.isEmpty()) return;
     // Do not rebuild the table under an open dialog or menu.
     if (QApplication::activeModalWidget() || QApplication::activePopupWidget()) return;
@@ -400,6 +442,10 @@ void GitWidget::onInitializeClicked()
 void GitWidget::onCloneClicked()
 {
     if (mGroupId.isEmpty()) return;
+    if (rsGit && rsGit->isCloneInProgress(RsGxsGroupId(mGroupId.toStdString()))) {
+        refresh();
+        return;
+    }
 
     RsGxsId creatorId;
     std::list<RsGxsGroupId> groupIds({RsGxsGroupId(mGroupId.toStdString())});
@@ -429,6 +475,7 @@ void GitWidget::onCloneClicked()
     }
 
     mMainWidget->logCloneAttempt(mGroupId, repoName, QString::fromStdString(creatorId.toStdString()), ownId, localPath);
+    refresh();
 }
 
 void GitWidget::onForkClicked()

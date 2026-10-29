@@ -149,6 +149,7 @@ private:
     };
 
     struct MsgCache {
+        std::map<RsGxsMessageId, std::vector<RsGxsMessageId>> unreadPRStatuses;
         std::vector<RsGitUpdate> updates;
         std::vector<RsGitPullRequest> pullRequests;
     };

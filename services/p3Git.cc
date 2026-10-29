@@ -420,6 +420,8 @@ bool p3Git::loadMessages(const RsGxsGroupId &groupId, MsgCache &out, bool withPa
         auto *proposal = proposalIt->second;
         const bool authorized = (!owner.isNull() && status->meta.mAuthorId == owner) ||
             (status->mStatus == 1 && status->meta.mAuthorId == proposal->meta.mAuthorId);
+        if (authorized && (status->meta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD))
+            out.unreadPRStatuses[proposal->meta.mMsgId].push_back(status->meta.mMsgId);
         if (authorized && status->meta.mPublishTs >= statusTimes[proposal->meta.mMsgId]) {
             statusUpdates[proposal->meta.mMsgId] = status->mStatus;
             statusTimes[proposal->meta.mMsgId] = status->meta.mPublishTs;
@@ -440,6 +442,9 @@ bool p3Git::loadMessages(const RsGxsGroupId &groupId, MsgCache &out, bool withPa
         } else if (gitMsg->mGitMsgType == 2) {
             RsGitPullRequest pr;
             pr.mMeta = gitMsg->meta;
+            // Present a proposal and its authenticated status replies as one unread item.
+            if (out.unreadPRStatuses.count(pr.mMeta.mMsgId))
+                pr.mMeta.mMsgStatus |= GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD;
             pr.mTitle = gitMsg->mTitle;
             pr.mDescription = gitMsg->mDescription;
             pr.mTargetBranch = gitMsg->mTargetBranch;
@@ -1091,6 +1096,20 @@ bool p3Git::subscribe(const RsGxsGroupId &groupId, bool subscribe_flag)
 
 void p3Git::setMsgReadImpl(uint32_t &token, const RsGxsGrpMsgIdPair &msgId, bool read)
 {
+    if (read) {
+        MsgCache cache;
+        if (cachedMessages(msgId.first, cache)) {
+            auto statuses = cache.unreadPRStatuses.find(msgId.second);
+            if (statuses != cache.unreadPRStatuses.end()) {
+                for (const auto &statusId : statuses->second) {
+                    uint32_t statusToken = 0;
+                    setMsgStatusFlags(statusToken, RsGxsGrpMsgIdPair(msgId.first, statusId), 0,
+                        GXS_SERV::GXS_MSG_STATUS_GUI_NEW | GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD);
+                    trackToken(statusToken);
+                }
+            }
+        }
+    }
     /* Always remove status unprocessed */
     uint32_t mask = GXS_SERV::GXS_MSG_STATUS_GUI_NEW | GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD;
     uint32_t status = GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD;

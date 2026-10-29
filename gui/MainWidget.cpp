@@ -799,6 +799,11 @@ void MainWidget::groupListCustomPopupMenu(QPoint /*point*/)
                 }
             }
         }
+        std::vector<RsGitPullRequest> prs;
+        if (rsGit && rsGit->getPullRequests(RsGxsGroupId(groupId.toStdString()), prs)) {
+            for (const auto &pr : prs)
+                if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) ++unreadCount;
+        }
         if (unreadCount > 0) {
             contextMnu.addSeparator();
             action = contextMnu.addAction(QIcon(), tr("Mark Repository as Read"), this, SLOT(markRepositoryAsRead()));

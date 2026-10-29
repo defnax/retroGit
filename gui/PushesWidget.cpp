@@ -31,6 +31,9 @@
 #include <QPushButton>
 #include <QProgressBar>
 #include <QDir>
+#include <QDesktopServices>
+#include <QUrl>
+#include <retroshare/rsinit.h>
 #include "util/misc.h"
 #include <iostream>
 
@@ -44,6 +47,19 @@ PushesWidget::PushesWidget(MainWidget *mainWidget, QWidget *parent)
     , mMainWidget(mainWidget)
 {
     ui->setupUi(this);
+    ui->tempButton->setToolTip(tr("Open the internal RetroGit repositories folder (retrogit_repos)."));
+    connect(ui->tempButton, &QPushButton::clicked, this, [this]() {
+        const QString path = QDir(QString::fromStdString(RsAccounts::AccountDirectory()))
+                                 .absoluteFilePath("retrogit_repos");
+        if (!QDir().mkpath(path)) {
+            QMessageBox::warning(this, tr("Open Repository Folder"),
+                                 tr("Could not create the repository folder:\n%1").arg(path));
+            return;
+        }
+        if (!QDesktopServices::openUrl(QUrl::fromLocalFile(path)))
+            QMessageBox::warning(this, tr("Open Repository Folder"),
+                                 tr("Could not open the repository folder:\n%1").arg(path));
+    });
 
     // Setup Packfiles Table
     ui->mPackfilesTable->setColumnCount(6);

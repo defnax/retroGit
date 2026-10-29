@@ -356,7 +356,7 @@ void PullRequestsWidget::populatePRList()
             .arg(i + 1).arg(authorName.toHtmlEscaped())
             .arg(QString::fromStdString(pr.mMeta.mAuthorId.toStdString()).toHtmlEscaped()));
         QFont font = itemInfo->font();
-        font.setBold(isOpen);
+        font.setBold(pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD);
         itemInfo->setFont(font);
         ui->mPRTable->setItem(i, 1, itemInfo);
 

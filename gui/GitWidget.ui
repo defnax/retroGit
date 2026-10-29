@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>765</width>
+    <width>785</width>
     <height>400</height>
    </rect>
   </property>
@@ -120,7 +120,7 @@
        </property>
        <property name="icon">
         <iconset resource="images.qrc">
-         <normaloff>:/images/git-fork.png</normaloff>:/images/git-fork.png</iconset>
+         <normaloff>:/images/Git-fork.png</normaloff>:/images/Git-fork.png</iconset>
        </property>
       </widget>
      </item>

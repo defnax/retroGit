@@ -85,10 +85,20 @@ void GitUserNotify::startUpdate()
         unsigned int newCount = 0;
         if (rsGit)
         {
-            GxsServiceStatistic stats;
-            if (rsGit->getGitStatistics(stats))
-            {
-                newCount = stats.mNumThreadMsgsUnread + stats.mNumChildMsgsUnread;
+            // Count the same visible items as the repository tree. Status replies
+            // are represented by their parent PR, not separate hidden notifications.
+            std::vector<RsGitGroup> groups;
+            if (rsGit->getGroups({}, groups)) {
+                for (const auto &group : groups) {
+                    std::vector<RsGitUpdate> updates;
+                    std::vector<RsGitPullRequest> prs;
+                    rsGit->getUpdates(group.mMeta.mGroupId, updates);
+                    rsGit->getPullRequests(group.mMeta.mGroupId, prs);
+                    for (const auto &update : updates)
+                        if (update.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) ++newCount;
+                    for (const auto &pr : prs)
+                        if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) ++newCount;
+                }
             }
         }
 
