@@ -178,13 +178,34 @@ bool isPublishableRef(const std::string& name)
 }
 
 // Feed a pack into the repository's object database.
-bool indexPack(git_repository *repo, const std::function<int(git_indexer*, git_indexer_progress*)>& feed)
+struct IndexerPayload {
+    const GitManager::ProgressFn *progress;
+};
+
+int indexerProgress(const git_indexer_progress *stats, void *payload)
+{
+    const GitManager::ProgressFn &progress = *static_cast<IndexerPayload*>(payload)->progress;
+    const bool resolving = stats->total_deltas > 0 && stats->received_objects == stats->total_objects;
+    const bool keepGoing = resolving
+        ? progress("Resolving deltas", stats->indexed_deltas, stats->total_deltas)
+        : progress("Importing objects", stats->received_objects, stats->total_objects);
+    return keepGoing ? 0 : GIT_EUSER; // non-zero cancels
+}
+
+bool indexPack(git_repository *repo, const std::function<int(git_indexer*, git_indexer_progress*)>& feed,
+               const GitManager::ProgressFn &progress = GitManager::ProgressFn())
 {
     const std::string packDir = std::string(git_repository_path(repo)) + "objects/pack";
     std::error_code ec;
     fs::create_directories(fs::u8path(packDir), ec); // git_indexer_new fails without it
     git_indexer *idx = nullptr;
-    int error = git_indexer_new(&idx, packDir.c_str(), 0, NULL, NULL);
+    IndexerPayload payload{&progress};
+    git_indexer_options options = GIT_INDEXER_OPTIONS_INIT;
+    if (progress) {
+        options.progress_cb = indexerProgress;
+        options.progress_cb_payload = &payload;
+    }
+    int error = git_indexer_new(&idx, packDir.c_str(), 0, NULL, &options);
     if (error == 0) {
         git_indexer_progress stats;
         memset(&stats, 0, sizeof(stats));
@@ -192,7 +213,7 @@ bool indexPack(git_repository *repo, const std::function<int(git_indexer*, git_i
         if (error == 0) error = git_indexer_commit(idx, &stats);
         git_indexer_free(idx);
     }
-    if (error < 0) {
+    if (error < 0 && error != GIT_EUSER) {
         const git_error *e = git_error_last();
         std::cerr << "Error indexing packfile: " << (e ? e->message : "Unknown") << std::endl;
     }
@@ -349,7 +370,8 @@ bool GitManager::applyRefUpdates(const std::string& repoPath, const std::map<std
     return ok;
 }
 
-bool GitManager::unpackPackfileFromFile(const std::string& repoPath, const std::string& packfilePath, const std::map<std::string, std::string>& refUpdates)
+bool GitManager::unpackPackfileFromFile(const std::string& repoPath, const std::string& packfilePath,
+                                        const std::map<std::string, std::string>& refUpdates, const ProgressFn& progress)
 {
     std::ifstream file(fs::u8path(packfilePath), std::ios::binary);
     if (!file) {
@@ -359,7 +381,11 @@ bool GitManager::unpackPackfileFromFile(const std::string& repoPath, const std::
     git_repository *repo = openOrInitRepository(normalizePath(repoPath));
     if (!repo) return false;
     // Stream the file in blocks instead of loading the whole pack into memory.
-    bool ok = indexPack(repo, [&](git_indexer *idx, git_indexer_progress *stats) {
+    // An empty file is an empty pack: every object was published before.
+    file.seekg(0, std::ios::end);
+    const bool empty = file.tellg() <= 0;
+    file.seekg(0, std::ios::beg);
+    bool ok = empty || indexPack(repo, [&](git_indexer *idx, git_indexer_progress *stats) {
         std::vector<char> buffer(1024 * 1024);
         while (file) {
             file.read(buffer.data(), buffer.size());
@@ -370,26 +396,50 @@ bool GitManager::unpackPackfileFromFile(const std::string& repoPath, const std::
             }
         }
         return file.bad() ? -1 : 0;
-    });
+    }, progress);
+    if (ok && progress && !progress("Checking history", 0, 0)) ok = false;
     if (ok) ok = applyRefs(repo, refUpdates);
     git_repository_free(repo);
     return ok;
 }
 
+typedef std::function<bool(const void *data, size_t size)> PackSink;
+
+struct PackPayload {
+    const PackSink *sink;
+    const GitManager::ProgressFn *progress;
+    uint32_t objects;
+    uint32_t written;
+};
+
 static int packbuilder_callback(void *buf, size_t size, void *payload) {
-    std::string *outStr = static_cast<std::string*>(payload);
-    outStr->append(static_cast<const char*>(buf), size);
+    PackPayload *p = static_cast<PackPayload*>(payload);
+    if (!(*p->sink)(buf, size)) return -1;
+    // Called once per object (plus header/trailer).
+    if (*p->progress && (++p->written % 256) == 0 &&
+        !(*p->progress)("Writing pack", std::min(p->written, p->objects), p->objects)) return GIT_EUSER;
     return 0;
 }
 
-static bool buildObjectPackOnce(git_repository *repo, const std::map<std::string, std::string>& refs,
-                                const std::set<std::string>& known, std::string& data)
+static int packbuilder_progress(int stage, uint32_t current, uint32_t total, void *payload)
 {
-    data.clear();
+    const GitManager::ProgressFn &progress = *static_cast<PackPayload*>(payload)->progress;
+    const char *label = stage == GIT_PACKBUILDER_ADDING_OBJECTS ? "Counting objects" : "Compressing objects";
+    return progress(label, current, total) ? 0 : GIT_EUSER;
+}
+
+static bool buildObjectPackOnce(git_repository *repo, const std::map<std::string, std::string>& refs,
+                                const std::set<std::string>& known, const PackSink& sink,
+                                const GitManager::ProgressFn& progress, uint32_t *objectCount)
+{
     git_packbuilder *builder = nullptr;
     git_revwalk *walk = nullptr;
     if (git_packbuilder_new(&builder, repo) != 0) return false;
     if (git_revwalk_new(&walk, repo) != 0) { git_packbuilder_free(builder); return false; }
+    // Delta compression is by far the slowest step: use every CPU core.
+    git_packbuilder_set_threads(builder, 0);
+    PackPayload payload{&sink, &progress, 0, 0};
+    if (progress) git_packbuilder_set_callbacks(builder, packbuilder_progress, &payload);
     bool ok = true, pushed = false;
     for (const auto& ref : refs) {
         git_oid cur;
@@ -430,21 +480,100 @@ static bool buildObjectPackOnce(git_repository *repo, const std::map<std::string
         git_object_free(obj);
     }
     if (ok && pushed) ok = git_packbuilder_insert_walk(builder, walk) == 0;
-    if (ok && git_packbuilder_object_count(builder) > 0)
-        ok = git_packbuilder_foreach(builder, packbuilder_callback, &data) == 0;
+    payload.objects = static_cast<uint32_t>(git_packbuilder_object_count(builder));
+    if (objectCount) *objectCount = payload.objects;
+    if (ok && payload.objects > 0)
+        ok = git_packbuilder_foreach(builder, packbuilder_callback, &payload) == 0;
     git_revwalk_free(walk);
     git_packbuilder_free(builder);
-    if (!ok) data.clear();
     return ok;
 }
 
+// reset() is called before each attempt so a failed attempt leaves no output.
 static bool buildObjectPack(git_repository *repo, const std::map<std::string, std::string>& refs,
-                            const std::set<std::string>& known, std::string& data)
+                            const std::set<std::string>& known, const PackSink& sink,
+                            const std::function<void()>& reset,
+                            const GitManager::ProgressFn& progress = GitManager::ProgressFn(),
+                            bool *canceled = nullptr)
 {
-    if (buildObjectPackOnce(repo, refs, known, data)) return true;
+    bool userCanceled = false;
+    GitManager::ProgressFn tracked;
+    if (progress) tracked = [&](const char *stage, uint64_t current, uint64_t total) {
+        if (!progress(stage, current, total)) userCanceled = true;
+        return !userCanceled;
+    };
+    reset();
+    bool ok = buildObjectPackOnce(repo, refs, known, sink, tracked, nullptr);
     // A baseline whose history is incomplete locally makes the walk fail;
     // fall back to a self-contained pack instead of failing the transfer.
-    return !known.empty() && buildObjectPackOnce(repo, refs, {}, data);
+    if (!ok && !userCanceled && !known.empty()) {
+        reset();
+        ok = buildObjectPackOnce(repo, refs, {}, sink, tracked, nullptr);
+    }
+    if (!ok) reset();
+    if (canceled) *canceled = userCanceled;
+    return ok;
+}
+
+static std::map<std::string, std::string> publishableRefsOf(git_repository *repo)
+{
+    std::map<std::string, std::string> refs;
+    git_reference_iterator *iter = nullptr;
+    if (git_reference_iterator_new(&iter, repo) != 0) return refs;
+    git_reference *ref = nullptr;
+    while (git_reference_next(&ref, iter) == 0) {
+        const std::string name = git_reference_name(ref);
+        const git_oid *id = git_reference_target(ref);
+        if (id && (name.rfind("refs/heads/", 0) == 0 || name.rfind("refs/tags/", 0) == 0))
+            refs[name] = oidText(id);
+        git_reference_free(ref);
+    }
+    git_reference_iterator_free(iter);
+    return refs;
+}
+
+bool GitManager::getPublishableRefs(const std::string& repoPath, std::map<std::string, std::string>& refs)
+{
+    refs.clear();
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normalizePath(repoPath).c_str()) != 0) return false;
+    refs = publishableRefsOf(repo);
+    git_repository_free(repo);
+    return true;
+}
+
+bool GitManager::createPackfileToFile(const std::string& repoPath, const std::string& outPath,
+    std::map<std::string, std::string>& outRefUpdates, const std::set<std::string>& known,
+    uint64_t *outSize, const ProgressFn& progress, bool *canceled)
+{
+    outRefUpdates.clear();
+    if (canceled) *canceled = false;
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normalizePath(repoPath).c_str()) != 0) return false;
+    outRefUpdates = publishableRefsOf(repo);
+    std::ofstream file;
+    uint64_t size = 0;
+    const PackSink sink = [&](const void *data, size_t length) {
+        file.write(static_cast<const char*>(data), static_cast<std::streamsize>(length));
+        size += length;
+        return static_cast<bool>(file);
+    };
+    const std::function<void()> reset = [&]() {
+        if (file.is_open()) file.close();
+        file.clear();
+        file.open(fs::u8path(outPath), std::ios::binary | std::ios::trunc);
+        size = 0;
+    };
+    bool ok = buildObjectPack(repo, outRefUpdates, known, sink, reset, progress, canceled);
+    if (file.is_open()) file.close();
+    ok = ok && !file.fail();
+    git_repository_free(repo);
+    if (!ok) {
+        std::error_code ec;
+        fs::remove(fs::u8path(outPath), ec);
+    }
+    if (outSize) *outSize = ok ? size : 0;
+    return ok;
 }
 
 bool GitManager::createPackfile(const std::string& repoPath, std::string& outPackfileData,
@@ -453,20 +582,12 @@ bool GitManager::createPackfile(const std::string& repoPath, std::string& outPac
     outRefUpdates.clear();
     git_repository *repo = nullptr;
     if (git_repository_open(&repo, normalizePath(repoPath).c_str()) != 0) return false;
-    git_reference_iterator *iter = nullptr;
-    bool ok = git_reference_iterator_new(&iter, repo) == 0;
-    if (ok) {
-        git_reference *ref = nullptr;
-        while (git_reference_next(&ref, iter) == 0) {
-            const std::string name = git_reference_name(ref);
-            const git_oid *id = git_reference_target(ref);
-            if (id && (name.rfind("refs/heads/", 0) == 0 || name.rfind("refs/tags/", 0) == 0))
-                outRefUpdates[name] = oidText(id);
-            git_reference_free(ref);
-        }
-        git_reference_iterator_free(iter);
-        ok = buildObjectPack(repo, outRefUpdates, known, outPackfileData);
-    }
+    outRefUpdates = publishableRefsOf(repo);
+    const PackSink sink = [&](const void *data, size_t size) {
+        outPackfileData.append(static_cast<const char*>(data), size);
+        return true;
+    };
+    const bool ok = buildObjectPack(repo, outRefUpdates, known, sink, [&]() { outPackfileData.clear(); });
     git_repository_free(repo); return ok;
 }
 
@@ -479,7 +600,14 @@ bool GitManager::createPackfileForRef(const std::string& repoPath, const std::st
     const std::string ref = refName.rfind("refs/", 0) == 0 ? refName : "refs/heads/" + refName;
     git_oid id;
     bool ok = git_reference_name_to_id(&id, repo, ref.c_str()) == 0;
-    if (ok) { outRefUpdates[ref] = oidText(&id); ok = buildObjectPack(repo, outRefUpdates, known, outPackfileData); }
+    if (ok) {
+        outRefUpdates[ref] = oidText(&id);
+        const PackSink sink = [&](const void *data, size_t size) {
+            outPackfileData.append(static_cast<const char*>(data), size);
+            return true;
+        };
+        ok = buildObjectPack(repo, outRefUpdates, known, sink, [&]() { outPackfileData.clear(); });
+    }
     git_repository_free(repo); return ok;
 }
 
@@ -496,7 +624,7 @@ bool GitManager::getCommitLog(const std::string &repoPath, std::vector<GitCommit
         return false;
     }
 
-    git_revwalk_sorting(walker, GIT_SORT_TIME);
+    git_revwalk_sorting(walker, GIT_SORT_NONE);
     
     bool pushed = false;
     if (!branchOrTag.empty()) {
@@ -1682,7 +1810,7 @@ bool GitManager::getCommitsBetweenBranches(const std::string& repoPath, const st
         return false;
     }
 
-    git_revwalk_sorting(walker, GIT_SORT_TIME);
+    git_revwalk_sorting(walker, GIT_SORT_NONE);
 
     git_oid target_oid;
     git_oid source_oid;

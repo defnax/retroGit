@@ -29,7 +29,7 @@
 #include <utility>
 #include "interface/rsGit.h"
 
-struct GitLocalChange;
+#include "services/GitManager.h"
 
 namespace Ui {
 class GitWidget;
@@ -45,7 +45,7 @@ public:
     explicit GitWidget(MainWidget *mainWidget, QWidget *parent = nullptr);
     ~GitWidget();
 
-    void setGroupId(const QString &groupId);
+    void setGroupId(const QString &groupId, bool doRefresh = true);
     void handleGitEvent(const RsGitEvent *e);
     void clear();
     void refresh();
@@ -88,7 +88,12 @@ private:
     std::vector<std::pair<std::string, char>> mLastLocalChanges;
     std::vector<std::pair<std::string, uint32_t>> mLastUpdates;
 
+    void startStatusCheck();
     std::string mLastWorkingTreeState;
+    std::string mStatusPath;                    // last background status result
+    std::vector<GitLocalChange> mStatusChanges;
+    bool mStatusKnown = false;
+    bool mPushInProgress = false;
     bool mPollInFlight = false;
 };
 

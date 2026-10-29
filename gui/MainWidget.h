@@ -37,6 +37,10 @@
 #include <QPointer>
 #include <QWidget>
 #include <set>
+#include <atomic>
+#include <functional>
+#include <mutex>
+#include "services/GitManager.h"
 
 
 #include "gui/gxs/GxsIdDetails.h"
@@ -49,6 +53,30 @@ class QAction;
 class QLabel;
 class QTimer;
 #include <QMessageBox>
+
+/** Progress shared between a background job and its progress dialog. */
+struct RetroGitProgress
+{
+    std::atomic<bool> canceled{false};
+    std::atomic<uint64_t> current{0};
+    std::atomic<uint64_t> total{0};
+    std::mutex mutex;
+    std::string stage;
+
+    /** Callback for GitManager; returns false once the user canceled. */
+    GitManager::ProgressFn reporter()
+    {
+        return [this](const char *name, uint64_t value, uint64_t maximum) {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                stage = name;
+            }
+            current = value;
+            total = maximum;
+            return !canceled.load();
+        };
+    }
+};
 
 class GxsIdTableItem : public QWidget
 {
@@ -86,6 +114,17 @@ public:
     void hashAndPublishPackfile(const QString &groupId, const std::string &packfileData, RsGitUpdate &update);
     bool publishPullRequestWithPack(RsGitPullRequest &pr, const std::string &pack);
     bool preparePackAttachment(const QString &groupId, const std::string &pack, RsGxsFile &attachment);
+    /** A new temporary pack path for a repository. */
+    QString newTempPackPath(const QString &groupId);
+    /** Share an already written pack file through RetroShare file transfer. */
+    bool hashPackFile(const QString &packPath, RsGxsFile &attachment);
+    /** Publish an update whose pack was written to packPath (inline or as attachment). */
+    void publishPackFile(const QString &groupId, const QString &packPath, uint64_t size, RsGitUpdate &update);
+    /** Run long work in the background with a cancelable progress dialog.
+     *  'work' runs on a worker thread, 'done' on the GUI thread (error is empty when canceled). */
+    void runWithProgress(const QString &title,
+                         std::function<bool(RetroGitProgress &progress, QString &error)> work,
+                         std::function<void(bool ok, const QString &error)> done);
     void refreshGitWidget();
     void refreshCodeWidget();
     void showCommitDetails(const QString &commitHash, const QString &repoPath);

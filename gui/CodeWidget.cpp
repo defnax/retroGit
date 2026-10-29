@@ -35,6 +35,9 @@
 #include <QApplication>
 #include <QStyle>
 #include <QLabel>
+#include <QCompleter>
+#include <QLineEdit>
+#include <QAbstractItemView>
 #include <retroshare/rsinit.h>
 
 extern RsGit *rsGit;
@@ -79,7 +82,36 @@ CodeWidget::CodeWidget(MainWidget *mainWidget, QWidget *parent)
     connect(ui->mBtnOpenFolder, &QPushButton::clicked, this, &CodeWidget::onOpenFolderClicked);
     connect(ui->mBtnCreateBranch, &QPushButton::clicked, this, &CodeWidget::onCreateBranchClicked);
     connect(ui->mBtnPullRequests, &QPushButton::clicked, this, &CodeWidget::onPullRequestsClicked);
-    connect(ui->mBranchCombo, &QComboBox::currentTextChanged, this, &CodeWidget::onBranchComboChanged);
+
+    // Large repositories have dozens of branches and tags: show a limited,
+    // scrollable list and let the user type to filter it.
+    ui->mBranchCombo->setMaxVisibleItems(15);
+    ui->mBranchCombo->setStyleSheet("QComboBox { combobox-popup: 0; }"); // honour maxVisibleItems on every style
+    ui->mBranchCombo->setEditable(true);
+    ui->mBranchCombo->setInsertPolicy(QComboBox::NoInsert);
+    ui->mBranchCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    ui->mBranchCombo->setMinimumContentsLength(18);
+    ui->mBranchCombo->lineEdit()->setPlaceholderText(tr("Filter branches and tags..."));
+    ui->mBranchCombo->setToolTip(tr("Type to filter branches and tags"));
+    QCompleter *completer = new QCompleter(ui->mBranchCombo->model(), ui->mBranchCombo);
+    completer->setCaseSensitivity(Qt::CaseInsensitive);
+    completer->setFilterMode(Qt::MatchContains);
+    completer->setCompletionMode(QCompleter::PopupCompletion);
+    completer->setMaxVisibleItems(15);
+    ui->mBranchCombo->setCompleter(completer);
+
+    // Typing must not switch branches: only a chosen entry does.
+    connect(ui->mBranchCombo, QOverload<int>::of(&QComboBox::activated), this, [this](int index) {
+        selectBranchOrTag(ui->mBranchCombo->itemText(index));
+    });
+    connect(completer, QOverload<const QString &>::of(&QCompleter::activated), this, [this](const QString &text) {
+        selectBranchOrTag(text);
+    });
+    connect(ui->mBranchCombo->lineEdit(), &QLineEdit::editingFinished, this, [this]() {
+        const QString text = ui->mBranchCombo->currentText();
+        if (ui->mBranchCombo->findText(text) >= 0) selectBranchOrTag(text);
+        else ui->mBranchCombo->setEditText(mSelectedBranchOrTag); // unknown text: show the selection again
+    });
 
     int iconSize = qMax(fontMetrics().height(), 24);
     ui->mBranchCombo->setIconSize(QSize(iconSize, iconSize));
@@ -214,7 +246,8 @@ void CodeWidget::refresh()
 
     // Disable signals during combo repopulation to prevent multiple refreshes
     ui->mBranchCombo->blockSignals(true);
-    QString previousSelected = ui->mBranchCombo->currentText();
+    // The edit text may hold a partial filter: keep the actual selection.
+    QString previousSelected = mSelectedBranchOrTag;
     ui->mBranchCombo->clear();
 
     if (GitManager::getBranches(bareRepoPath, branches, currentBranch)) {
@@ -448,6 +481,19 @@ void CodeWidget::populateRepoBrowser(const QString &branchOrTag)
         // Sort items: folders on top, then alphabetical order
         ui->mRepoBrowserList->sortItems(0, Qt::AscendingOrder);
     }
+}
+
+void CodeWidget::selectBranchOrTag(const QString &text)
+{
+    const int index = ui->mBranchCombo->findText(text);
+    if (text.isEmpty() || index < 0) return;
+    if (ui->mBranchCombo->currentIndex() != index) {
+        ui->mBranchCombo->blockSignals(true);
+        ui->mBranchCombo->setCurrentIndex(index);
+        ui->mBranchCombo->blockSignals(false);
+    }
+    if (text == mSelectedBranchOrTag) return; // already shown
+    onBranchComboChanged(text);
 }
 
 void CodeWidget::onBranchComboChanged(const QString &text)

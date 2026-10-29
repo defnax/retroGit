@@ -952,7 +952,8 @@ void MainWidget::onTreeSelectionChanged()
     }
 
     QString groupId = getSelectedGroupId();
-    if (mGitWidget) mGitWidget->setGroupId(groupId);
+    // CodeWidget::refresh() also refreshes the GitWidget: refresh it only once.
+    if (mGitWidget) mGitWidget->setGroupId(groupId, !mCodeWidget);
     if (mCodeWidget) mCodeWidget->setGroupId(groupId);
     if (mPushesWidget) mPushesWidget->setGroupId(groupId);
 }
@@ -1075,12 +1076,16 @@ void MainWidget::logPullAttempt(const QString &groupId, const QString &repoName,
     }
 }
 
+QString MainWidget::newTempPackPath(const QString &groupId)
+{
+    const QString tempDir = QDir::cleanPath(QString::fromStdString(RsAccounts::AccountDirectory()) + "/retrogit_temp/" + groupId);
+    QDir().mkpath(tempDir);
+    return tempDir + "/pack_" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".pack";
+}
+
 bool MainWidget::preparePackAttachment(const QString &groupId, const std::string &packfileData, RsGxsFile &attachment)
 {
-    QString tempDir = QDir::cleanPath(QString::fromStdString(RsAccounts::AccountDirectory()) + "/retrogit_temp/" + groupId);
-    QDir().mkpath(tempDir);
-    QString tempFilePath = tempDir + "/pack_" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".pack";
-    
+    const QString tempFilePath = newTempPackPath(groupId);
     QFile file(tempFilePath);
     if (!file.open(QIODevice::WriteOnly)) {
         QMessageBox::critical(this, tr("Push Failed"), tr("Failed to write temporary packfile to disk."));
@@ -1093,55 +1098,153 @@ bool MainWidget::preparePackAttachment(const QString &groupId, const std::string
         return false;
     }
     file.close();
-    
-    if (rsFiles) {
-        TransferRequestFlags flags = RS_FILE_REQ_ANONYMOUS_ROUTING;
-        rsFiles->ExtraFileHash(tempFilePath.toStdString(), 3600 * 24 * 30, flags);
-        
-        FileInfo fi;
-        // Large fork histories can take longer than ten seconds to hash,
-        // especially while the file-transfer service is busy.
-        int retries = 1200;
-        bool hashOk = false;
-        
-        QProgressDialog progress(tr("Hashing packfile..."), tr("Cancel"), 0, retries, this);
-        progress.setWindowModality(Qt::WindowModal);
-        progress.show();
+    return hashPackFile(tempFilePath, attachment);
+}
 
-        // Wait without blocking the GUI thread. Backend events received
-        // meanwhile are deferred until this operation is over.
-        ++mModalDepth;
-        QEventLoop wait;
-        for (int i = 0; i < retries; ++i) {
-            progress.setValue(i);
-            if (progress.wasCanceled()) {
-                break;
-            }
-            if (rsFiles->ExtraFileStatus(tempFilePath.toStdString(), fi)) {
-                hashOk = true;
-                break;
-            }
-            QTimer::singleShot(50, &wait, &QEventLoop::quit);
-            wait.exec(QEventLoop::ExcludeUserInputEvents);
-        }
-        --mModalDepth;
-        progress.setValue(retries);
-        
-        if (!hashOk) {
-            QFile::remove(tempFilePath);
-            QMessageBox::critical(this, tr("Packfile Hashing Failed"), tr("Hashing the packfile timed out or was canceled. The operation was not published. Please try again."));
-            return false;
-        }
-        
-        attachment.mName = fi.fname;
-        attachment.mSize = fi.size;
-        attachment.mHash = fi.hash;
-        
-        return true;
-    } else {
+bool MainWidget::hashPackFile(const QString &tempFilePath, RsGxsFile &attachment)
+{
+    if (!rsFiles) {
+        QFile::remove(tempFilePath);
         QMessageBox::critical(this, tr("Push Failed"), tr("RetroShare file transfer service is not available."));
+        return false;
     }
-    return false;
+    TransferRequestFlags flags = RS_FILE_REQ_ANONYMOUS_ROUTING;
+    rsFiles->ExtraFileHash(tempFilePath.toStdString(), 3600 * 24 * 30, flags);
+
+    FileInfo fi;
+    // 60 s plus one second per MiB: large repositories take a while to hash,
+    // especially while the file-transfer service is busy.
+    const qint64 sizeMiB = QFileInfo(tempFilePath).size() / (1024 * 1024);
+    const int retries = 1200 + static_cast<int>(qMin<qint64>(sizeMiB, 20000)) * 20;
+    bool hashOk = false;
+
+    QProgressDialog progress(tr("Hashing packfile..."), tr("Cancel"), 0, retries, this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.show();
+
+    // Wait without blocking the GUI thread. Backend events received
+    // meanwhile are deferred until this operation is over.
+    ++mModalDepth;
+    QEventLoop wait;
+    for (int i = 0; i < retries; ++i) {
+        progress.setValue(i);
+        if (progress.wasCanceled()) {
+            break;
+        }
+        if (rsFiles->ExtraFileStatus(tempFilePath.toStdString(), fi)) {
+            hashOk = true;
+            break;
+        }
+        QTimer::singleShot(50, &wait, &QEventLoop::quit);
+        wait.exec(QEventLoop::ExcludeUserInputEvents);
+    }
+    --mModalDepth;
+    progress.setValue(retries);
+
+    if (!hashOk) {
+        QFile::remove(tempFilePath);
+        QMessageBox::critical(this, tr("Packfile Hashing Failed"), tr("Hashing the packfile timed out or was canceled. The operation was not published. Please try again."));
+        return false;
+    }
+
+    attachment.mName = fi.fname;
+    attachment.mSize = fi.size;
+    attachment.mHash = fi.hash;
+    return true;
+}
+
+void MainWidget::publishPackFile(const QString &groupId, const QString &packPath, uint64_t size, RsGitUpdate &update)
+{
+    if (size <= RETROGIT_MAX_INLINE_PACK) {
+        // Small packs travel inside the GXS message itself.
+        QFile file(packPath);
+        if (size > 0) {
+            if (!file.open(QIODevice::ReadOnly)) {
+                QMessageBox::critical(this, tr("Push Failed"), tr("Could not read the temporary packfile."));
+                return;
+            }
+            const QByteArray data = file.readAll();
+            file.close();
+            update.mPackfileData.assign(data.constData(), static_cast<size_t>(data.size()));
+        }
+        QFile::remove(packPath);
+        uint32_t token;
+        if (rsGit && rsGit->publishGitUpdate(token, update))
+            QMessageBox::information(this, tr("Push Successful"), tr("Local commits published to GXS network!"));
+        else
+            QMessageBox::critical(this, tr("Push Failed"), tr("The repository update could not be queued for publication."));
+        return;
+    }
+    RsGxsFile attachment;
+    if (!hashPackFile(packPath, attachment)) return;
+    update.mFiles.push_back(attachment);
+    uint32_t token;
+    if (rsGit && rsGit->publishGitUpdate(token, update))
+        QMessageBox::information(this, tr("Push Queued"), tr("Repository update queued for publication."));
+    (void)groupId;
+}
+
+void MainWidget::runWithProgress(const QString &title,
+                                 std::function<bool(RetroGitProgress &progress, QString &error)> work,
+                                 std::function<void(bool ok, const QString &error)> done)
+{
+    auto progress = std::make_shared<RetroGitProgress>();
+    QPointer<QProgressDialog> dialog = new QProgressDialog(title, tr("Cancel"), 0, 0, this);
+    dialog->setWindowTitle(tr("RetroGit"));
+    dialog->setWindowModality(Qt::WindowModal);
+    dialog->setMinimumDuration(0);
+    dialog->setAutoClose(false);
+    dialog->setAutoReset(false);
+    dialog->setMinimumWidth(420);
+    connect(dialog.data(), &QProgressDialog::canceled, this, [progress]() { progress->canceled = true; });
+
+    // The dialog polls the shared progress: the worker never touches widgets.
+    QTimer *timer = new QTimer(dialog);
+    connect(timer, &QTimer::timeout, dialog.data(), [progress, dialog, title]() {
+        if (!dialog) return;
+        std::string stage;
+        {
+            std::lock_guard<std::mutex> lock(progress->mutex);
+            stage = progress->stage;
+        }
+        const uint64_t total = progress->total;
+        const uint64_t current = progress->current;
+        QString text = title;
+        if (!stage.empty()) text += "\n" + QCoreApplication::translate("RetroGit", stage.c_str());
+        if (total > 0) {
+            text += QString(" (%1 / %2)").arg(current).arg(total);
+            dialog->setRange(0, 100);
+            dialog->setValue(static_cast<int>(qMin<uint64_t>(current, total) * 100 / total));
+        } else {
+            dialog->setRange(0, 0); // busy indicator
+        }
+        dialog->setLabelText(text);
+    });
+    timer->start(200);
+    dialog->show();
+
+    RsThread::async([progress, work, done, dialog]() {
+        QString error;
+        bool ok = false;
+        try {
+            ok = work(*progress, error);
+        } catch (const std::exception &e) {
+            error = QString::fromStdString(e.what());
+        } catch (...) {
+            error = QObject::tr("Unexpected error.");
+        }
+        if (progress->canceled) {
+            ok = false;
+            error.clear();
+        }
+        RsQThreadUtils::postToObject([done, dialog, ok, error]() {
+            if (dialog) {
+                dialog->close();
+                dialog->deleteLater();
+            }
+            done(ok, error);
+        }, qApp);
+    });
 }
 
 void MainWidget::hashAndPublishPackfile(const QString &groupId, const std::string &packfileData, RsGitUpdate &update)

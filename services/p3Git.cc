@@ -57,6 +57,19 @@ const auto OFFLINE_TIMEOUT = std::chrono::hours(24);
 // Fire-and-forget tokens still pending after this long are cancelled.
 const auto TOKEN_TIMEOUT = std::chrono::minutes(5);
 
+// True when the published commits are already in the repository (e.g. our own
+// update coming back from GXS): their branches can be set without re-importing
+// a pack that may be hundreds of MB.
+bool applyIfAlreadyPresent(const std::string &repoPath, const std::map<std::string, std::string> &allRefs,
+                           const std::map<std::string, std::string> &refsToApply)
+{
+    if (allRefs.empty()) return false;
+    std::set<std::string> targets;
+    for (const auto &ref : allRefs) targets.insert(ref.second);
+    return GitManager::filterExistingCommits(repoPath, targets).size() == targets.size() &&
+           GitManager::applyRefUpdates(repoPath, refsToApply);
+}
+
 bool isUnprocessed(const RsMsgMetaData &meta)
 {
     return meta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED;
@@ -600,7 +613,9 @@ void p3Git::unpackRootUpdateJob(const RsGxsGroupId &groupId, const RsGxsMessageI
     if (!fileHash.isNull()) {
         FileInfo info;
         if (rsFiles && rsFiles->alreadyHaveFile(fileHash, info)) {
-            unpacked = GitManager::unpackPackfileFromFile(repoPath, info.path, refsNotOlderThan(groupId, refUpdates, publishTs));
+            const auto refs = refsNotOlderThan(groupId, refUpdates, publishTs);
+            unpacked = applyIfAlreadyPresent(repoPath, refUpdates, refs) ||
+                       GitManager::unpackPackfileFromFile(repoPath, info.path, refs);
         } else {
             PendingPackfile pending;
             pending.groupId = groupId;
@@ -616,7 +631,9 @@ void p3Git::unpackRootUpdateJob(const RsGxsGroupId &groupId, const RsGxsMessageI
             return;
         }
     } else {
-        unpacked = GitManager::unpackPackfile(repoPath, packData, refsNotOlderThan(groupId, refUpdates, publishTs));
+        const auto refs = refsNotOlderThan(groupId, refUpdates, publishTs);
+        unpacked = applyIfAlreadyPresent(repoPath, refUpdates, refs) ||
+                   GitManager::unpackPackfile(repoPath, packData, refs);
     }
     recordUnpackResult(groupId, msgId, refUpdates, publishTs, unpacked);
     postGitEvent(unpacked ? RsGitEventCode::NEW_POST : RsGitEventCode::POST_UPDATED, groupId, msgId);
@@ -771,8 +788,9 @@ void p3Git::unpackDownloadedJob(const PendingPackfile &pending)
     bool unpacked = false;
     if (rsFiles && rsFiles->FileDetails(pending.fileHash, RS_FILE_HINTS_LOCAL, fi)) {
         std::cout << "p3Git: Pending packfile downloaded: " << fi.path << ", unpacking..." << std::endl;
-        unpacked = GitManager::unpackPackfileFromFile(repoPath, fi.path,
-            refsNotOlderThan(pending.groupId, pending.refUpdates, pending.publishTs));
+        const auto refs = refsNotOlderThan(pending.groupId, pending.refUpdates, pending.publishTs);
+        unpacked = applyIfAlreadyPresent(repoPath, pending.refUpdates, refs) ||
+                   GitManager::unpackPackfileFromFile(repoPath, fi.path, refs);
         recordUnpackResult(pending.groupId, pending.msgId, pending.refUpdates, pending.publishTs, unpacked);
     }
     {
