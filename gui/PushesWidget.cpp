@@ -132,6 +132,21 @@ void PushesWidget::refresh()
     populateClonesTable();
 }
 
+namespace {
+// Transfer status messages that end a clone or pull without success.
+// (Plain "down" would also match "downloading required packfiles".)
+bool isFailedStatus(const QString &status)
+{
+    static const char *const markers[] = {
+        "failed", "timed out", "went down", "not available", "unavailable", "could not",
+        "invalid", "restricted", "busy", "exceeds", "wrong repository"
+    };
+    for (const char *marker : markers)
+        if (status.contains(QLatin1String(marker), Qt::CaseInsensitive)) return true;
+    return false;
+}
+}
+
 void PushesWidget::handleGitEvent(const RsGitEvent *e)
 {
     if (e->mGitEventCode != RsGitEventCode::CLONE_STATUS_CHANGED &&
@@ -156,8 +171,7 @@ void PushesWidget::handleGitEvent(const RsGitEvent *e)
                 break;
             }
         }
-        const bool terminal = e->mCloneSuccess || status.contains("Failed") || status.contains("failed") ||
-                              status.contains("down") || status.contains("not available");
+        const bool terminal = e->mCloneSuccess || isFailedStatus(status);
         // Progress events arrive for every received chunk: rebuild the table at most a few times per second.
         if (terminal) populateClonesTable();
         else scheduleClonesTableUpdate();
@@ -174,7 +188,7 @@ void PushesWidget::handleGitEvent(const RsGitEvent *e)
             }
             mMainWidget->updateDisplay();
             mMainWidget->triggerTreeSelectionChanged();
-        } else if (!status.isEmpty() && (status.contains("Failed") || status.contains("failed") || status.contains("down") || status.contains("not available"))) {
+        } else if (!status.isEmpty() && isFailedStatus(status)) {
             mMainWidget->showNotice(status.contains("sync", Qt::CaseInsensitive) ? tr("Sync Failed") : tr("Clone Failed"), status);
         }
     } else if (e->mGitEventCode == RsGitEventCode::NEW_POST || e->mGitEventCode == RsGitEventCode::READ_STATUS_CHANGED || e->mGitEventCode == RsGitEventCode::POST_UPDATED) {
@@ -604,10 +618,31 @@ void PushesWidget::populateClonesTable()
         const auto& record = filteredHistory[i];
         auto* progress = new QProgressBar(ui->mClonesTable);
         progress->setRange(0, 100);
-        progress->setValue(record.complete ? 100 : (record.total ?
-            int(qMin<uint64_t>(record.received, record.total) * 100 / record.total) : 0));
-        progress->setFormat(record.complete || record.total ? tr("%p%") : tr("Waiting"));
-        progress->setToolTip(tr("Repository response received; unpacking and checkout follow the download."));
+        progress->setTextVisible(true);
+        const int percent = record.total ? int(qMin<uint64_t>(record.received, record.total) * 100 / record.total) : 0;
+        if (record.complete) {
+            progress->setValue(100);
+            progress->setFormat(tr("Done"));
+            progress->setToolTip(tr("The repository was transferred and written to the working folder."));
+        } else if (isFailedStatus(record.status)) {
+            // A failed transfer must not look like it is still waiting.
+            progress->setValue(percent);
+            progress->setFormat(tr("Failed"));
+            progress->setStyleSheet("QProgressBar { color: #c0392b; font-weight: bold; } QProgressBar::chunk { background-color: #e6b0aa; }");
+            progress->setToolTip(record.status);
+        } else if (record.total && record.received >= record.total) {
+            progress->setValue(100);
+            progress->setFormat(tr("Unpacking..."));
+            progress->setToolTip(tr("Repository data received; unpacking and checkout are running."));
+        } else if (record.total) {
+            progress->setValue(percent);
+            progress->setFormat(tr("%p%"));
+            progress->setToolTip(tr("Receiving repository data from the owner."));
+        } else {
+            progress->setValue(0);
+            progress->setFormat(tr("Waiting"));
+            progress->setToolTip(tr("Waiting for the owner's response. The download starts when the secure tunnel is ready."));
+        }
         ui->mClonesTable->setCellWidget(i, 3, progress);
         QString size = record.total ? tr("%1 / %2").arg(misc::friendlyUnit(record.received), misc::friendlyUnit(record.total)) : tr("Unknown");
         auto* sizeItem = new QTableWidgetItem(size);
