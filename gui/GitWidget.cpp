@@ -45,7 +45,26 @@
 #include <QHeaderView>
 #include <QMenu>
 #include <QTimer>
+#include <QPointer>
+#include <QApplication>
 #include <iostream>
+#include <set>
+#include "util/qtthreadsutils.h"
+#include <util/rsthreads.h>
+
+namespace {
+// Fingerprint of a working tree: HEAD plus the list of changed files.
+std::string workingTreeState(const std::string &head, const std::vector<GitLocalChange> &changes)
+{
+    std::string state = head;
+    for (const auto &change : changes) {
+        state += '\n';
+        state += change.status;
+        state += change.path;
+    }
+    return state;
+}
+}
 
 extern RsGit *rsGit;
 extern RsPeers *rsPeers;
@@ -76,13 +95,11 @@ GitWidget::GitWidget(MainWidget *mainWidget, QWidget *parent)
     connect(ui->mCommitTable, &QTableWidget::itemSelectionChanged, this, &GitWidget::onCommitSelectionChanged);
     connect(ui->mCommitTable, &QTableWidget::customContextMenuRequested, this, &GitWidget::onCommitTableContextMenu);
 
+    // Detect edits made outside RetroShare. Only a cheap status check runs, in
+    // the background; the view is rebuilt when the working tree changed.
     QTimer *timer = new QTimer(this);
-    connect(timer, &QTimer::timeout, this, [this]() {
-        if (isVisible() && !mGroupId.isEmpty()) {
-            refresh();
-        }
-    });
-    timer->start(3000);
+    connect(timer, &QTimer::timeout, this, &GitWidget::pollWorkingTree);
+    timer->start(5000);
 
     clear();
 }
@@ -160,11 +177,13 @@ void GitWidget::refresh()
     }
 
     bool hasLocalChanges = false;
+    std::vector<GitLocalChange> localChanges;
+    bool localChangesKnown = false;
     if (isCloned) {
-        std::vector<GitLocalChange> localChanges;
-        if (GitManager::getLocalChanges(QDir::cleanPath(path).toStdString(), localChanges) && !localChanges.empty()) {
-            hasLocalChanges = true;
-        }
+        const std::string cleanPath = QDir::cleanPath(path).toStdString();
+        localChangesKnown = GitManager::getLocalChanges(cleanPath, localChanges);
+        hasLocalChanges = localChangesKnown && !localChanges.empty();
+        mLastWorkingTreeState = workingTreeState(GitManager::headCommit(cleanPath), localChanges);
     }
 
     ui->mBtnFork->setVisible(!isAdmin && isSubscribed);
@@ -212,13 +231,38 @@ void GitWidget::refresh()
         ui->mLblOwnerInfo->setToolTip(tr("Fork repository: %1\nUpstream repository ID: %2").arg(forkName, upstreamId));
     }
 
-    populateCommitLog();
+    populateCommitLog(localChangesKnown ? &localChanges : nullptr);
 
     if (ui->mCommitTable->rowCount() == 0) {
         ui->mBtnPush->setText(tr("Push & Publish"));
     } else {
         ui->mBtnPush->setText(tr("Push Local Commits"));
     }
+}
+
+void GitWidget::pollWorkingTree()
+{
+    if (mPollInFlight || !isVisible() || mGroupId.isEmpty() || mLocalPath.isEmpty()) return;
+    // Do not rebuild the table under an open dialog or menu.
+    if (QApplication::activeModalWidget() || QApplication::activePopupWidget()) return;
+    mPollInFlight = true;
+    QPointer<GitWidget> self(this);
+    const QString groupId = mGroupId;
+    const std::string path = QDir::cleanPath(mLocalPath).toStdString();
+    RsThread::async([self, groupId, path]() {
+        std::vector<GitLocalChange> changes;
+        std::string state;
+        if (GitManager::isValidRepository(path)) {
+            GitManager::getLocalChanges(path, changes);
+            state = workingTreeState(GitManager::headCommit(path), changes);
+        }
+        RsQThreadUtils::postToObject([self, groupId, state]() {
+            if (!self) return;
+            self->mPollInFlight = false;
+            if (groupId != self->mGroupId || state.empty() || state == self->mLastWorkingTreeState) return;
+            self->refresh();
+        }, qApp);
+    });
 }
 
 void GitWidget::handleGitEvent(const RsGitEvent *e)
@@ -228,7 +272,8 @@ void GitWidget::handleGitEvent(const RsGitEvent *e)
         if (e->mCloneSuccess && GitManager::isValidRepository(mPendingForkPath.toStdString())) finishFork();
         else if (e->mCloneStatus.find("Failed") != std::string::npos || e->mCloneStatus.find("failed") != std::string::npos || e->mCloneStatus.find("timed out") != std::string::npos || e->mCloneStatus.find("went down") != std::string::npos) {
             mPendingForkPath.clear();
-            QMessageBox::warning(this, tr("Fork Failed"), QString::fromStdString(e->mCloneStatus));
+            // Called from an event handler: never open a modal dialog here.
+            mMainWidget->showNotice(tr("Fork Failed"), QString::fromStdString(e->mCloneStatus));
         }
     }
 
@@ -503,7 +548,7 @@ void GitWidget::finishFork()
     update.mMeta.mAuthorId = fork.mMeta.mAuthorId;
     update.mMeta.mMsgName = "Initial fork history";
     update.mRefUpdates = refs;
-    if (pack.size() <= 200000) {
+    if (pack.size() <= RETROGIT_MAX_INLINE_PACK) {
         update.mPackfileData = pack;
         uint32_t token;
         rsGit->publishGitUpdate(token, update);
@@ -670,17 +715,28 @@ void GitWidget::onPushClicked()
         return;
     }
 
+    std::vector<RsGitUpdate> updates;
+    if (rsGit) {
+        rsGit->getUpdates(RsGxsGroupId(mGroupId.toStdString()), updates);
+    }
+    // Only send objects that earlier updates did not publish yet. Every tenth
+    // update is self-contained so peers can still clone after old messages expire.
+    std::set<std::string> published;
+    if (!updates.empty() && updates.size() % 10 != 0) {
+        for (const auto &update : updates)
+            for (const auto &ref : update.mRefUpdates) published.insert(ref.second);
+        // The local serving cache must be able to import the pack as well
+        // (e.g. after moving to another computer it starts empty).
+        published = GitManager::filterExistingCommits(GitManager::getBareRepoPath(mGroupId.toStdString()), published);
+    }
+
     std::string packfileData;
     std::map<std::string, std::string> refUpdates;
-    if (GitManager::createPackfile(repoPath, packfileData, refUpdates)) {
+    if (GitManager::createPackfile(repoPath, packfileData, refUpdates, published)) {
         if (refUpdates.empty()) {
             QMessageBox::information(this, tr("Nothing to Publish"),
                 tr("Add files and use Commit Changes to create your first commit before publishing."));
             return;
-        }
-        std::vector<RsGitUpdate> updates;
-        if (rsGit) {
-            rsGit->getUpdates(RsGxsGroupId(mGroupId.toStdString()), updates);
         }
         std::vector<std::string> publishedRefs;
         bool allAlreadyPublished = true;
@@ -728,7 +784,7 @@ void GitWidget::onPushClicked()
         update.mRefUpdates = refUpdates;
         update.mMeta.mMsgName = QString("New Commit: %1").arg(QString::fromStdString(commitMsg)).toStdString();
 
-        if (packfileData.size() <= 200000) {
+        if (packfileData.size() <= RETROGIT_MAX_INLINE_PACK) {
             update.mPackfileData = packfileData;
             uint32_t token;
             if (rsGit) {
@@ -831,12 +887,13 @@ void GitWidget::onCommitReadStatusToggled(const QString &msgIdStr, bool markRead
     if (mGroupId.isEmpty()) return;
     RsGxsMessageId msgId(msgIdStr.toStdString());
     if (rsGit) {
-        rsGit->setMessageReadStatus(RsGxsGrpMsgIdPair(RsGxsGroupId(mGroupId.toStdString()), msgId), markRead);
+        // Non-blocking: the backend reports the change, which refreshes this view.
+        uint32_t token;
+        rsGit->setMessageReadStatus(token, RsGxsGrpMsgIdPair(RsGxsGroupId(mGroupId.toStdString()), msgId), markRead);
     }
-    refresh();
 }
 
-void GitWidget::populateCommitLog()
+void GitWidget::populateCommitLog(const std::vector<GitLocalChange> *workingChanges)
 {
     if (mGroupId.isEmpty()) {
         ui->mCommitTable->setRowCount(0);
@@ -871,7 +928,13 @@ void GitWidget::populateCommitLog()
 
     std::vector<GitLocalChange> localChanges;
     bool hasLocalChanges = false;
-    bool statusOk = GitManager::getLocalChanges(repoPath, localChanges);
+    bool statusOk = false;
+    if (workingChanges && !rawPath.isEmpty() && repoPath == QDir::cleanPath(rawPath).toStdString()) {
+        localChanges = *workingChanges; // already computed by refresh()
+        statusOk = true;
+    } else {
+        statusOk = GitManager::getLocalChanges(repoPath, localChanges);
+    }
     if (statusOk && !localChanges.empty()) {
         hasLocalChanges = true;
     }
@@ -921,13 +984,13 @@ void GitWidget::populateCommitLog()
         localCommitShas.insert(c.full_hash);
     }
 
-    std::set<std::string> allRepoCommitShas;
+    // Look up only the published commits instead of walking the whole history.
+    std::set<std::string> publishedShas;
+    for (const auto &update : updates)
+        for (const auto &pair : update.mRefUpdates) publishedShas.insert(pair.second);
     std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
-    if (GitManager::isValidRepository(repoPath)) {
-        GitManager::getAllCommitShas(repoPath, allRepoCommitShas);
-    } else {
-        GitManager::getAllCommitShas(bareRepoPath, allRepoCommitShas);
-    }
+    const std::set<std::string> allRepoCommitShas = GitManager::filterExistingCommits(
+        GitManager::isValidRepository(repoPath) ? repoPath : bareRepoPath, publishedShas);
 
     std::vector<RsGitUpdate> undownloadedUpdates;
     std::set<std::string> unreadCommitShas;
@@ -1081,9 +1144,10 @@ void GitWidget::populateCommitLog()
             btnStatus->setStyleSheet("QPushButton { color: #7f8c8d; }");
         }
         QString msgIdStr = QString::fromStdString(update.mMeta.mMsgId.toStdString());
-        connect(btnStatus, &QPushButton::clicked, [this, msgIdStr, isUnread]() {
+        // Queued: the handler may rebuild the table and delete this button.
+        connect(btnStatus, &QPushButton::clicked, this, [this, msgIdStr, isUnread]() {
             onCommitReadStatusToggled(msgIdStr, isUnread);
-        });
+        }, Qt::QueuedConnection);
         ui->mCommitTable->setCellWidget(rowIdx, 4, btnStatus);
 
         // Pulling an individual published update is a subscriber workflow.
@@ -1092,9 +1156,9 @@ void GitWidget::populateCommitLog()
             QPushButton *btnPull = new QPushButton(isAdmin ? tr("Update Working Folder") : tr("Pull"), ui->mCommitTable);
             btnPull->setStyleSheet("QPushButton { font-weight: bold; color: #2980b9; }");
             QString localPath = mLocalPath;
-            connect(btnPull, &QPushButton::clicked, [this, creatorId, ownId, localPath, repoName]() {
+            connect(btnPull, &QPushButton::clicked, this, [this, creatorId, ownId, localPath, repoName]() {
                 mMainWidget->logPullAttempt(mGroupId, repoName, QString::fromStdString(creatorId.toStdString()), ownId, localPath);
-            });
+            }, Qt::QueuedConnection);
             ui->mCommitTable->setCellWidget(rowIdx, 5, btnPull);
         } else {
             QTableWidgetItem *itemAction = new QTableWidgetItem("-");
@@ -1202,9 +1266,9 @@ void GitWidget::populateCommitLog()
                 btnStatus->setStyleSheet("QPushButton { color: #7f8c8d; }");
             }
             QString msgIdStr = QString::fromStdString(gxsMsgId.toStdString());
-            connect(btnStatus, &QPushButton::clicked, [this, msgIdStr, isUnread]() {
+            connect(btnStatus, &QPushButton::clicked, this, [this, msgIdStr, isUnread]() {
                 onCommitReadStatusToggled(msgIdStr, isUnread);
-            });
+            }, Qt::QueuedConnection);
             ui->mCommitTable->setCellWidget(rowIdx, 4, btnStatus);
         } else {
             QTableWidgetItem *itemStatus = new QTableWidgetItem("-");
@@ -1214,7 +1278,7 @@ void GitWidget::populateCommitLog()
         if (isAdmin && !hasGxsMsg && i == 0) {
             QPushButton *btnPushRow = new QPushButton(tr("Push"), ui->mCommitTable);
             btnPushRow->setStyleSheet("QPushButton { font-weight: bold; color: #27ae60; }");
-            connect(btnPushRow, &QPushButton::clicked, this, &GitWidget::onPushClicked);
+            connect(btnPushRow, &QPushButton::clicked, this, &GitWidget::onPushClicked, Qt::QueuedConnection);
             ui->mCommitTable->setCellWidget(rowIdx, 5, btnPushRow);
         } else {
             QTableWidgetItem *itemAction = new QTableWidgetItem("-");

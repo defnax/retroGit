@@ -34,7 +34,9 @@
 #include <retroshare/rsgxsifacetypes.h>
 
 #include <QPoint>
+#include <QPointer>
 #include <QWidget>
+#include <set>
 
 
 #include "gui/gxs/GxsIdDetails.h"
@@ -45,6 +47,8 @@
 
 class QAction;
 class QLabel;
+class QTimer;
+#include <QMessageBox>
 
 class GxsIdTableItem : public QWidget
 {
@@ -93,6 +97,8 @@ public:
     void triggerTreeSelectionChanged();
     QString getLocalPath() const;
     QString getSelectedGroupId() const;
+    /** Show a single non-modal notice (safe to call from event handlers). */
+    void showNotice(const QString &title, const QString &text);
     class GitWidget* getGitWidget() const { return mGitWidget; }
     class CodeWidget* getCodeWidget() const { return mCodeWidget; }
 
@@ -127,6 +133,9 @@ private:
     void GroupMetaDataToGroupItemInfo(const RsGroupMetaData &groupInfo,
                                     GroupItemInfo &groupItemInfo);
     void handleEvent_main_thread(std::shared_ptr<const RsEvent> event);
+    void scheduleEventProcessing();
+    void processPendingEvents();
+    void checkNewPostNotices(const RsGxsGroupId &groupId);
     void processSettings(bool load);
     void applyRetroGitLightStyles();
 
@@ -134,8 +143,19 @@ private:
     int mGroupSet = 0;
     bool mInitialLoadDone = false;
     bool mGroupMetaLoadPending = false;
+    bool mGroupMetaReloadRequested = false;
 
-    RsEventsHandlerId_t mEventHandlerId;
+    RsEventsHandlerId_t mEventHandlerId = 0;
+
+    // Coalesced backend events (see processPendingEvents()).
+    QTimer *mEventTimer = nullptr;
+    bool mPendingGroupReload = false;
+    bool mPendingRepoRefresh = false;
+    bool mPendingSelectionRefresh = false;
+    bool mPendingPullRequestRefresh = false;
+    std::set<RsGxsGroupId> mPendingNewPostGroups;
+    int mModalDepth = 0;
+    QPointer<QMessageBox> mNotice;
 
     Ui::MainWidget *ui;
     

@@ -25,6 +25,7 @@
 #include <map>
 #include <vector>
 #include <set>
+#include <cstdint>
 #include <git2.h>
 
 struct GitCommitInfo {
@@ -95,6 +96,16 @@ public:
     static bool pullRepository(const std::string& localPath, const std::string& sourcePath = "", std::string* errorMessage = nullptr, const std::string& expectedBranch = "");
     static bool hasCommit(const std::string& path, const std::string& commit);
     static std::set<std::string> knownTips(const std::string& path);
+    /** HEAD commit id of the repository, or an empty string. Cheap; used to detect changes. */
+    static std::string headCommit(const std::string& path);
+    /** Return the subset of candidate object ids that exist in the repository (opens it once). */
+    static std::set<std::string> filterExistingCommits(const std::string& path, const std::set<std::string>& candidates);
+    /** Point branches/tags at already imported commits once their history is complete. */
+    static bool applyRefUpdates(const std::string& repoPath, const std::map<std::string, std::string>& refUpdates);
+    /** Format a git timestamp safely ("" when it cannot be represented). */
+    static std::string formatTime(int64_t when);
+    /** True for a relative path without '.', '..', drive or root components. */
+    static bool isSafeRelativePath(const std::string& path);
 
     /**
      * @brief Commit all changes in the working directory.

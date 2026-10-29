@@ -29,18 +29,32 @@
 #include "retroshare/rsgxsifacetypes.h"
 
 #include <QPointer>
+#include <QTimer>
+#include <QApplication>
 
 GitUserNotify::GitUserNotify(MainWidget *mainWidget, QObject *parent) :
     UserNotify(parent), mMainWidget(mainWidget), mNewCount(0), mEventHandlerId(0)
 {
+    // Bursts of events (e.g. many messages marked read) trigger a single
+    // statistics request instead of one background thread per event.
+    mUpdateTimer = new QTimer(this);
+    mUpdateTimer->setSingleShot(true);
+    mUpdateTimer->setInterval(1000);
+    connect(mUpdateTimer, &QTimer::timeout, this, [this]() { updateIcon(); });
+
     /* Register for Git events so the icon updates whenever new commits arrive
        or a read/unread state change is posted from the backend. */
     if (rsEvents) {
         RsEventType gitEventType = (RsEventType)rsEvents->getDynamicEventType("GIT");
+        QPointer<GitUserNotify> self(this);
         rsEvents->registerEventsHandler(
-            [this](std::shared_ptr<const RsEvent> /*event*/) {
-                RsQThreadUtils::postToObject(
-                    [this]() { updateIcon(); }, this);
+            [self](std::shared_ptr<const RsEvent> event) {
+                const RsGitEvent *e = dynamic_cast<const RsGitEvent *>(event.get());
+                if (e && e->mGitEventCode == RsGitEventCode::CLONE_STATUS_CHANGED) return;
+                // Checked on the GUI thread: the notifier may be gone by then.
+                RsQThreadUtils::postToObject([self]() {
+                    if (self && !self->mUpdateTimer->isActive()) self->mUpdateTimer->start();
+                }, qApp);
             },
             mEventHandlerId, gitEventType);
     }

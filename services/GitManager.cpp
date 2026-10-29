@@ -19,13 +19,17 @@
  *******************************************************************************/
 
 #include "GitManager.h"
-#include <QDir>
 #include <iostream>
 #include <fstream>
+#include <filesystem>
+#include <functional>
+#include <mutex>
 #include <string.h>
 #include <ctime>
 #include <retroshare/rsinit.h>
 #include <algorithm>
+
+namespace fs = std::filesystem;
 
 static std::string normalizePath(const std::string& path)
 {
@@ -92,13 +96,55 @@ namespace {
 std::string oidText(const git_oid *oid) {
     char hex[GIT_OID_HEXSZ + 1]; git_oid_tostr(hex, sizeof(hex), oid); return hex;
 }
-// Enumerate full object closure, including trees, blobs, tags and commit parents.
-// Gitlinks name commits in another repository and are intentionally excluded.
-bool collectObjects(git_repository *repo, const git_oid& tip, std::set<std::string>& objects) {
+
+// std::localtime() returns NULL for dates it cannot represent (on Windows any
+// time before 1970 or after 3000). Git allows such dates and a remote peer can
+// publish them, so never pass the result to strftime() unchecked.
+std::string formatGitTime(git_time_t when)
+{
+    static std::mutex localtimeMutex; // std::localtime uses a shared static buffer
+    const std::time_t t = static_cast<std::time_t>(when);
+    if (static_cast<git_time_t>(t) != when) return std::string();
+    std::tm copy;
+    {
+        std::lock_guard<std::mutex> lock(localtimeMutex);
+        const std::tm *tmv = std::localtime(&t);
+        if (!tmv) return std::string();
+        copy = *tmv;
+    }
+    char buf[64];
+    if (std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &copy) == 0) return std::string();
+    return buf;
+}
+
+// Targets of all existing references. RetroGit only creates a reference after
+// verifying that its full history is present, and git guarantees the same for
+// working repositories, so history below these objects is known to be complete.
+std::set<std::string> refTargets(git_repository *repo)
+{
+    std::set<std::string> tips;
+    git_reference_iterator *iter = nullptr;
+    if (git_reference_iterator_new(&iter, repo) != 0) return tips;
+    git_reference *ref = nullptr;
+    while (git_reference_next(&ref, iter) == 0) {
+        if (const git_oid *id = git_reference_target(ref)) tips.insert(oidText(id));
+        git_reference_free(ref);
+    }
+    git_reference_iterator_free(iter);
+    return tips;
+}
+
+// Enumerate the object closure of tip (trees, blobs, tags and commit parents),
+// stopping at objects listed in 'complete' whose history is already known to be
+// present. Gitlinks name commits in another repository and are excluded.
+bool collectObjects(git_repository *repo, const git_oid& tip, std::set<std::string>& objects,
+                    const std::set<std::string> *complete = nullptr) {
     std::vector<git_oid> pending{tip};
     while (!pending.empty()) {
         git_oid id = pending.back(); pending.pop_back();
-        if (!objects.insert(oidText(&id)).second) continue;
+        const std::string hex = oidText(&id);
+        if (complete && complete->count(hex)) continue;
+        if (!objects.insert(hex).second) continue;
         git_object *object = nullptr;
         if (git_object_lookup(&object, repo, &id, GIT_OBJECT_ANY) != 0) return false;
         switch (git_object_type(object)) {
@@ -124,7 +170,104 @@ bool collectObjects(git_repository *repo, const git_oid& tip, std::set<std::stri
     }
     return true;
 }
+
+bool isPublishableRef(const std::string& name)
+{
+    return name.size() < 1024 &&
+        (name.rfind("refs/heads/", 0) == 0 || name.rfind("refs/tags/", 0) == 0);
 }
+
+// Feed a pack into the repository's object database.
+bool indexPack(git_repository *repo, const std::function<int(git_indexer*, git_indexer_progress*)>& feed)
+{
+    const std::string packDir = std::string(git_repository_path(repo)) + "objects/pack";
+    std::error_code ec;
+    fs::create_directories(fs::u8path(packDir), ec); // git_indexer_new fails without it
+    git_indexer *idx = nullptr;
+    int error = git_indexer_new(&idx, packDir.c_str(), 0, NULL, NULL);
+    if (error == 0) {
+        git_indexer_progress stats;
+        memset(&stats, 0, sizeof(stats));
+        error = feed(idx, &stats);
+        if (error == 0) error = git_indexer_commit(idx, &stats);
+        git_indexer_free(idx);
+    }
+    if (error < 0) {
+        const git_error *e = git_error_last();
+        std::cerr << "Error indexing packfile: " << (e ? e->message : "Unknown") << std::endl;
+    }
+    return error == 0;
+}
+
+// Point references at their published commits once their history is complete.
+bool applyRefs(git_repository *repo, const std::map<std::string, std::string>& refUpdates)
+{
+    // Delta packs may arrive before their prerequisites. Retain objects, but
+    // never expose incomplete history through branch references.
+    const std::set<std::string> complete = refTargets(repo);
+    std::set<std::string> visited;
+    for (const auto& update : refUpdates) {
+        if (!isPublishableRef(update.first)) continue;
+        git_oid id;
+        if (update.second.size() != GIT_OID_HEXSZ || git_oid_fromstr(&id, update.second.c_str()) != 0 ||
+            !collectObjects(repo, id, visited, &complete))
+            return false;
+    }
+    for (const auto& update : refUpdates) {
+        if (!isPublishableRef(update.first)) {
+            // Only branches and tags may be published; never HEAD, remotes or review refs.
+            std::cerr << "RetroGit: ignoring update of non-branch reference " << update.first << std::endl;
+            continue;
+        }
+        git_oid oid;
+        if (git_oid_fromstr(&oid, update.second.c_str()) != 0) continue;
+        git_reference *ref = NULL;
+        if (git_reference_create(&ref, repo, update.first.c_str(), &oid, 1, "RetroGit network sync") < 0) {
+            const git_error *e = git_error_last();
+            std::cerr << "RetroGit: git_reference_create failed: " << (e ? e->message : "Unknown error") << std::endl;
+        }
+        git_reference_free(ref);
+        // Symbolically point HEAD to this branch if it is refs/heads/master or refs/heads/main
+        if (update.first == "refs/heads/master" || update.first == "refs/heads/main") {
+            git_reference *head_ref = NULL;
+            git_reference_symbolic_create(&head_ref, repo, "HEAD", update.first.c_str(), 1, "RetroGit set HEAD");
+            git_reference_free(head_ref);
+        }
+    }
+    return true;
+}
+
+git_repository *openOrInitRepository(const std::string& normPath)
+{
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, normPath.c_str()) == 0) return repo;
+    std::cout << "RetroGit: Repository not found. Initializing bare repo at: " << normPath << std::endl;
+    if (git_repository_init(&repo, normPath.c_str(), 1) != 0) {
+        std::cerr << "RetroGit: failed to initialize bare repository " << normPath << std::endl;
+        return NULL;
+    }
+    return repo;
+}
+
+// Reject absolute paths and '..' components coming from repository trees.
+bool isSafeRelativePath(const std::string& path)
+{
+    if (path.empty() || path[0] == '/' || path[0] == '\\' || path.find(':') != std::string::npos) return false;
+    size_t start = 0;
+    while (start <= path.size()) {
+        size_t end = path.find_first_of("/\\", start);
+        if (end == std::string::npos) end = path.size();
+        const std::string part = path.substr(start, end - start);
+        if (part.empty() || part == "." || part == "..") return false;
+        start = end + 1;
+    }
+    return true;
+}
+}
+
+std::string GitManager::formatTime(int64_t when) { return formatGitTime(static_cast<git_time_t>(when)); }
+
+bool GitManager::isSafeRelativePath(const std::string& path) { return ::isSafeRelativePath(path); }
 
 bool GitManager::hasCommit(const std::string& path, const std::string& commit) {
     git_repository *repo = nullptr; git_oid id; git_commit *object = nullptr;
@@ -135,6 +278,8 @@ bool GitManager::hasCommit(const std::string& path, const std::string& commit) {
 }
 
 std::set<std::string> GitManager::knownTips(const std::string& path) {
+    // References are only created once their history is complete, so their
+    // targets can be advertised without re-walking the whole history.
     std::set<std::string> tips;
     git_repository *repo = nullptr;
     if (git_repository_open(&repo, normalizePath(path).c_str()) != 0) return tips;
@@ -144,9 +289,8 @@ std::set<std::string> GitManager::knownTips(const std::string& path) {
         while (git_reference_next(&ref, iter) == 0) {
             const std::string name = git_reference_name(ref);
             const git_oid *id = git_reference_target(ref);
-            std::set<std::string> objects;
-            if (id && (name.rfind("refs/heads/", 0) == 0 || name.rfind("refs/tags/", 0) == 0) &&
-                collectObjects(repo, *id, objects)) tips.insert(oidText(id));
+            if (id && (name.rfind("refs/heads/", 0) == 0 || name.rfind("refs/tags/", 0) == 0))
+                tips.insert(oidText(id));
             git_reference_free(ref);
         }
         git_reference_iterator_free(iter);
@@ -154,95 +298,82 @@ std::set<std::string> GitManager::knownTips(const std::string& path) {
     git_repository_free(repo); return tips;
 }
 
+std::string GitManager::headCommit(const std::string& path)
+{
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normalizePath(path).c_str()) != 0) return std::string();
+    git_oid id;
+    std::string result;
+    if (git_reference_name_to_id(&id, repo, "HEAD") == 0) result = oidText(&id);
+    git_repository_free(repo);
+    return result;
+}
+
+std::set<std::string> GitManager::filterExistingCommits(const std::string& path, const std::set<std::string>& candidates)
+{
+    std::set<std::string> present;
+    git_repository *repo = nullptr;
+    if (candidates.empty() || git_repository_open(&repo, normalizePath(path).c_str()) != 0) return present;
+    git_odb *odb = nullptr;
+    if (git_repository_odb(&odb, repo) == 0) {
+        for (const auto& hex : candidates) {
+            git_oid id;
+            if (hex.size() == GIT_OID_HEXSZ && git_oid_fromstr(&id, hex.c_str()) == 0 && git_odb_exists(odb, &id))
+                present.insert(hex);
+        }
+        git_odb_free(odb);
+    }
+    git_repository_free(repo);
+    return present;
+}
+
 bool GitManager::unpackPackfile(const std::string& repoPath, const std::string& packfileData, const std::map<std::string, std::string>& refUpdates)
 {
-    std::string normPath = normalizePath(repoPath);
-    git_repository *repo = NULL;
-    int error = git_repository_open(&repo, normPath.c_str());
-    if (error < 0) {
-        std::cout << "unpackPackfile: Repository not found. Initializing bare repo at: " << normPath << std::endl;
-        if (!initRepository(normPath)) {
-            std::cerr << "unpackPackfile failed to initialize bare repository" << std::endl;
-            return false;
-        }
-        error = git_repository_open(&repo, normPath.c_str());
-        if (error < 0) {
-            std::cerr << "unpackPackfile failed to open repo after initialization" << std::endl;
-            return false;
-        }
-    }
-
-    // Index the incoming packfile data directly from memory
-    git_indexer *idx = NULL;
-    std::string packDir = repoPath + "/objects/pack";
-    
-    // Ensure the pack directory exists, otherwise git_indexer_new fails
-    QDir().mkpath(QString::fromStdString(packDir));
-    
-    error = git_indexer_new(&idx, packDir.c_str(), 0, NULL, NULL);
-    if (error == 0) {
-        git_indexer_progress stats;
-        memset(&stats, 0, sizeof(stats));
-        error = git_indexer_append(idx, packfileData.data(), packfileData.size(), &stats);
-        if (error == 0) {
-            error = git_indexer_commit(idx, &stats);
-        }
-        git_indexer_free(idx);
-    }
-    
-    if (error < 0) {
-        const git_error *e = git_error_last();
-        std::cerr << "Error indexing packfile: " << (e ? e->message : "Unknown") << std::endl;
-        git_repository_free(repo);
-        return false;
-    }
-
-    // Delta packs may arrive before their prerequisites. Retain objects, but
-    // never expose incomplete history through branch references.
-    std::set<std::string> complete;
-    for (const auto& update : refUpdates) {
-        git_oid id;
-        if (update.second.size() != GIT_OID_HEXSZ || git_oid_fromstr(&id, update.second.c_str()) != 0 ||
-            !collectObjects(repo, id, complete)) {
-            git_repository_free(repo);
-            return false;
-        }
-    }
-    // Update branch references
-    for (std::map<std::string, std::string>::const_iterator it = refUpdates.begin(); it != refUpdates.end(); ++it) {
-        git_oid oid;
-        if (git_oid_fromstr(&oid, it->second.c_str()) == 0) {
-            git_reference *ref = NULL;
-            int ref_err = git_reference_create(&ref, repo, it->first.c_str(), &oid, 1, "RetroGit network sync");
-            if (ref_err < 0) {
-                const git_error *e = git_error_last();
-                std::cerr << "unpackPackfile: git_reference_create failed: " << (e ? e->message : "Unknown error") << std::endl;
-            } else {
-                if (ref) git_reference_free(ref);
-            }
-
-            // Symbolically point HEAD to this branch if it is refs/heads/master or refs/heads/main
-            if (it->first == "refs/heads/master" || it->first == "refs/heads/main") {
-                git_reference *head_ref = NULL;
-                git_reference_symbolic_create(&head_ref, repo, "HEAD", it->first.c_str(), 1, "RetroGit set HEAD");
-                if (head_ref) git_reference_free(head_ref);
-            }
-        }
-    }
-
+    git_repository *repo = openOrInitRepository(normalizePath(repoPath));
+    if (!repo) return false;
+    // An empty pack means every object was already published before.
+    bool ok = packfileData.empty() || indexPack(repo, [&](git_indexer *idx, git_indexer_progress *stats) {
+        return git_indexer_append(idx, packfileData.data(), packfileData.size(), stats);
+    });
+    if (ok) ok = applyRefs(repo, refUpdates);
     git_repository_free(repo);
-    return true;
+    return ok;
+}
+
+bool GitManager::applyRefUpdates(const std::string& repoPath, const std::map<std::string, std::string>& refUpdates)
+{
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normalizePath(repoPath).c_str()) != 0) return false;
+    const bool ok = applyRefs(repo, refUpdates);
+    git_repository_free(repo);
+    return ok;
 }
 
 bool GitManager::unpackPackfileFromFile(const std::string& repoPath, const std::string& packfilePath, const std::map<std::string, std::string>& refUpdates)
 {
-    std::ifstream file(packfilePath.c_str(), std::ios::binary);
+    std::ifstream file(fs::u8path(packfilePath), std::ios::binary);
     if (!file) {
         std::cerr << "unpackPackfileFromFile failed to open file: " << packfilePath << std::endl;
         return false;
     }
-    std::string packData((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    return unpackPackfile(repoPath, packData, refUpdates);
+    git_repository *repo = openOrInitRepository(normalizePath(repoPath));
+    if (!repo) return false;
+    // Stream the file in blocks instead of loading the whole pack into memory.
+    bool ok = indexPack(repo, [&](git_indexer *idx, git_indexer_progress *stats) {
+        std::vector<char> buffer(1024 * 1024);
+        while (file) {
+            file.read(buffer.data(), buffer.size());
+            const std::streamsize got = file.gcount();
+            if (got > 0) {
+                const int error = git_indexer_append(idx, buffer.data(), static_cast<size_t>(got), stats);
+                if (error != 0) return error;
+            }
+        }
+        return file.bad() ? -1 : 0;
+    });
+    if (ok) ok = applyRefs(repo, refUpdates);
+    git_repository_free(repo);
+    return ok;
 }
 
 static int packbuilder_callback(void *buf, size_t size, void *payload) {
@@ -251,32 +382,69 @@ static int packbuilder_callback(void *buf, size_t size, void *payload) {
     return 0;
 }
 
+static bool buildObjectPackOnce(git_repository *repo, const std::map<std::string, std::string>& refs,
+                                const std::set<std::string>& known, std::string& data)
+{
+    data.clear();
+    git_packbuilder *builder = nullptr;
+    git_revwalk *walk = nullptr;
+    if (git_packbuilder_new(&builder, repo) != 0) return false;
+    if (git_revwalk_new(&walk, repo) != 0) { git_packbuilder_free(builder); return false; }
+    bool ok = true, pushed = false;
+    for (const auto& ref : refs) {
+        git_oid cur;
+        if (git_oid_fromstr(&cur, ref.second.c_str()) != 0) { ok = false; break; }
+        // Ship annotated tag objects, then the object they finally point to.
+        git_object_t type = GIT_OBJECT_INVALID;
+        for (int depth = 0; ok && depth < 16; ++depth) {
+            git_object *obj = nullptr;
+            if (git_object_lookup(&obj, repo, &cur, GIT_OBJECT_ANY) != 0) { ok = false; break; }
+            type = git_object_type(obj);
+            if (type != GIT_OBJECT_TAG) { git_object_free(obj); break; }
+            const git_oid target = *git_tag_target_id(reinterpret_cast<git_tag*>(obj));
+            git_object_free(obj);
+            // Tag objects the receiver already has are not sent again.
+            if (!known.count(oidText(&cur)) && git_packbuilder_insert(builder, &cur, nullptr) != 0) { ok = false; break; }
+            cur = target;
+        }
+        if (!ok) break;
+        if (type == GIT_OBJECT_COMMIT) {
+            if (git_revwalk_push(walk, &cur) != 0) { ok = false; break; }
+            pushed = true;
+        } else if (type == GIT_OBJECT_TREE || type == GIT_OBJECT_BLOB) {
+            if (git_packbuilder_insert_recur(builder, &cur, nullptr) != 0) { ok = false; break; }
+        } else { ok = false; break; }
+    }
+    // Commits the receiver already has: everything reachable from them is omitted.
+    // Unknown baselines cannot justify omitting any objects, so they are skipped.
+    for (const auto& tip : known) {
+        if (!ok) break;
+        git_oid id;
+        git_object *obj = nullptr, *peeled = nullptr;
+        if (tip.size() != GIT_OID_HEXSZ || git_oid_fromstr(&id, tip.c_str()) != 0 ||
+            git_object_lookup(&obj, repo, &id, GIT_OBJECT_ANY) != 0) continue;
+        if (git_object_peel(&peeled, obj, GIT_OBJECT_COMMIT) == 0) {
+            git_revwalk_hide(walk, git_object_id(peeled));
+            git_object_free(peeled);
+        }
+        git_object_free(obj);
+    }
+    if (ok && pushed) ok = git_packbuilder_insert_walk(builder, walk) == 0;
+    if (ok && git_packbuilder_object_count(builder) > 0)
+        ok = git_packbuilder_foreach(builder, packbuilder_callback, &data) == 0;
+    git_revwalk_free(walk);
+    git_packbuilder_free(builder);
+    if (!ok) data.clear();
+    return ok;
+}
+
 static bool buildObjectPack(git_repository *repo, const std::map<std::string, std::string>& refs,
                             const std::set<std::string>& known, std::string& data)
 {
-    std::set<std::string> wanted, excluded;
-    for (const auto& ref : refs) {
-        git_oid id;
-        if (git_oid_fromstr(&id, ref.second.c_str()) != 0 || !collectObjects(repo, id, wanted)) return false;
-    }
-    // Unknown or incomplete baselines cannot justify omitting any objects.
-    for (const auto& tip : known) {
-        git_oid id; std::set<std::string> objects;
-        if (tip.size() == GIT_OID_HEXSZ && git_oid_fromstr(&id, tip.c_str()) == 0 && collectObjects(repo, id, objects))
-            excluded.insert(objects.begin(), objects.end());
-    }
-    git_packbuilder *builder = nullptr;
-    if (git_packbuilder_new(&builder, repo) != 0) return false;
-    bool ok = true;
-    for (const auto& hex : wanted) {
-        if (excluded.count(hex)) continue;
-        git_oid id; git_oid_fromstr(&id, hex.c_str());
-        if (git_packbuilder_insert(builder, &id, nullptr) != 0) { ok = false; break; }
-    }
-    data.clear();
-    if (ok) ok = git_packbuilder_foreach(builder, packbuilder_callback, &data) == 0;
-    git_packbuilder_free(builder);
-    return ok;
+    if (buildObjectPackOnce(repo, refs, known, data)) return true;
+    // A baseline whose history is incomplete locally makes the walk fail;
+    // fall back to a self-contained pack instead of failing the transfer.
+    return !known.empty() && buildObjectPackOnce(repo, refs, {}, data);
 }
 
 bool GitManager::createPackfile(const std::string& repoPath, std::string& outPackfileData,
@@ -383,10 +551,7 @@ bool GitManager::getCommitLog(const std::string &repoPath, std::vector<GitCommit
             if (sig) {
                 info.author = sig->name ? sig->name : "";
                 
-                std::time_t t = sig->when.time;
-                char buf[64];
-                std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", std::localtime(&t));
-                info.date = buf;
+                info.date = formatGitTime(sig->when.time);
             }
             
             commits.push_back(info);
@@ -701,10 +866,7 @@ bool GitManager::getCommitDetails(const std::string& repoPath, const std::string
         authorName = sig->name ? sig->name : "";
         authorEmail = sig->email ? sig->email : "";
         
-        std::time_t t = sig->when.time;
-        char buf[64];
-        std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", std::localtime(&t));
-        date = buf;
+        date = formatGitTime(sig->when.time);
     }
 
     // Message
@@ -972,6 +1134,7 @@ bool GitManager::getLocalChanges(const std::string& repoPath, std::vector<GitLoc
 
 bool GitManager::extractFile(const std::string& repoPath, const std::string& relativePath, const std::string& destPath, const std::string& refName)
 {
+    if (!::isSafeRelativePath(relativePath)) return false;
     std::string normPath = normalizePath(repoPath);
     git_repository *repo = nullptr;
     if (git_repository_open(&repo, normPath.c_str()) != 0) return false;
@@ -1027,12 +1190,22 @@ bool GitManager::extractFile(const std::string& repoPath, const std::string& rel
         return false;
     }
 
+    // Only files can be extracted; directories and submodules are not blobs.
+    if (git_object_type(obj) != GIT_OBJECT_BLOB) {
+        git_object_free(obj);
+        git_tree_entry_free(entry);
+        git_tree_free(tree);
+        git_commit_free(commit);
+        git_repository_free(repo);
+        return false;
+    }
+
     git_blob *blob = (git_blob*)obj;
     const void *content = git_blob_rawcontent(blob);
     size_t size = git_blob_rawsize(blob);
 
     // Write to destPath
-    std::ofstream outfile(destPath.c_str(), std::ios::binary);
+    std::ofstream outfile(fs::u8path(destPath), std::ios::binary);
     if (!outfile) {
         git_object_free(obj);
         git_tree_entry_free(entry);
@@ -1044,13 +1217,14 @@ bool GitManager::extractFile(const std::string& repoPath, const std::string& rel
 
     outfile.write((const char*)content, size);
     outfile.close();
+    const bool written = !outfile.fail();
 
     git_object_free(obj);
     git_tree_entry_free(entry);
     git_tree_free(tree);
     git_commit_free(commit);
     git_repository_free(repo);
-    return true;
+    return written;
 }
 
 bool GitManager::pullRepository(const std::string& localPath, const std::string& sourcePath,
@@ -1420,19 +1594,35 @@ bool GitManager::rebaseBranch(const std::string& repoPath, const std::string& up
             git_repository_free(repo); return true;
         }
     }
+    // libgit2 requires a committer for every rebased commit.
+    git_signature *committer = nullptr;
+    if (ok && git_signature_default(&committer, repo) != 0 &&
+        git_signature_now(&committer, "RetroGit", "retrogit@localhost") != 0) ok = false;
     git_rebase *rebase = nullptr;
     git_rebase_options options = GIT_REBASE_OPTIONS_INIT;
     if (ok) ok = git_rebase_init(&rebase, repo, branch, upstream, nullptr, &options) == 0;
     git_annotated_commit_free(branch); git_annotated_commit_free(upstream);
-    if (!ok) return fail("The fork and upstream history could not be prepared for rebase.");
-    git_rebase_operation *operation = nullptr;
-    while ((ok = git_rebase_next(&operation, rebase)) == 0) {
-        if (git_rebase_commit(nullptr, rebase, nullptr, nullptr, nullptr, nullptr) != 0) { ok = false; break; }
+    if (!ok) {
+        git_signature_free(committer);
+        return fail("The fork and upstream history could not be prepared for rebase.");
     }
-    if (ok && git_rebase_finish(rebase, nullptr) != 0) ok = false;
+    git_rebase_operation *operation = nullptr;
+    bool conflict = false;
+    int step = 0;
+    while ((step = git_rebase_next(&operation, rebase)) == 0) {
+        git_oid rebased;
+        const int result = git_rebase_commit(&rebased, rebase, nullptr, committer, nullptr, nullptr);
+        if (result == GIT_EAPPLIED) continue; // change is already upstream
+        if (result != 0) { ok = false; conflict = (result == GIT_EUNMERGED); break; }
+    }
+    if (ok && step != GIT_ITEROVER) ok = false; // git_rebase_next failed
+    if (ok && git_rebase_finish(rebase, committer) != 0) ok = false;
+    git_signature_free(committer);
     if (!ok) {
         git_rebase_abort(rebase); git_rebase_free(rebase);
-        if (errorMessage) *errorMessage = "Rebase stopped because the upstream changes conflict with your branch.";
+        if (errorMessage) *errorMessage = conflict
+            ? "Rebase stopped because the upstream changes conflict with your branch."
+            : "Rebase failed. Your branch was restored to its previous state.";
         git_repository_free(repo); return false;
     }
     git_rebase_free(rebase); git_repository_free(repo); return true;
@@ -1535,10 +1725,7 @@ bool GitManager::getCommitsBetweenBranches(const std::string& repoPath, const st
             if (sig) {
                 info.author = sig->name ? sig->name : "";
                 
-                std::time_t t = sig->when.time;
-                char buf[64];
-                std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", std::localtime(&t));
-                info.date = buf;
+                info.date = formatGitTime(sig->when.time);
             }
             
             commits.push_back(info);
@@ -1728,10 +1915,17 @@ bool GitManager::setReviewRef(const std::string& repoPath, const std::string& re
     if (git_oid_fromstr(&oid, commit.c_str()) != 0) return false;
     git_repository *repo = nullptr;
     if (git_repository_open(&repo, normalizePath(repoPath).c_str()) != 0) return false;
+    // Already in place: the reference was only created after a full check.
+    git_oid current;
+    if (git_reference_name_to_id(&current, repo, ref.c_str()) == 0 && git_oid_equal(&current, &oid)) {
+        git_repository_free(repo);
+        return true;
+    }
     git_commit *object = nullptr;
     git_reference *reference = nullptr;
     std::set<std::string> closure;
-    bool ok = collectObjects(repo, oid, closure) && git_commit_lookup(&object, repo, &oid) == 0 &&
+    const std::set<std::string> complete = refTargets(repo);
+    bool ok = collectObjects(repo, oid, closure, &complete) && git_commit_lookup(&object, repo, &oid) == 0 &&
         git_reference_create(&reference, repo, ref.c_str(), &oid, 1, "RetroGit PR snapshot") == 0;
     git_reference_free(reference);
     git_commit_free(object);

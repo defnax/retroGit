@@ -29,6 +29,8 @@
 #include <utility>
 #include "interface/rsGit.h"
 
+struct GitLocalChange;
+
 namespace Ui {
 class GitWidget;
 }
@@ -60,6 +62,7 @@ private slots:
     void onCommitSelectionChanged();
     void onCommitTableContextMenu(const QPoint &pos);
     void onCommitReadStatusToggled(const QString &msgIdStr, bool markRead);
+    void pollWorkingTree();
 
 private:
     void finishFork();
@@ -67,7 +70,7 @@ private:
     QString mPendingForkPath;
     QString chooseRepositoryPath(bool clone);
     void setLocalPath(const QString &path);
-    void populateCommitLog();
+    void populateCommitLog(const std::vector<GitLocalChange> *workingChanges = nullptr);
     void saveRepoLocalPath(const QString &groupId, const QString &path);
     QString loadRepoLocalPath(const QString &groupId);
 
@@ -82,6 +85,9 @@ private:
     std::vector<std::string> mLastCommitHashes;
     std::vector<std::pair<std::string, char>> mLastLocalChanges;
     std::vector<std::pair<std::string, uint32_t>> mLastUpdates;
+
+    std::string mLastWorkingTreeState;
+    bool mPollInFlight = false;
 };
 
 #endif // GITWIDGET_H

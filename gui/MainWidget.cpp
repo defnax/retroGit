@@ -83,10 +83,93 @@
 #include <QShortcut>
 #include <QCheckBox>
 #include <QEvent>
+#include <QApplication>
+#include <QEventLoop>
+#include <QDirIterator>
+#include <QPointer>
 #include <retroshare/rsfiles.h>
 #include <retroshare/rsidentity.h>
 
 #define IMAGE_GIT ":/images/git-white.png"
+
+namespace {
+// Diffs longer than this are truncated: QTextBrowser becomes unusable with
+// hundreds of thousands of rich-text blocks.
+const size_t MAX_DIFF_LINES = 20000;
+
+void appendDiffLines(QString &html, const std::vector<GitDiffLine> &diffLines)
+{
+    bool inHunk = false;
+    size_t shown = 0;
+    for (const GitDiffLine& line : diffLines) {
+        if (++shown > MAX_DIFF_LINES) {
+            if (inHunk) html += "</div>";
+            inHunk = false;
+            html += "<div class='header-banner'>" +
+                QObject::tr("Diff truncated after %1 lines.").arg(MAX_DIFF_LINES) + "</div>";
+            break;
+        }
+        QString lineText = QString::fromStdString(line.text);
+        while (lineText.endsWith('\n') || lineText.endsWith('\r')) {
+            lineText.chop(1);
+        }
+        QString escapedText = lineText.toHtmlEscaped();
+
+        if (line.origin == 'F') {
+            if (inHunk) {
+                html += "</div>"; // Close previous hunk card
+                inHunk = false;
+            }
+            if (lineText.startsWith("diff --git")) {
+                html += "<div class='file-header'>" + escapedText + "</div>";
+            } else {
+                html += "<div class='file-header-detail'>" + escapedText + "</div>";
+            }
+        } else if (line.origin == 'H') {
+            if (inHunk) {
+                html += "</div>"; // Close previous hunk card
+            }
+            html += "<div class='hunk-header'>" + escapedText + "</div>";
+            html += "<div class='hunk-card'>";
+            inHunk = true;
+        } else {
+            if (!inHunk) {
+                html += "<div class='hunk-card'>";
+                inHunk = true;
+            }
+
+            if (line.origin == '+') {
+                html += "<div class='line line-add'>+ " + escapedText + "</div>";
+            } else if (line.origin == '-') {
+                html += "<div class='line line-del'>- " + escapedText + "</div>";
+            } else if (line.origin == ' ') {
+                html += "<div class='line line-ctx'>  " + escapedText + "</div>";
+            } else {
+                html += "<div class='line line-ctx'>" + escapedText + "</div>";
+            }
+        }
+    }
+    if (inHunk) {
+        html += "</div>"; // Close final hunk card
+    }
+}
+
+// Remove RetroGit temporary files that are no longer needed. Published packs
+// are shared for 30 days; previews are only needed while they are open.
+void cleanupTemporaryFiles()
+{
+    const QString root = QDir::cleanPath(QString::fromStdString(RsAccounts::AccountDirectory()) + "/retrogit_temp");
+    const QDateTime now = QDateTime::currentDateTime();
+    QDirIterator it(root, QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QString path = it.next();
+        const QFileInfo info = it.fileInfo();
+        const bool preview = path.contains("/retrogit_temp/previews/");
+        const qint64 maxAgeDays = preview ? 1 : 31;
+        if (info.lastModified().daysTo(now) > maxAgeDays) QFile::remove(path);
+    }
+}
+}
 
 MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
     MainPage(parent),
@@ -229,18 +312,33 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
     connect(mChangedFilesTree, SIGNAL(itemDoubleClicked(QTreeWidgetItem*,int)), this, SLOT(onChangedFilesDoubleClicked(QTreeWidgetItem*,int)));
     detailsLayout->addWidget(mChangedFilesTree);
 
+    // Commit metadata comes from remote peers: never interpret it as rich text.
+    for (QLabel *label : {mDetailsHashLabel, mDetailsTitleLabel, mDetailsBodyText,
+                          mDetailsAuthorNameLabel, mDetailsAuthorEmailLabel, mDetailsDateLabel})
+        label->setTextFormat(Qt::PlainText);
+
     ui->verticalLayout->addWidget(mCommitDetailsWidget);
     mCommitDetailsWidget->hide(); // Hide initially until a commit is selected!
 
     loadGroupMeta();
 
+    // Bursts of backend events are coalesced into one refresh.
+    mEventTimer = new QTimer(this);
+    mEventTimer->setSingleShot(true);
+    mEventTimer->setInterval(300);
+    connect(mEventTimer, &QTimer::timeout, this, &MainWidget::processPendingEvents);
+
+    RsThread::async([]() { cleanupTemporaryFiles(); });
+
     /* Register for Git events using the dynamic GIT event type */
     if (rsEvents) {
     RsEventType gitEventType = (RsEventType)rsEvents->getDynamicEventType("GIT");
+    QPointer<MainWidget> self(this);
     rsEvents->registerEventsHandler(
-        [this](std::shared_ptr<const RsEvent> event) {
+        [self](std::shared_ptr<const RsEvent> event) {
+          // Validity is checked on the GUI thread, where the widget is deleted.
           RsQThreadUtils::postToObject(
-              [=]() { handleEvent_main_thread(event); }, this);
+              [self, event]() { if (self) self->handleEvent_main_thread(event); }, qApp);
         },
         mEventHandlerId, gitEventType);
     }
@@ -328,20 +426,25 @@ void MainWidget::createGroup()
 
 void MainWidget::loadGroupMeta()
 {
-    if (mGroupMetaLoadPending) return;
+    if (mGroupMetaLoadPending) {
+        // A load is running and may have read data that just changed: reload once it ends.
+        mGroupMetaReloadRequested = true;
+        return;
+    }
     mGroupMetaLoadPending = true;
-    std::cerr << "MainWidget::loadGroupMeta()";
-    std::cerr << std::endl;
+    mGroupMetaReloadRequested = false;
 
-  RsThread::async([this]() {
+  QPointer<MainWidget> self(this);
+  RsThread::async([self]() {
     // Fetch group metadata from backend
     std::list<RsGxsGroupId> groupIds; // empty list = get all groups
     std::vector<RsGitGroup> groups;
 
-    if (!rsGit->getGroups(groupIds, groups)) {
+    if (!rsGit || !rsGit->getGroups(groupIds, groups)) {
       std::cerr << "MainWidget::loadGroupMeta() Error getting groups from GXS"
                 << std::endl;
-      RsQThreadUtils::postToObject([this]() { mGroupMetaLoadPending = false; }, this);
+      RsQThreadUtils::postToObject([self]() { if (self) self->mGroupMetaLoadPending = false; }, qApp);
+      // (no automatic retry on failure: the next backend event reloads)
       return;
     }
 
@@ -353,7 +456,7 @@ void MainWidget::loadGroupMeta()
       
       int unreadCount = 0;
       std::vector<RsGitUpdate> updates;
-      if (rsGit->getUpdates(group.mMeta.mGroupId, updates)) {
+      if (rsGit && rsGit->getUpdates(group.mMeta.mGroupId, updates)) {
           for (const auto &update : updates) {
               if (update.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) {
                   unreadCount++;
@@ -361,27 +464,30 @@ void MainWidget::loadGroupMeta()
           }
       }
       std::vector<RsGitPullRequest> pullRequests;
-      if (rsGit->getPullRequests(group.mMeta.mGroupId, pullRequests)) {
+      if (rsGit && rsGit->getPullRequests(group.mMeta.mGroupId, pullRequests)) {
           for (const auto &pr : pullRequests)
               if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) ++unreadCount;
       }
       groupUnreadCounts[QString::fromStdString(group.mMeta.mGroupId.toStdString())] = unreadCount;
     }
 
-    // Update UI in main thread
+    // Update UI in main thread. The widget may have been destroyed meanwhile.
     RsQThreadUtils::postToObject(
-        [this, groupMeta, groupUnreadCounts]() {
-           mGroupMetaLoadPending = false;
+        [self, groupMeta, groupUnreadCounts]() {
+          if (!self) return;
+          MainWidget *w = self.data();
+          w->mGroupMetaLoadPending = false;
+          if (w->mGroupMetaReloadRequested) QTimer::singleShot(0, w, [w]() { w->loadGroupMeta(); });
           if (groupMeta.size() > 0) {
-            insertGroupsData(groupMeta);
+            w->insertGroupsData(groupMeta);
             
             // Set unread count for each group item (this automatically sets it bold if unread > 0)
             for (const auto &meta : groupMeta) {
                 QString groupIdStr = QString::fromStdString(meta.mGroupId.toStdString());
                 QTreeWidgetItem *item = nullptr;
-                QTreeWidgetItemIterator it(ui->treeWidget->treeWidget());
+                QTreeWidgetItemIterator it(w->ui->treeWidget->treeWidget());
                 while (*it) {
-                    if (ui->treeWidget->itemId(*it) == groupIdStr) {
+                    if (w->ui->treeWidget->itemId(*it) == groupIdStr) {
                         item = *it;
                         break;
                     }
@@ -393,12 +499,12 @@ void MainWidget::loadGroupMeta()
                     if (itUnread != groupUnreadCounts.end()) {
                         unread = itUnread->second;
                     }
-                    ui->treeWidget->setUnreadCount(item, unread);
+                    w->ui->treeWidget->setUnreadCount(item, unread);
                 }
             }
           }
         },
-        this);
+        qApp);
   });
 }
 
@@ -502,125 +608,149 @@ void MainWidget::handleEvent_main_thread(std::shared_ptr<const RsEvent> event)
     if (!e)
     return;
 
-    switch (e->mGitEventCode) {
-        case RsGitEventCode::NEW_GIT:
-            updateDisplay(); // Refresh global list
-            break;
-        case RsGitEventCode::GIT_UPDATED:
-            updateDisplay(); // Refresh global list
-            break;
-        case RsGitEventCode::SUBSCRIBE_STATUS_CHANGED:
-            updateDisplay();
-            onTreeSelectionChanged();
-            break;
-        case RsGitEventCode::NEW_POST:
-        {
-            loadGroupMeta();
-            
-            // Check if we are a subscriber and notify about new changes to sync
-            QString updatedGroupId = QString::fromStdString(e->mGitGroupId.toStdString());
-            bool isAdmin = false;
-            std::list<RsGxsGroupId> groupIds({RsGxsGroupId(updatedGroupId.toStdString())});
-            std::vector<RsGitGroup> groups;
-            if (rsGit && rsGit->getGroups(groupIds, groups) && !groups.empty()) {
-                uint32_t flags = groups[0].mMeta.mSubscribeFlags;
-                isAdmin = IS_GROUP_ADMIN(flags);
-            }
-
-            bool prMerged = false;
-            bool prClosed = false;
-            // Check if any open/unprocessed pull request has been merged or closed
-            std::vector<RsGitPullRequest> pullRequests;
-            if (rsGit && rsGit->getPullRequests(e->mGitGroupId, pullRequests)) {
-                std::string bareRepoPath = GitManager::getBareRepoPath(e->mGitGroupId.toStdString());
-                for (auto &pr : pullRequests) {
-                    bool isUnprocessed = (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED);
-                    if (isUnprocessed) {
-                        if (GitManager::isBranchMerged(bareRepoPath, pr.sourceRef(), pr.mTargetBranch) || pr.mStatus == 2) {
-                            // Automatically mark as processed locally
-                            uint32_t token;
-                            rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(e->mGitGroupId, pr.mMeta.mMsgId), true);
-                            prMerged = true;
-                            
-                            // Notify user about the merge
-                            QString prTitle = QString::fromStdString(pr.mTitle);
-                            QMessageBox::information(this, tr("Pull Request Merged"),
-                                tr("Pull request '%1' has been merged into branch '%2'!").arg(prTitle).arg(QString::fromStdString(pr.mTargetBranch)));
-                        }
-                        else if (pr.mStatus == 1) {
-                            // Automatically mark as processed locally
-                            uint32_t token;
-                            rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(e->mGitGroupId, pr.mMeta.mMsgId), true);
-                            prClosed = true;
-                            
-                            // Notify user about the closure
-                            QString prTitle = QString::fromStdString(pr.mTitle);
-                            QMessageBox::information(this, tr("Pull Request Closed"),
-                                tr("Pull request '%1' has been closed!").arg(prTitle));
-                        }
-                    }
-                }
-            }
-
-            bool hasUndownloaded = true;
-            if (!updatedGroupId.isEmpty()) {
-                QString localPath = loadRepoLocalPath(updatedGroupId).trimmed();
-                if (!localPath.isEmpty()) {
-                    QString cleanPath = QDir::cleanPath(localPath);
-                    if (QDir(cleanPath).exists() && GitManager::isValidRepository(cleanPath.toStdString())) {
-                        std::vector<RsGitUpdate> updates;
-                        if (rsGit && rsGit->getUpdates(e->mGitGroupId, updates)) {
-                            std::set<std::string> localCommitShas;
-                            GitManager::getAllCommitShas(cleanPath.toStdString(), localCommitShas);
-                            
-                            hasUndownloaded = false;
-                            for (const auto &update : updates) {
-                                for (const auto &pair : update.mRefUpdates) {
-                                    if (localCommitShas.count(pair.second) == 0) {
-                                        hasUndownloaded = true;
-                                        break;
-                                    }
-                                }
-                                if (hasUndownloaded) break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (!isAdmin && !prMerged && !prClosed && !groups.empty() && hasUndownloaded) {
-                QString repoName = QString::fromUtf8(groups[0].mGroupName.c_str());
-                QMessageBox::information(this, tr("New Updates Available"),
-                    tr("The repository '%1' has new commits published by the owner. Please pull/sync to update your local files.").arg(repoName));
-            }
-            break;
-        }
-        case RsGitEventCode::READ_STATUS_CHANGED:
-        case RsGitEventCode::POST_UPDATED:
-        {
-            loadGroupMeta();
-            refreshCurrentRepo();
-            break;
-        }
-
-    default:
-        break;
+    if (e->mGitEventCode == RsGitEventCode::CLONE_STATUS_CHANGED) {
+        // Progress must be shown immediately.
+        if (mGitWidget) mGitWidget->handleGitEvent(e);
+        if (mPushesWidget) mPushesWidget->handleGitEvent(e);
+        return;
     }
 
-    // Forward events to active sub-widgets
-    if (mGitWidget) mGitWidget->handleGitEvent(e);
-    if (mCodeWidget) mCodeWidget->handleGitEvent(e);
-    if (mPushesWidget) mPushesWidget->handleGitEvent(e);
+    const bool selected = !e->mGitGroupId.isNull() &&
+        e->mGitGroupId == RsGxsGroupId(getSelectedGroupId().toStdString());
 
-    for (int i = 3; i < ui->rightPaneTabWidget->count(); ++i) {
-        PullRequestsWidget *prWidget = qobject_cast<PullRequestsWidget*>(ui->rightPaneTabWidget->widget(i));
-        if (prWidget) {
-            prWidget->refresh();
+    switch (e->mGitEventCode) {
+        case RsGitEventCode::NEW_GIT:
+        case RsGitEventCode::GIT_UPDATED:
+            mPendingGroupReload = true;
+            if (selected) mPendingRepoRefresh = true;
+            break;
+        case RsGitEventCode::SUBSCRIBE_STATUS_CHANGED:
+            mPendingGroupReload = true;
+            mPendingSelectionRefresh = true;
+            break;
+        case RsGitEventCode::NEW_POST:
+            mPendingGroupReload = true;
+            mPendingPullRequestRefresh = true;
+            if (!e->mGitGroupId.isNull()) mPendingNewPostGroups.insert(e->mGitGroupId);
+            if (selected) mPendingRepoRefresh = true;
+            break;
+        case RsGitEventCode::READ_STATUS_CHANGED:
+        case RsGitEventCode::POST_UPDATED:
+            mPendingGroupReload = true;
+            mPendingPullRequestRefresh = true;
+            if (selected) mPendingRepoRefresh = true;
+            break;
+        default:
+            break;
+    }
+    scheduleEventProcessing();
+}
+
+void MainWidget::scheduleEventProcessing()
+{
+    if (mEventTimer && !mEventTimer->isActive()) mEventTimer->start();
+}
+
+void MainWidget::processPendingEvents()
+{
+    // Never rebuild widgets while a modal operation (hashing, dialogs started
+    // from a row button, ...) is running further up the stack.
+    if (mModalDepth > 0 || QApplication::activeModalWidget() || QApplication::activePopupWidget()) {
+        scheduleEventProcessing();
+        return;
+    }
+    const bool reloadGroups = mPendingGroupReload;
+    const bool refreshRepo = mPendingRepoRefresh;
+    const bool refreshSelection = mPendingSelectionRefresh;
+    const bool refreshPullRequests = mPendingPullRequestRefresh;
+    const std::set<RsGxsGroupId> newPosts = mPendingNewPostGroups;
+    mPendingGroupReload = mPendingRepoRefresh = mPendingSelectionRefresh = mPendingPullRequestRefresh = false;
+    mPendingNewPostGroups.clear();
+
+    if (reloadGroups) loadGroupMeta();
+    if (refreshSelection) onTreeSelectionChanged();
+    else if (refreshRepo) refreshCurrentRepo();
+
+    if (refreshPullRequests) {
+        for (int i = 3; i < ui->rightPaneTabWidget->count(); ++i) {
+            if (PullRequestsWidget *prWidget = qobject_cast<PullRequestsWidget*>(ui->rightPaneTabWidget->widget(i)))
+                prWidget->refresh();
+            if (PullRequestDetailsWidget *prdWidget = qobject_cast<PullRequestDetailsWidget*>(ui->rightPaneTabWidget->widget(i)))
+                prdWidget->refresh();
         }
-        PullRequestDetailsWidget *prdWidget = qobject_cast<PullRequestDetailsWidget*>(ui->rightPaneTabWidget->widget(i));
-        if (prdWidget) {
-            prdWidget->refresh();
+    }
+
+    for (const auto &groupId : newPosts) checkNewPostNotices(groupId);
+}
+
+void MainWidget::showNotice(const QString &title, const QString &text)
+{
+    // A single non-modal notice: events never stack modal dialogs.
+    if (!mNotice) {
+        mNotice = new QMessageBox(QMessageBox::Information, title, text, QMessageBox::Ok, this);
+        mNotice->setAttribute(Qt::WA_DeleteOnClose);
+        mNotice->setModal(false);
+        mNotice->setTextFormat(Qt::PlainText);
+    } else {
+        mNotice->setWindowTitle(title);
+        mNotice->setText(text);
+    }
+    mNotice->show();
+    mNotice->raise();
+}
+
+void MainWidget::checkNewPostNotices(const RsGxsGroupId &groupId)
+{
+    if (!rsGit || groupId.isNull()) return;
+
+    // Check if we are a subscriber and notify about new changes to sync
+    bool isAdmin = false;
+    std::vector<RsGitGroup> groups;
+    if (rsGit->getGroups({groupId}, groups) && !groups.empty())
+        isAdmin = IS_GROUP_ADMIN(groups[0].mMeta.mSubscribeFlags);
+
+    // Check if any open/unprocessed pull request has been merged or closed
+    QStringList prNotices;
+    std::vector<RsGitPullRequest> pullRequests;
+    if (rsGit->getPullRequests(groupId, pullRequests)) {
+        const std::string bareRepoPath = GitManager::getBareRepoPath(groupId.toStdString());
+        for (auto &pr : pullRequests) {
+            if (!(pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED)) continue;
+            const QString prTitle = QString::fromStdString(pr.mTitle);
+            if (pr.mStatus == 2 || (pr.mStatus == 0 && GitManager::isBranchMerged(bareRepoPath, pr.sourceRef(), pr.mTargetBranch))) {
+                uint32_t token;
+                rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(groupId, pr.mMeta.mMsgId), true);
+                prNotices << tr("Pull request '%1' has been merged into branch '%2'!").arg(prTitle).arg(QString::fromStdString(pr.mTargetBranch));
+            } else if (pr.mStatus == 1) {
+                uint32_t token;
+                rsGit->setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(groupId, pr.mMeta.mMsgId), true);
+                prNotices << tr("Pull request '%1' has been closed!").arg(prTitle);
+            }
         }
+    }
+    if (!prNotices.isEmpty()) {
+        showNotice(tr("Pull Requests Updated"), prNotices.join("\n"));
+        return;
+    }
+    if (isAdmin || groups.empty()) return;
+
+    bool hasUndownloaded = true;
+    const QString localPath = QDir::cleanPath(loadRepoLocalPath(QString::fromStdString(groupId.toStdString())).trimmed());
+    if (!localPath.isEmpty() && QDir(localPath).exists() && GitManager::isValidRepository(localPath.toStdString())) {
+        std::vector<RsGitUpdate> updates;
+        if (rsGit->getUpdates(groupId, updates)) {
+            std::set<std::string> published;
+            for (const auto &update : updates)
+                for (const auto &pair : update.mRefUpdates) published.insert(pair.second);
+            // Look the published commits up directly instead of walking the whole history.
+            hasUndownloaded = GitManager::filterExistingCommits(localPath.toStdString(), published).size() != published.size();
+        }
+    }
+
+    if (hasUndownloaded) {
+        const QString repoName = QString::fromUtf8(groups[0].mGroupName.c_str());
+        showNotice(tr("New Updates Available"),
+            tr("The repository '%1' has new commits published by the owner. Please pull/sync to update your local files.").arg(repoName));
     }
 }
 
@@ -688,35 +818,31 @@ void MainWidget::markRepositoryAsRead()
         return;
 
     QString groupId = ui->treeWidget->itemId(item);
-    if (groupId.isEmpty())
+    if (groupId.isEmpty() || !rsGit)
         return;
 
-    RsThread::async([this, groupId]() {
-        if (rsGit) {
-            std::vector<RsGitUpdate> updates;
-            if (rsGit->getUpdates(RsGxsGroupId(groupId.toStdString()), updates)) {
-                for (const auto &update : updates) {
-                    if (update.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) {
-                        rsGit->setMessageReadStatus(RsGxsGrpMsgIdPair(RsGxsGroupId(groupId.toStdString()), update.mMeta.mMsgId), true);
-                    }
-                }
+    // Non-blocking requests; the backend reports the result once per group,
+    // which refreshes the views.
+    const RsGxsGroupId gid(groupId.toStdString());
+    std::vector<RsGitUpdate> updates;
+    if (rsGit->getUpdates(gid, updates)) {
+        for (const auto &update : updates) {
+            if (update.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) {
+                uint32_t token;
+                rsGit->setMessageReadStatus(token, RsGxsGrpMsgIdPair(gid, update.mMeta.mMsgId), true);
             }
-
-            std::vector<RsGitPullRequest> pullRequests;
-            if (rsGit->getPullRequests(RsGxsGroupId(groupId.toStdString()), pullRequests)) {
-                for (const auto &pr : pullRequests) {
-                    if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) {
-                        rsGit->setMessageReadStatus(RsGxsGrpMsgIdPair(RsGxsGroupId(groupId.toStdString()), pr.mMeta.mMsgId), true);
-                    }
-                }
-            }
-
-            RsQThreadUtils::postToObject([this]() {
-                refreshCurrentRepo();
-                loadGroupMeta();
-            }, this);
         }
-    });
+    }
+
+    std::vector<RsGitPullRequest> pullRequests;
+    if (rsGit->getPullRequests(gid, pullRequests)) {
+        for (const auto &pr : pullRequests) {
+            if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) {
+                uint32_t token;
+                rsGit->setMessageReadStatus(token, RsGxsGrpMsgIdPair(gid, pr.mMeta.mMsgId), true);
+            }
+        }
+    }
 }
 
 // onCommitReadStatusToggled is handled locally by GitWidget.
@@ -817,7 +943,7 @@ void MainWidget::onTreeSelectionChanged()
     while (ui->rightPaneTabWidget->count() > 3) {
         QWidget *tab = ui->rightPaneTabWidget->widget(3);
         ui->rightPaneTabWidget->removeTab(3);
-        delete tab;
+        tab->deleteLater(); // a slot of this tab may still be running
     }
 
     QString groupId = getSelectedGroupId();
@@ -904,9 +1030,9 @@ void MainWidget::logPullAttempt(const QString &groupId, const QString &repoName,
     bool available = false;
     std::vector<RsGitUpdate> updates;
     if (rsGit->getUpdates(RsGxsGroupId(groupId.toStdString()), updates) && !updates.empty()) {
-        available = true;
-        for (const auto &update : updates) for (const auto &ref : update.mRefUpdates)
-            if (!GitManager::hasCommit(cached, ref.second)) available = false;
+        std::set<std::string> published;
+        for (const auto &update : updates) for (const auto &ref : update.mRefUpdates) published.insert(ref.second);
+        available = GitManager::filterExistingCommits(cached, published).size() == published.size();
     }
     if (owner || available) {
         std::string error;
@@ -956,6 +1082,8 @@ bool MainWidget::preparePackAttachment(const QString &groupId, const std::string
         return false;
     }
     if (file.write(packfileData.data(), packfileData.size()) != static_cast<qint64>(packfileData.size())) {
+        file.close();
+        QFile::remove(tempFilePath);
         QMessageBox::critical(this, tr("Transfer Failed"), tr("Could not write the complete packfile."));
         return false;
     }
@@ -974,10 +1102,13 @@ bool MainWidget::preparePackAttachment(const QString &groupId, const std::string
         QProgressDialog progress(tr("Hashing packfile..."), tr("Cancel"), 0, retries, this);
         progress.setWindowModality(Qt::WindowModal);
         progress.show();
-        
+
+        // Wait without blocking the GUI thread. Backend events received
+        // meanwhile are deferred until this operation is over.
+        ++mModalDepth;
+        QEventLoop wait;
         for (int i = 0; i < retries; ++i) {
             progress.setValue(i);
-            QCoreApplication::processEvents();
             if (progress.wasCanceled()) {
                 break;
             }
@@ -985,11 +1116,14 @@ bool MainWidget::preparePackAttachment(const QString &groupId, const std::string
                 hashOk = true;
                 break;
             }
-            QThread::msleep(50);
+            QTimer::singleShot(50, &wait, &QEventLoop::quit);
+            wait.exec(QEventLoop::ExcludeUserInputEvents);
         }
+        --mModalDepth;
         progress.setValue(retries);
         
         if (!hashOk) {
+            QFile::remove(tempFilePath);
             QMessageBox::critical(this, tr("Packfile Hashing Failed"), tr("Hashing the packfile timed out or was canceled. The operation was not published. Please try again."));
             return false;
         }
@@ -1018,7 +1152,12 @@ void MainWidget::hashAndPublishPackfile(const QString &groupId, const std::strin
 bool MainWidget::publishPullRequestWithPack(RsGitPullRequest &pr, const std::string &pack)
 {
     if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: pack size=" << pack.size() << std::endl;
-    if (pack.size() <= 200000) pr.mPackfileData = pack;
+    if (pr.mDescription.size() > RETROGIT_MAX_DESCRIPTION) {
+        QMessageBox::warning(this, tr("Create Pull Request"),
+            tr("The description is too long (maximum %1 characters).").arg(RETROGIT_MAX_DESCRIPTION));
+        return false;
+    }
+    if (pack.size() + pr.mDescription.size() + pr.mTitle.size() <= RETROGIT_MAX_INLINE_PACK) pr.mPackfileData = pack;
     else {
         RsGxsFile attachment;
         if (!preparePackAttachment(QString::fromStdString(pr.mMeta.mGroupId.toStdString()), pack, attachment)) { if (retroGitDebugEnabled()) std::cerr << "RetroGit PR DEBUG: attachment preparation failed" << std::endl; return false; }
@@ -1032,8 +1171,9 @@ bool MainWidget::publishPullRequestWithPack(RsGitPullRequest &pr, const std::str
 
 void MainWidget::refreshCurrentRepo()
 {
-    if (mGitWidget) mGitWidget->refresh();
+    // CodeWidget::refresh() also refreshes the GitWidget (it owns the branch selection).
     if (mCodeWidget) mCodeWidget->refresh();
+    else if (mGitWidget) mGitWidget->refresh();
     if (mPushesWidget) mPushesWidget->refresh();
 }
 
@@ -1255,7 +1395,7 @@ void MainWidget::onTabCloseRequested(int index)
     
     QWidget *tab = ui->rightPaneTabWidget->widget(index);
     ui->rightPaneTabWidget->removeTab(index);
-    delete tab;
+    tab->deleteLater();
 }
 
 void MainWidget::showDiffForFile(const QString &filePath)
@@ -1304,52 +1444,7 @@ void MainWidget::showDiffForFile(const QString &filePath)
     // Path Banner
     html += "<div class='header-banner'>" + filePath.toHtmlEscaped() + "</div>";
 
-    bool inHunk = false;
-    for (const GitDiffLine& line : diffLines) {
-        QString lineText = QString::fromStdString(line.text);
-        while (lineText.endsWith('\n') || lineText.endsWith('\r')) {
-            lineText.chop(1);
-        }
-        QString escapedText = lineText.toHtmlEscaped();
-
-        if (line.origin == 'F') {
-            if (inHunk) {
-                html += "</div>"; // Close previous hunk card
-                inHunk = false;
-            }
-            if (lineText.startsWith("diff --git")) {
-                html += "<div class='file-header'>" + escapedText + "</div>";
-            } else {
-                html += "<div class='file-header-detail'>" + escapedText + "</div>";
-            }
-        } else if (line.origin == 'H') {
-            if (inHunk) {
-                html += "</div>"; // Close previous hunk card
-            }
-            html += "<div class='hunk-header'>" + escapedText + "</div>";
-            html += "<div class='hunk-card'>";
-            inHunk = true;
-        } else {
-            if (!inHunk) {
-                // If there's content before any hunk header, open a default hunk card
-                html += "<div class='hunk-card'>";
-                inHunk = true;
-            }
-
-            if (line.origin == '+') {
-                html += "<div class='line line-add'>+ " + escapedText + "</div>";
-            } else if (line.origin == '-') {
-                html += "<div class='line line-del'>- " + escapedText + "</div>";
-            } else if (line.origin == ' ') {
-                html += "<div class='line line-ctx'>  " + escapedText + "</div>";
-            } else {
-                html += "<div class='line line-ctx'>" + escapedText + "</div>";
-            }
-        }
-    }
-    if (inHunk) {
-        html += "</div>"; // Close final hunk card
-    }
+    appendDiffLines(html, diffLines);
 
     html += "</body></html>";
 
@@ -1357,7 +1452,7 @@ void MainWidget::showDiffForFile(const QString &filePath)
     // Check if a tab for this file is already open
     QString tabTitle = QFileInfo(filePath).fileName();
     int tabIndex = -1;
-    for (int i = 2; i < ui->rightPaneTabWidget->count(); ++i) {
+    for (int i = 3; i < ui->rightPaneTabWidget->count(); ++i) {
         if (ui->rightPaneTabWidget->tabText(i) == tabTitle) {
             tabIndex = i;
             break;
@@ -1451,51 +1546,7 @@ void MainWidget::showDiffForCommit(const QString &commitHash)
     }
     html += "<div class='header-banner'>" + bannerText + "</div>";
 
-    bool inHunk = false;
-    for (const GitDiffLine& line : diffLines) {
-        QString lineText = QString::fromStdString(line.text);
-        while (lineText.endsWith('\n') || lineText.endsWith('\r')) {
-            lineText.chop(1);
-        }
-        QString escapedText = lineText.toHtmlEscaped();
-
-        if (line.origin == 'F') {
-            if (inHunk) {
-                html += "</div>"; // Close previous hunk card
-                inHunk = false;
-            }
-            if (lineText.startsWith("diff --git")) {
-                html += "<div class='file-header'>" + escapedText + "</div>";
-            } else {
-                html += "<div class='file-header-detail'>" + escapedText + "</div>";
-            }
-        } else if (line.origin == 'H') {
-            if (inHunk) {
-                html += "</div>"; // Close previous hunk card
-            }
-            html += "<div class='hunk-header'>" + escapedText + "</div>";
-            html += "<div class='hunk-card'>";
-            inHunk = true;
-        } else {
-            if (!inHunk) {
-                html += "<div class='hunk-card'>";
-                inHunk = true;
-            }
-
-            if (line.origin == '+') {
-                html += "<div class='line line-add'>+ " + escapedText + "</div>";
-            } else if (line.origin == '-') {
-                html += "<div class='line line-del'>- " + escapedText + "</div>";
-            } else if (line.origin == ' ') {
-                html += "<div class='line line-ctx'>  " + escapedText + "</div>";
-            } else {
-                html += "<div class='line line-ctx'>" + escapedText + "</div>";
-            }
-        }
-    }
-    if (inHunk) {
-        html += "</div>"; // Close final hunk card
-    }
+    appendDiffLines(html, diffLines);
 
     html += "</body></html>";
 
@@ -1507,7 +1558,7 @@ void MainWidget::showDiffForCommit(const QString &commitHash)
     }
 
     int tabIndex = -1;
-    for (int i = 2; i < ui->rightPaneTabWidget->count(); ++i) {
+    for (int i = 3; i < ui->rightPaneTabWidget->count(); ++i) {
         if (ui->rightPaneTabWidget->tabText(i) == tabTitle) {
             tabIndex = i;
             break;

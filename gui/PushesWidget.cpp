@@ -133,25 +133,26 @@ void PushesWidget::handleGitEvent(const RsGitEvent *e)
                 break;
             }
         }
-        populateClonesTable();
+        const bool terminal = e->mCloneSuccess || status.contains("Failed") || status.contains("failed") ||
+                              status.contains("down") || status.contains("not available");
+        // Progress events arrive for every received chunk: rebuild the table at most a few times per second.
+        if (terminal) populateClonesTable();
+        else scheduleClonesTableUpdate();
 
         if (e->mGitGroupId != RsGxsGroupId(mGroupId.toStdString())) return;
 
+        // Event handler: never open modal dialogs here.
         if (e->mCloneSuccess) {
             if (status.contains("sync", Qt::CaseInsensitive)) {
                 // The completed transfer is already shown in the table. Avoid
                 // interrupting the user with a popup for every synchronized pack.
             } else {
-                QMessageBox::information(this, tr("Clone Successful"), tr("Successfully cloned decentral repository."));
+                mMainWidget->showNotice(tr("Clone Successful"), tr("Successfully cloned decentral repository."));
             }
             mMainWidget->updateDisplay();
             mMainWidget->triggerTreeSelectionChanged();
         } else if (!status.isEmpty() && (status.contains("Failed") || status.contains("failed") || status.contains("down") || status.contains("not available"))) {
-            if (status.contains("sync", Qt::CaseInsensitive)) {
-                QMessageBox::critical(this, tr("Sync Failed"), status);
-            } else {
-                QMessageBox::critical(this, tr("Clone Failed"), status);
-            }
+            mMainWidget->showNotice(status.contains("sync", Qt::CaseInsensitive) ? tr("Sync Failed") : tr("Clone Failed"), status);
         }
     } else if (e->mGitEventCode == RsGitEventCode::NEW_POST || e->mGitEventCode == RsGitEventCode::READ_STATUS_CHANGED || e->mGitEventCode == RsGitEventCode::POST_UPDATED) {
         refresh();
@@ -161,6 +162,8 @@ void PushesWidget::handleGitEvent(const RsGitEvent *e)
 void PushesWidget::addCloneRecord(const CloneRecord &rec)
 {
     mCloneHistory.insert(mCloneHistory.begin(), rec);
+    // Keep the transfer history bounded.
+    if (mCloneHistory.size() > 200) mCloneHistory.resize(200);
     populateClonesTable();
 }
 
@@ -241,8 +244,8 @@ void PushesWidget::pollDownloadProgress()
         }
 
         if (hasFile) {
-            if (rsGit) {
-                std::cout << "PushesWidget::pollDownloadProgress: packfile completed, unpacking " << file.mHash.toStdString() << std::endl;
+            // Only packs that were not imported yet; the import runs in the background.
+            if (rsGit && (update.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED)) {
                 if (rsGit->unpackUpdate(RsGxsGroupId(mGroupId.toStdString()), update.mMeta.mMsgId, file.mHash, update.mRefUpdates)) {
                     completedAny = true;
                 }
@@ -353,19 +356,16 @@ void PushesWidget::populatePackfiles()
         }
     }
 
-    std::vector<GitCommitInfo> commits;
-    GitManager::getCommitLog(repoPath, commits);
-
-    std::set<std::string> localCommitShas;
-    for (const auto &c : commits) {
-        localCommitShas.insert(c.hash);
-        localCommitShas.insert(c.full_hash);
-    }
-
     std::vector<RsGitUpdate> updates;
     if (rsGit) {
         rsGit->getUpdates(RsGxsGroupId(mGroupId.toStdString()), updates);
     }
+
+    // Look the published commits up directly (the log only covers the latest 100 commits).
+    std::set<std::string> publishedShas;
+    for (const auto &update : updates)
+        for (const auto &pair : update.mRefUpdates) publishedShas.insert(pair.second);
+    const std::set<std::string> localCommitShas = GitManager::filterExistingCommits(repoPath, publishedShas);
 
     // Filter updates
     for (const auto &update : updates) {
@@ -501,14 +501,15 @@ void PushesWidget::populatePackfiles()
                     hasPendingDownloads = true;
                     QPushButton *btnCancel = new QPushButton(tr("Cancel"), ui->mPackfilesTable);
                     btnCancel->setProperty("fileHash", QString::fromStdString(file.mHash.toStdString()));
-                    connect(btnCancel, &QPushButton::clicked, this, &PushesWidget::onCancelDownloadClicked);
+                    // Queued: the handler rebuilds the table, which deletes this button.
+                    connect(btnCancel, &QPushButton::clicked, this, &PushesWidget::onCancelDownloadClicked, Qt::QueuedConnection);
                     ui->mPackfilesTable->setCellWidget(i, 5, btnCancel);
                 } else {
                     QPushButton *btnDl = new QPushButton(tr("Download"), ui->mPackfilesTable);
                     btnDl->setProperty("fileHash", QString::fromStdString(file.mHash.toStdString()));
                     btnDl->setProperty("fileName", QString::fromStdString(file.mName));
                     btnDl->setProperty("fileSize", (qlonglong)file.mSize);
-                    connect(btnDl, &QPushButton::clicked, this, &PushesWidget::onDownloadClicked);
+                    connect(btnDl, &QPushButton::clicked, this, &PushesWidget::onDownloadClicked, Qt::QueuedConnection);
                     ui->mPackfilesTable->setCellWidget(i, 5, btnDl);
                 }
             }
@@ -520,6 +521,17 @@ void PushesWidget::populatePackfiles()
     } else {
         mDownloadPollTimer->stop();
     }
+}
+
+void PushesWidget::scheduleClonesTableUpdate()
+{
+    if (!mClonesTableTimer) {
+        mClonesTableTimer = new QTimer(this);
+        mClonesTableTimer->setSingleShot(true);
+        mClonesTableTimer->setInterval(250);
+        connect(mClonesTableTimer, &QTimer::timeout, this, &PushesWidget::populateClonesTable);
+    }
+    if (!mClonesTableTimer->isActive()) mClonesTableTimer->start();
 }
 
 void PushesWidget::populateClonesTable()

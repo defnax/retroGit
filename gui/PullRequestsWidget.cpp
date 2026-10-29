@@ -19,6 +19,8 @@
  ********************************************************************************/
 
 #include "PullRequestsWidget.h"
+#include <QTimer>
+#include <set>
 #include "gui/settings/rsharesettings.h"
 #include <QInputDialog>
 #include "ui_PullRequestsWidget.h"
@@ -174,7 +176,9 @@ void PullRequestsWidget::onNewPRClicked()
     pr.mTargetBranch = dlg.getTargetBranch().toStdString();
     std::string pack;
     std::map<std::string, std::string> refs;
-    if (!GitManager::createPackfileForRef(sourcePath, pr.mSourceBranch, pack, refs) || refs.size() != 1) {
+    // The upstream owner already has every published upstream commit: only send what is new.
+    const std::set<std::string> upstreamTips = GitManager::knownTips(targetPath);
+    if (!GitManager::createPackfileForRef(sourcePath, pr.mSourceBranch, pack, refs, upstreamTips) || refs.size() != 1) {
         QMessageBox::critical(this, tr("Create Pull Request"), tr("Could not package the proposed commits."));
         return;
     }
@@ -196,7 +200,14 @@ void PullRequestsWidget::onNewPRClicked()
 void PullRequestsWidget::onFilterTextChanged(const QString &text)
 {
     Q_UNUSED(text);
-    populatePRList();
+    // Rebuild the list once typing pauses, not on every keystroke.
+    if (!mFilterTimer) {
+        mFilterTimer = new QTimer(this);
+        mFilterTimer->setSingleShot(true);
+        mFilterTimer->setInterval(250);
+        connect(mFilterTimer, &QTimer::timeout, this, &PullRequestsWidget::populatePRList);
+    }
+    mFilterTimer->start();
 }
 
 void PullRequestsWidget::onRowDoubleClicked(int row, int column)
@@ -253,12 +264,14 @@ void PullRequestsWidget::populatePRList()
     }
 
     std::vector<RsGitPullRequest> filteredPRs;
+    std::set<RsGxsMessageId> mergedPRs; // computed once per refresh
+    const std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
 
     for (const auto &pr : pullRequests) {
         bool isOpen = (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) && (pr.mStatus == 0);
         if (isOpen) {
-            std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
             if (GitManager::isBranchMerged(bareRepoPath, pr.sourceRef(), pr.mTargetBranch)) {
+                mergedPRs.insert(pr.mMeta.mMsgId);
                 isOpen = false;
                 if (rsGit) {
                     uint32_t token;
@@ -299,13 +312,8 @@ void PullRequestsWidget::populatePRList()
 
     for (int i = 0; i < (int)filteredPRs.size(); i++) {
         const auto &pr = filteredPRs[i];
-        bool isOpen = (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) && (pr.mStatus == 0);
-        if (isOpen) {
-            std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
-            if (GitManager::isBranchMerged(bareRepoPath, pr.sourceRef(), pr.mTargetBranch)) {
-                isOpen = false;
-            }
-        }
+        bool isOpen = (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED) && (pr.mStatus == 0) &&
+                      !mergedPRs.count(pr.mMeta.mMsgId);
 
         // Column 0: Status Icon
         QTableWidgetItem *itemIcon = new QTableWidgetItem();
@@ -381,9 +389,10 @@ void PullRequestsWidget::populatePRList()
                                         "QPushButton:pressed { background-color: #ebecf0; }");
             }
             
-            connect(btnAction, &QPushButton::clicked, [this, msgIdStr]() {
+            // Queued: the handler may rebuild the table and delete this button.
+            connect(btnAction, &QPushButton::clicked, this, [this, msgIdStr]() {
                 onViewPRDetailsClicked(msgIdStr);
-            });
+            }, Qt::QueuedConnection);
             
             layout->addWidget(btnAction);
             ui->mPRTable->setCellWidget(i, 3, container);

@@ -25,6 +25,7 @@
 
 #include <QMessageBox>
 #include <QTimer>
+#include <set>
 #include "gui/settings/rsharesettings.h"
 #include <QDateTime>
 #include <QPixmap>
@@ -90,9 +91,14 @@ PullRequestDetailsWidget::PullRequestDetailsWidget(const QString &groupId, const
     connect(ui->mBtnClose, &QPushButton::clicked, this, &PullRequestDetailsWidget::onCloseClicked);
     connect(ui->mFilesTree, &QTreeWidget::itemSelectionChanged, this, &PullRequestDetailsWidget::onFileSelectionChanged);
 
+    // Pull request data comes from remote peers: never interpret it as rich text.
+    ui->mLblTitle->setTextFormat(Qt::PlainText);
+
+    // While the proposed commits are downloading, only check cheaply whether
+    // they arrived; the whole view is rebuilt once they did.
     auto *timer = new QTimer(this);
     connect(timer, &QTimer::timeout, this, [this]() {
-        if (isVisible() && mLoaded && !mReviewReady) refresh();
+        if (isVisible() && mLoaded && !mReviewReady && rsGit && rsGit->preparePullRequest(mPR)) refresh();
     });
     timer->start(5000);
     refresh();
@@ -114,8 +120,8 @@ void PullRequestDetailsWidget::loadPRDetails()
                 mPR = pr;
                 mLoaded = true;
                 if (pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD) {
-                    uint32_t token;
-                    rsGit->setMessageReadStatus(RsGxsGrpMsgIdPair(RsGxsGroupId(mGroupId.toStdString()), pr.mMeta.mMsgId), true);
+                    uint32_t token; // non-blocking
+                    rsGit->setMessageReadStatus(token, RsGxsGrpMsgIdPair(RsGxsGroupId(mGroupId.toStdString()), pr.mMeta.mMsgId), true);
                 }
                 break;
             }
@@ -175,9 +181,7 @@ void PullRequestDetailsWidget::refresh()
 
 void PullRequestDetailsWidget::populateConversationTab()
 {
-    // Recreate the immutable review ref when reopening a merged PR. The target
-    // branch may have moved, but the PR snapshot must remain available.
-    if (rsGit) rsGit->preparePullRequest(mPR);
+    // refresh() already (re)created the immutable review ref of this PR.
     // A. Description Comment
     QString authorStr = QString::fromStdString(mPR.mMeta.mAuthorId.toStdString().substr(0, 8));
     if (rsIdentity && !mPR.mMeta.mAuthorId.isNull()) {
@@ -288,7 +292,6 @@ void PullRequestDetailsWidget::populateConversationTab()
 
 void PullRequestDetailsWidget::populateFilesChangedTab()
 {
-    if (rsGit) rsGit->preparePullRequest(mPR);
     ui->mFilesTree->clear();
     std::string bareRepoPath = GitManager::getBareRepoPath(mGroupId.toStdString());
     std::vector<GitCommitFileChange> changedFiles;
@@ -380,7 +383,15 @@ void PullRequestDetailsWidget::onMergeClicked()
     // cannot leave a merged PR with no transferable commits.
     std::string pack;
     std::map<std::string, std::string> refs;
-    if (!GitManager::createPackfileForRef(bareRepoPath, mPR.sourceRef(), pack, refs)) return;
+    // Only send objects that earlier updates did not publish yet (every tenth
+    // update is self-contained so peers can still clone after old messages expire).
+    std::vector<RsGitUpdate> published;
+    rsGit->getUpdates(RsGxsGroupId(mGroupId.toStdString()), published);
+    std::set<std::string> known;
+    if (!published.empty() && published.size() % 10 != 0)
+        for (const auto &previous : published)
+            for (const auto &ref : previous.mRefUpdates) known.insert(ref.second);
+    if (!GitManager::createPackfileForRef(bareRepoPath, mPR.sourceRef(), pack, refs, known)) return;
     RsGitUpdate update;
     update.mMeta.mGroupId = RsGxsGroupId(mGroupId.toStdString());
     update.mMeta.mAuthorId = groups.front().mMeta.mAuthorId;
@@ -394,7 +405,7 @@ void PullRequestDetailsWidget::onMergeClicked()
     const auto snapshot = refs.find(mPR.sourceRef().rfind("refs/", 0) == 0 ? mPR.sourceRef() : "refs/heads/" + mPR.sourceRef());
     if (snapshot == refs.end()) return;
     update.mRefUpdates["refs/heads/" + mPR.mTargetBranch] = snapshot->second;
-    if (pack.size() <= 200000) update.mPackfileData = pack;
+    if (pack.size() <= RETROGIT_MAX_INLINE_PACK) update.mPackfileData = pack;
     else {
         RsGxsFile attachment;
         if (!mMainWidget || !mMainWidget->preparePackAttachment(mGroupId, pack, attachment)) return;
@@ -469,7 +480,15 @@ void PullRequestDetailsWidget::onFileSelectionChanged()
     html += "<div class='header-banner'>" + filePath.toHtmlEscaped() + "</div>";
 
     bool inHunk = false;
+    size_t shown = 0;
     for (const GitDiffLine& line : diffLines) {
+        // Very large diffs make QTextBrowser unusable: truncate them.
+        if (++shown > 20000) {
+            if (inHunk) html += "</div>";
+            inHunk = false;
+            html += "<div class='header-banner'>" + tr("Diff truncated after %1 lines.").arg(20000) + "</div>";
+            break;
+        }
         QString lineText = QString::fromStdString(line.text);
         while (lineText.endsWith('\n') || lineText.endsWith('\r')) {
             lineText.chop(1);

@@ -317,6 +317,19 @@ void CodeWidget::onRepoBrowserContextMenu(const QPoint &pos)
     contextMnu.exec(ui->mRepoBrowserList->mapToGlobal(pos));
 }
 
+namespace {
+// Opening these with the system handler runs code: ask first.
+bool isExecutableFile(const QString &path)
+{
+    static const QStringList risky = {
+        "exe", "com", "bat", "cmd", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "msi", "msp",
+        "scr", "pif", "lnk", "hta", "cpl", "jar", "reg", "sh", "bash", "command", "app", "dll", "appx",
+        "msix", "url", "desktop", "scf", "inf", "py", "pyw", "pl", "rb", "apk", "deb", "rpm", "run", "bin"
+    };
+    return risky.contains(QFileInfo(path).suffix().toLower());
+}
+}
+
 void CodeWidget::openSelectedFile()
 {
     QTreeWidgetItem *item = ui->mRepoBrowserList->currentItem();
@@ -324,6 +337,17 @@ void CodeWidget::openSelectedFile()
 
     QString selectedFile = item->data(0, Qt::UserRole).toString();
     if (selectedFile.isEmpty()) return; // Skip folders
+
+    // File names come from the repository, i.e. from a remote peer.
+    if (!GitManager::isSafeRelativePath(selectedFile.toStdString())) {
+        QMessageBox::critical(this, tr("Error"), tr("The file name is not a safe relative path."));
+        return;
+    }
+    if (isExecutableFile(selectedFile) &&
+        QMessageBox::warning(this, tr("Open File"),
+            tr("'%1' may be a program or script. Opening it can run code from the repository on your computer.\n\nOpen it anyway?")
+                .arg(selectedFile), QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
 
     QString rawPath = mMainWidget->getLocalPath();
     QString filePath;
@@ -333,8 +357,8 @@ void CodeWidget::openSelectedFile()
     if (!rawPath.isEmpty()) {
         QString localPath = QDir::cleanPath(rawPath);
         if (QDir(localPath).exists()) {
-            filePath = QDir(localPath).filePath(selectedFile);
-            if (QFile::exists(filePath)) {
+            filePath = QDir::cleanPath(QDir(localPath).filePath(selectedFile));
+            if (filePath.startsWith(localPath + "/") && QFile::exists(filePath)) {
                 QDesktopServices::openUrl(QUrl::fromLocalFile(filePath));
                 opened = true;
             }
@@ -345,14 +369,12 @@ void CodeWidget::openSelectedFile()
     if (!opened) {
         std::string barePath = GitManager::getBareRepoPath(mGroupId.toStdString());
         QString tempDir = QDir::cleanPath(QString::fromStdString(RsAccounts::AccountDirectory()) + "/retrogit_temp/previews/" + mGroupId);
-        QDir().mkpath(tempDir);
-
-        QFileInfo fileInfo(selectedFile);
-        if (!fileInfo.path().isEmpty() && fileInfo.path() != ".") {
-            QDir().mkpath(tempDir + "/" + fileInfo.path());
+        filePath = QDir::cleanPath(tempDir + "/" + selectedFile);
+        if (!filePath.startsWith(tempDir + "/")) {
+            QMessageBox::critical(this, tr("Error"), tr("The file name is not a safe relative path."));
+            return;
         }
-
-        filePath = tempDir + "/" + selectedFile;
+        QDir().mkpath(QFileInfo(filePath).absolutePath());
 
         if (GitManager::extractFile(barePath, selectedFile.toStdString(), filePath.toStdString(), mSelectedBranchOrTag.toStdString())) {
             QDesktopServices::openUrl(QUrl::fromLocalFile(filePath));
