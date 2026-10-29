@@ -47,18 +47,25 @@ PushesWidget::PushesWidget(MainWidget *mainWidget, QWidget *parent)
     , mMainWidget(mainWidget)
 {
     ui->setupUi(this);
-    ui->tempButton->setToolTip(tr("Open the internal RetroGit repositories folder (retrogit_repos)."));
-    connect(ui->tempButton, &QPushButton::clicked, this, [this]() {
-        const QString path = QDir(QString::fromStdString(RsAccounts::AccountDirectory()))
-                                 .absoluteFilePath("retrogit_repos");
+    // Open RetroGit's internal folders inside the RetroShare account directory.
+    auto openAccountFolder = [this](const QString &name, const QString &title) {
+        const QString path = QDir(QString::fromStdString(RsAccounts::AccountDirectory())).absoluteFilePath(name);
         if (!QDir().mkpath(path)) {
-            QMessageBox::warning(this, tr("Open Repository Folder"),
-                                 tr("Could not create the repository folder:\n%1").arg(path));
+            QMessageBox::warning(this, title, tr("Could not create the folder:\n%1").arg(path));
             return;
         }
         if (!QDesktopServices::openUrl(QUrl::fromLocalFile(path)))
-            QMessageBox::warning(this, tr("Open Repository Folder"),
-                                 tr("Could not open the repository folder:\n%1").arg(path));
+            QMessageBox::warning(this, title, tr("Could not open the folder:\n%1").arg(path));
+    };
+    ui->tempButton->setText(tr("Open Temp"));
+    ui->tempButton->setToolTip(tr("Open the RetroGit temporary folder (retrogit_temp): published packs and file previews."));
+    connect(ui->tempButton, &QPushButton::clicked, this, [this, openAccountFolder]() {
+        openAccountFolder("retrogit_temp", tr("Open Temp Folder"));
+    });
+    ui->reposButton->setText(tr("Open Repositories"));
+    ui->reposButton->setToolTip(tr("Open the internal RetroGit repositories folder (retrogit_repos): the local copies used to serve clones."));
+    connect(ui->reposButton, &QPushButton::clicked, this, [this, openAccountFolder]() {
+        openAccountFolder("retrogit_repos", tr("Open Repository Folder"));
     });
 
     // Setup Packfiles Table

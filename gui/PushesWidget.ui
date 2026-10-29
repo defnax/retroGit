@@ -46,6 +46,16 @@
        </property>
       </widget>
      </item>
+     <item>
+      <widget class="QPushButton" name="reposButton">
+       <property name="toolTip">
+        <string>Open the internal RetroGit repositories folder</string>
+       </property>
+       <property name="text">
+        <string>Open Repositories</string>
+       </property>
+      </widget>
+     </item>
     </layout>
    </item>
    <item>

@@ -47,6 +47,7 @@
 #include <QMenu>
 #include <QTimer>
 #include <QPointer>
+#include <QElapsedTimer>
 #include <QApplication>
 #include <QPainter>
 #include <QEvent>
@@ -296,7 +297,18 @@ void GitWidget::pollWorkingTree()
             refresh();
     }
     if (!isVisible()) return;
+    // Back off when the check is slow (very large folders): at most 10% of the
+    // time is spent checking, never more often than every 5 seconds.
+    if (mLastStatusFinished.isValid() &&
+        mLastStatusFinished.elapsed() < qMax<qint64>(5000, 10 * mLastStatusCostMs)) return;
     startStatusCheck();
+}
+
+bool GitWidget::cachedLocalChanges(const std::string &path, std::vector<GitLocalChange> &changes) const
+{
+    if (!mStatusKnown || mStatusPath != path) return false;
+    changes = mStatusChanges;
+    return true;
 }
 
 void GitWidget::startStatusCheck()
@@ -307,15 +319,20 @@ void GitWidget::startStatusCheck()
     const QString groupId = mGroupId;
     const std::string path = QDir::cleanPath(mLocalPath).toStdString();
     RsThread::async([self, groupId, path]() {
+        QElapsedTimer timer;
+        timer.start();
         std::vector<GitLocalChange> changes;
         std::string state;
         if (GitManager::isValidRepository(path)) {
             GitManager::getLocalChanges(path, changes);
             state = workingTreeState(GitManager::headCommit(path), changes);
         }
-        RsQThreadUtils::postToObject([self, groupId, path, changes, state]() {
+        const qint64 costMs = timer.elapsed();
+        RsQThreadUtils::postToObject([self, groupId, path, changes, state, costMs]() {
             if (!self) return;
             self->mPollInFlight = false;
+            self->mLastStatusCostMs = costMs;
+            self->mLastStatusFinished.start();
             if (groupId != self->mGroupId || path != QDir::cleanPath(self->mLocalPath).toStdString()) {
                 self->startStatusCheck(); // another repository was selected meanwhile
                 return;
@@ -1298,6 +1315,18 @@ void GitWidget::populateCommitLog(const std::vector<GitLocalChange> *workingChan
         }
     }
 
+    // Commits made with RetroGit use "<nickname>@<identity id>" as e-mail.
+    // Only that proves a RetroShare identity wrote the commit: Git names are
+    // free text (a GitHub author may use the same name as an identity).
+    auto identityFromEmail = [](const std::string &email) {
+        const size_t at = email.rfind('@');
+        if (at == std::string::npos) return RsGxsId();
+        const std::string hex = email.substr(at + 1);
+        if (hex.size() != 32 || hex.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
+            return RsGxsId();
+        return RsGxsId(hex);
+    };
+
     // 2. Populate downloaded commits
     int undownloadedCount = undownloadedUpdates.size();
     for (int i = 0; i < (int)commits.size(); i++) {
@@ -1320,6 +1349,9 @@ void GitWidget::populateCommitLog(const std::vector<GitLocalChange> *workingChan
 
         QTableWidgetItem *itemAuth = new QTableWidgetItem(QString::fromStdString(commits[i].author));
         itemAuth->setIcon(FilesDefs::getIconFromQtResourcePath(":/icons/svg/people2.svg"));
+
+        // Show a RetroShare identity only for commits made with RetroGit.
+        const RsGxsId commitIdentity = identityFromEmail(commits[i].email);
 
         QTableWidgetItem *itemDate = new QTableWidgetItem(QString::fromStdString(commits[i].date));
 
@@ -1373,7 +1405,19 @@ void GitWidget::populateCommitLog(const std::vector<GitLocalChange> *workingChan
 
         ui->mCommitTable->setItem(rowIdx, 0, itemHash);
         ui->mCommitTable->setItem(rowIdx, 1, itemMsg);
+        if (!commitIdentity.isNull()) {
+            // The identity widget replaces the plain Git name and icon:
+            // leave the cell underneath empty so they are not drawn twice.
+            itemAuth->setText(QString());
+            itemAuth->setIcon(QIcon());
+            itemAuth->setToolTip(QString::fromStdString(commits[i].author));
+        }
         ui->mCommitTable->setItem(rowIdx, 2, itemAuth);
+        if (!commitIdentity.isNull()) {
+            GxsIdTableItem *authorWidget = new GxsIdTableItem(ui->mCommitTable);
+            authorWidget->setId(commitIdentity);
+            ui->mCommitTable->setCellWidget(rowIdx, 2, authorWidget);
+        }
         ui->mCommitTable->setItem(rowIdx, 3, itemDate);
 
         if (hasGxsMsg) {

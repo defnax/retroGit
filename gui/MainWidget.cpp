@@ -1285,9 +1285,85 @@ void MainWidget::refreshCurrentRepo()
     if (mPushesWidget) mPushesWidget->refresh();
 }
 
+namespace {
+// Beyond this many files the list is truncated: QTreeWidget becomes slow and
+// nobody reads it anyway.
+const int MAX_CHANGED_FILES_SHOWN = 2000;
+}
+
+void MainWidget::fillChangedFilesTree(const std::vector<ChangedFileEntry> &entries, bool prefixStatus)
+{
+    mChangedFilesTree->setUpdatesEnabled(false);
+    mChangedFilesTree->clear();
+    // Folder items by full path: O(1) lookup instead of scanning siblings.
+    QHash<QString, QTreeWidgetItem*> folders;
+    const QIcon dirIcon = style()->standardIcon(QStyle::SP_DirIcon);
+    const QIcon fileIcon = style()->standardIcon(QStyle::SP_FileIcon);
+    const QIcon addedIcon(":/images/file-added-16_.png");
+    const QIcon modifiedIcon(":/images/file-diff-2.png");
+    int shown = 0;
+    for (const ChangedFileEntry &entry : entries) {
+        if (shown++ >= MAX_CHANGED_FILES_SHOWN) break;
+        QString normalizedPath = entry.path;
+        normalizedPath.replace('\\', '/');
+        // An untracked folder is reported once, as "folder/".
+        const bool isFolderEntry = normalizedPath.endsWith('/');
+        while (normalizedPath.endsWith('/')) normalizedPath.chop(1);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+        const QStringList parts = normalizedPath.split('/', Qt::SkipEmptyParts);
+#else
+        const QStringList parts = normalizedPath.split('/', QString::SkipEmptyParts);
+#endif
+        if (parts.isEmpty()) continue;
+
+        QTreeWidgetItem *parentItem = nullptr;
+        QString folderPath;
+        for (int i = 0; i + 1 < parts.size(); ++i) {
+            folderPath += parts[i] + '/';
+            QTreeWidgetItem *&folder = folders[folderPath];
+            if (!folder) {
+                folder = new QTreeWidgetItem();
+                folder->setText(0, parts[i]);
+                folder->setData(0, Qt::UserRole + 1, parts[i]);
+                folder->setIcon(0, dirIcon);
+                if (parentItem) parentItem->addChild(folder);
+                else mChangedFilesTree->addTopLevelItem(folder);
+            }
+            parentItem = folder;
+        }
+
+        QTreeWidgetItem *item = new QTreeWidgetItem();
+        const QString name = parts.last() + (isFolderEntry ? "/" : "");
+        item->setText(0, prefixStatus ? QString("%1 %2").arg(entry.status).arg(name) : name);
+        item->setData(0, Qt::UserRole + 1, parts.last());
+        if (!entry.color.isEmpty()) item->setForeground(0, QBrush(QColor(entry.color)));
+        if (isFolderEntry) {
+            item->setIcon(0, dirIcon);
+            item->setToolTip(0, tr("Untracked folder: its files are not listed. Add it to .gitignore if it holds build output."));
+        } else {
+            if (entry.status == '+' || entry.status == '?') item->setIcon(0, addedIcon);
+            else if (entry.status == '~') item->setIcon(0, modifiedIcon);
+            else item->setIcon(0, fileIcon);
+            item->setData(0, Qt::UserRole, entry.path);
+        }
+        if (parentItem) parentItem->addChild(item);
+        else mChangedFilesTree->addTopLevelItem(item);
+    }
+    if (static_cast<int>(entries.size()) > MAX_CHANGED_FILES_SHOWN) {
+        QTreeWidgetItem *more = new QTreeWidgetItem();
+        more->setText(0, tr("... and %1 more files").arg(static_cast<int>(entries.size()) - MAX_CHANGED_FILES_SHOWN));
+        more->setFlags(Qt::ItemIsEnabled);
+        mChangedFilesTree->addTopLevelItem(more);
+    }
+    // Expanding thousands of folders is slow: only expand small lists.
+    if (entries.size() <= 300) mChangedFilesTree->expandAll();
+    mChangedFilesTree->setUpdatesEnabled(true);
+}
+
 void MainWidget::showCommitDetails(const QString &fullHash, const QString &qRepoPath)
 {
     mCurrentCommitHash = fullHash;
+    const quint64 requestId = ++mDetailsRequestId; // newer selections win
     std::string repoPath = qRepoPath.toStdString();
     if (fullHash != "LOCAL_CHANGES" && !GitManager::hasCommit(repoPath, fullHash.toStdString()))
         repoPath = GitManager::getBareRepoPath(getSelectedGroupId().toStdString());
@@ -1307,64 +1383,41 @@ void MainWidget::showCommitDetails(const QString &fullHash, const QString &qRepo
         QDateTime now = QDateTime::currentDateTime();
         mDetailsDateLabel->setText(now.toString("yyyy-MM-dd hh:mm"));
         
-        mChangedFilesTree->clear();
-        
-        std::vector<GitLocalChange> changes;
-        if (GitManager::getLocalChanges(repoPath, changes)) {
-            for (const GitLocalChange& change : changes) {
-                QString normalizedPath = QString::fromStdString(change.path).replace('\\', '/');
-                QStringList pathParts = normalizedPath.split('/');
-                QTreeWidgetItem *parentItem = nullptr;
-                
-                for (int i = 0; i < pathParts.size(); ++i) {
-                    QString part = pathParts[i];
-                    if (part.isEmpty()) continue;
-                    
-                    QTreeWidgetItem *childItem = nullptr;
-                    int childCount = parentItem ? parentItem->childCount() : mChangedFilesTree->topLevelItemCount();
-                    for (int j = 0; j < childCount; ++j) {
-                        QTreeWidgetItem *item = parentItem ? parentItem->child(j) : mChangedFilesTree->topLevelItem(j);
-                        if (item->data(0, Qt::UserRole + 1).toString() == part) {
-                            childItem = item;
-                            break;
-                        }
-                    }
-                    
-                    if (!childItem) {
-                        childItem = new QTreeWidgetItem();
-                        childItem->setData(0, Qt::UserRole + 1, part);
-                        
-                        if (i == pathParts.size() - 1) {
-                            QString prefixedText = QString("%1 %2").arg(change.status).arg(part);
-                            childItem->setText(0, prefixedText);
-                            childItem->setForeground(0, QBrush(QColor(QString::fromStdString(change.color_hex))));
-                            if (change.status == '+' || change.status == '?') {
-                                childItem->setIcon(0, QIcon(":/images/file-added-16_.png"));
-                            } else if (change.status == '~') {
-                                childItem->setIcon(0, QIcon(":/images/file-diff-2.png"));
-                            } else {
-                                childItem->setIcon(0, style()->standardIcon(QStyle::SP_FileIcon));
-                            }
-                            childItem->setData(0, Qt::UserRole, QString::fromStdString(change.path));
-                        } else {
-                            childItem->setText(0, part);
-                            childItem->setIcon(0, style()->standardIcon(QStyle::SP_DirIcon));
-                        }
-                        
-                        if (parentItem) {
-                            parentItem->addChild(childItem);
-                        } else {
-                            mChangedFilesTree->addTopLevelItem(childItem);
-                        }
-                    }
-                    parentItem = childItem;
-                }
-            }
-            mChangedFilesTree->expandAll();
-            mCommitDetailsWidget->show();
+        // Show the status the Working Directory tab already has, then refresh it.
+        std::vector<GitLocalChange> cached;
+        if (mGitWidget && mGitWidget->cachedLocalChanges(repoPath, cached)) {
+            std::vector<ChangedFileEntry> entries;
+            entries.reserve(cached.size());
+            for (const GitLocalChange &change : cached)
+                entries.push_back({QString::fromStdString(change.path), change.status, QString::fromStdString(change.color_hex)});
+            fillChangedFilesTree(entries, true);
         } else {
-            mCommitDetailsWidget->hide();
+            mChangedFilesTree->clear();
+            QTreeWidgetItem *loading = new QTreeWidgetItem();
+            loading->setText(0, tr("Checking local changes..."));
+            loading->setFlags(Qt::ItemIsEnabled);
+            mChangedFilesTree->addTopLevelItem(loading);
         }
+        mCommitDetailsWidget->show();
+
+        // The status of a large working folder is slow: compute it in the background.
+        QPointer<MainWidget> self(this);
+        RsThread::async([self, repoPath, requestId]() {
+            std::vector<GitLocalChange> changes;
+            const bool ok = GitManager::getLocalChanges(repoPath, changes);
+            std::vector<ChangedFileEntry> entries;
+            entries.reserve(changes.size());
+            for (const GitLocalChange &change : changes)
+                entries.push_back({QString::fromStdString(change.path), change.status, QString::fromStdString(change.color_hex)});
+            RsQThreadUtils::postToObject([self, requestId, ok, entries]() {
+                if (!self || requestId != self->mDetailsRequestId) return; // another commit was selected
+                if (!ok) {
+                    self->mCommitDetailsWidget->hide();
+                    return;
+                }
+                self->fillChangedFilesTree(entries, true);
+            }, qApp);
+        });
     } else {
         std::string authorName, authorEmail, summary, body, date;
         std::vector<GitCommitFileChange> changedFiles;
@@ -1399,56 +1452,11 @@ void MainWidget::showCommitDetails(const QString &fullHash, const QString &qRepo
             
             mDetailsDateLabel->setText(QString::fromStdString(date));
             
-            mChangedFilesTree->clear();
-            
-            for (const GitCommitFileChange& change : changedFiles) {
-                QString normalizedPath = QString::fromStdString(change.path).replace('\\', '/');
-                QStringList pathParts = normalizedPath.split('/');
-                QTreeWidgetItem *parentItem = nullptr;
-                
-                for (int i = 0; i < pathParts.size(); ++i) {
-                    QString part = pathParts[i];
-                    if (part.isEmpty()) continue;
-                    
-                    QTreeWidgetItem *childItem = nullptr;
-                    int childCount = parentItem ? parentItem->childCount() : mChangedFilesTree->topLevelItemCount();
-                    for (int j = 0; j < childCount; ++j) {
-                        QTreeWidgetItem *item = parentItem ? parentItem->child(j) : mChangedFilesTree->topLevelItem(j);
-                        if (item->data(0, Qt::UserRole + 1).toString() == part) {
-                            childItem = item;
-                            break;
-                        }
-                    }
-                    
-                    if (!childItem) {
-                        childItem = new QTreeWidgetItem();
-                        childItem->setText(0, part);
-                        childItem->setData(0, Qt::UserRole + 1, part);
-                        
-                        if (i == pathParts.size() - 1) {
-                            if (change.status == '+' || change.status == '?') {
-                                childItem->setIcon(0, QIcon(":/images/file-added-16_.png"));
-                            } else if (change.status == '~') {
-                                childItem->setIcon(0, QIcon(":/images/file-diff-2.png"));
-                            } else {
-                                childItem->setIcon(0, style()->standardIcon(QStyle::SP_FileIcon));
-                            }
-                            childItem->setData(0, Qt::UserRole, QString::fromStdString(change.path));
-                        } else {
-                            childItem->setIcon(0, style()->standardIcon(QStyle::SP_DirIcon));
-                        }
-                        
-                        if (parentItem) {
-                            parentItem->addChild(childItem);
-                        } else {
-                            mChangedFilesTree->addTopLevelItem(childItem);
-                        }
-                    }
-                    parentItem = childItem;
-                }
-            }
-            
-            mChangedFilesTree->expandAll();
+            std::vector<ChangedFileEntry> entries;
+            entries.reserve(changedFiles.size());
+            for (const GitCommitFileChange &change : changedFiles)
+                entries.push_back({QString::fromStdString(change.path), change.status, QString()});
+            fillChangedFilesTree(entries, false);
             mCommitDetailsWidget->show();
         } else {
             mCommitDetailsWidget->hide();

@@ -678,6 +678,7 @@ bool GitManager::getCommitLog(const std::string &repoPath, std::vector<GitCommit
             const git_signature *sig = git_commit_author(commit);
             if (sig) {
                 info.author = sig->name ? sig->name : "";
+                info.email = sig->email ? sig->email : "";
                 
                 info.date = formatGitTime(sig->when.time);
             }
@@ -1193,14 +1194,24 @@ bool GitManager::getLocalChanges(const std::string& repoPath, std::vector<GitLoc
     git_status_list *status_list = nullptr;
     git_status_options opts = GIT_STATUS_OPTIONS_INIT;
     opts.show = GIT_STATUS_SHOW_INDEX_AND_WORKDIR;
-    opts.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED | GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS | GIT_STATUS_OPT_RENAMES_HEAD_TO_INDEX;
+    // Untracked folders (e.g. build output) are reported once as "folder/"
+    // instead of file by file, like "git status": much faster and readable.
+    // UPDATE_INDEX stores refreshed file timestamps in the index. Without it,
+    // files whose timestamps changed (common on Windows) are re-read and
+    // hashed on every check, which takes tens of seconds on large trees.
+    opts.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED | GIT_STATUS_OPT_RENAMES_HEAD_TO_INDEX |
+                 GIT_STATUS_OPT_UPDATE_INDEX;
 
     bool success = false;
     int status_err = git_status_list_new(&status_list, repo, &opts);
+    if (status_err != 0) {
+        // The index may be locked by another git process: check without writing it.
+        opts.flags &= ~GIT_STATUS_OPT_UPDATE_INDEX;
+        status_err = git_status_list_new(&status_list, repo, &opts);
+    }
     if (status_err == 0) {
         success = true;
         size_t count = git_status_list_entrycount(status_list);
-        std::cerr << "RetroGit debug: getLocalChanges status list count: " << count << " for path: " << repoPath << std::endl;
         for (size_t i = 0; i < count; ++i) {
             const git_status_entry *entry = git_status_byindex(status_list, i);
             if (!entry) continue;
@@ -1406,7 +1417,10 @@ bool GitManager::pullRepository(const std::string& localPath, const std::string&
     if (!expectedBranch.empty() && branch != expectedBranch)
         return fail("The merged branch is not checked out. Switch to the target branch and pull to update its working files.");
     git_status_options statusOptions = GIT_STATUS_OPTIONS_INIT;
-    statusOptions.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED | GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS;
+    // Only changes to tracked files block a pull; untracked files (build
+    // output) do not, like in git. A conflicting untracked file still makes
+    // the safe checkout below fail without overwriting anything.
+    statusOptions.flags = 0;
     git_status_list *status = nullptr;
     if (git_status_list_new(&status, repo, &statusOptions) != 0) return fail("Cannot check local changes.");
     const bool dirty = git_status_list_entrycount(status) != 0;
@@ -1646,7 +1660,7 @@ bool GitManager::rebaseBranch(const std::string& repoPath, const std::string& up
     }
     auto fail = [&](const char *message) { if (errorMessage) *errorMessage = message; git_repository_free(repo); return false; };
     git_status_options status = GIT_STATUS_OPTIONS_INIT;
-    status.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED | GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS;
+    status.flags = 0; // untracked files do not block a rebase, like in git
     git_status_list *changes = nullptr;
     if (git_status_list_new(&changes, repo, &status) != 0 || git_status_list_entrycount(changes) != 0) {
         git_status_list_free(changes); return fail("Commit or stash local changes before rebasing.");
@@ -1852,6 +1866,7 @@ bool GitManager::getCommitsBetweenBranches(const std::string& repoPath, const st
             const git_signature *sig = git_commit_author(commit);
             if (sig) {
                 info.author = sig->name ? sig->name : "";
+                info.email = sig->email ? sig->email : "";
                 
                 info.date = formatGitTime(sig->when.time);
             }

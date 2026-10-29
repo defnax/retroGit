@@ -35,6 +35,7 @@ struct GitCommitInfo {
     std::string author;
     std::string date;
     std::string full_hash;
+    std::string email;
 };
 
 struct GitDiffLine {

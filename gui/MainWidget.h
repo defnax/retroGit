@@ -78,6 +78,13 @@ struct RetroGitProgress
     }
 };
 
+/** One file (or untracked folder, ending in '/') in the commit details tree. */
+struct ChangedFileEntry {
+    QString path;
+    char status;
+    QString color; // empty: default text color
+};
+
 class GxsIdTableItem : public QWidget
 {
     Q_OBJECT
@@ -164,6 +171,8 @@ private slots:
 
 private:
     void showDiffForFile(const QString &filePath);
+    void fillChangedFilesTree(const std::vector<ChangedFileEntry> &entries, bool prefixStatus);
+    quint64 mDetailsRequestId = 0;
     void refreshCurrentRepo();
     void loadGroupMeta();
     void saveRepoLocalPath(const QString &groupId, const QString &path);

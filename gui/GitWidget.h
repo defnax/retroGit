@@ -23,6 +23,7 @@
 
 #include <QWidget>
 #include <QString>
+#include <QElapsedTimer>
 #include <memory>
 #include <vector>
 #include <string>
@@ -50,6 +51,8 @@ public:
     void clear();
     void refresh();
     QString getLocalPath() const;
+    /** Last background status of the working folder, if it is for this path. */
+    bool cachedLocalChanges(const std::string &path, std::vector<GitLocalChange> &changes) const;
 
 private slots:
     void onInitializeClicked();
@@ -93,6 +96,8 @@ private:
     std::string mStatusPath;                    // last background status result
     std::vector<GitLocalChange> mStatusChanges;
     bool mStatusKnown = false;
+    qint64 mLastStatusCostMs = 0;
+    QElapsedTimer mLastStatusFinished;
     bool mPushInProgress = false;
     bool mPollInFlight = false;
 };
