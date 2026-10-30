@@ -28,6 +28,7 @@ class RetroGitNotify ;
 class RetroGitGUIHandler ;
 class MainWidget ;
 class RsGxsNetService;
+class RsGxsNetTunnelService;
 
 class RetroGitPlugin: public RsPlugin
 {
@@ -61,6 +62,7 @@ private:
 	RsPeers *mPeers;
 	std::string mGxsDir;
 	RsGxsTunnelService *mGxsTunnels;
+	RsGxsNetTunnelService *mGxsNetTunnel;
 
 	mutable MainWidget *mainpage ;
 	mutable ConfigPage *mConfigPage ;
