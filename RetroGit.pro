@@ -5,13 +5,8 @@ greaterThan(QT_MAJOR_VERSION, 4) {
 	QT += widgets
 }
 
-exists($$[QMAKE_MKSPECS]/features/mobility.prf) {
-  CONFIG += mobility
-} else {
-  QT += multimedia
-}
+
 CONFIG += qt uic qrc resources
-MOBILITY = multimedia
 DESTDIR = lib
 TARGET = RetroGit
 CONFIG += c++17

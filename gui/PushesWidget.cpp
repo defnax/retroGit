@@ -31,6 +31,9 @@
 #include <QPushButton>
 #include <QProgressBar>
 #include <QDir>
+#include <QDesktopServices>
+#include <QUrl>
+#include <retroshare/rsinit.h>
 #include "util/misc.h"
 #include <iostream>
 
@@ -44,6 +47,26 @@ PushesWidget::PushesWidget(MainWidget *mainWidget, QWidget *parent)
     , mMainWidget(mainWidget)
 {
     ui->setupUi(this);
+    // Open RetroGit's internal folders inside the RetroShare account directory.
+    auto openAccountFolder = [this](const QString &name, const QString &title) {
+        const QString path = QDir(QString::fromStdString(RsAccounts::AccountDirectory())).absoluteFilePath(name);
+        if (!QDir().mkpath(path)) {
+            QMessageBox::warning(this, title, tr("Could not create the folder:\n%1").arg(path));
+            return;
+        }
+        if (!QDesktopServices::openUrl(QUrl::fromLocalFile(path)))
+            QMessageBox::warning(this, title, tr("Could not open the folder:\n%1").arg(path));
+    };
+    ui->tempButton->setText(tr("Open Temp"));
+    ui->tempButton->setToolTip(tr("Open the RetroGit temporary folder (retrogit_temp): published packs and file previews."));
+    connect(ui->tempButton, &QPushButton::clicked, this, [this, openAccountFolder]() {
+        openAccountFolder("retrogit_temp", tr("Open Temp Folder"));
+    });
+    ui->reposButton->setText(tr("Open Repositories"));
+    ui->reposButton->setToolTip(tr("Open the internal RetroGit repositories folder (retrogit_repos): the local copies used to serve clones."));
+    connect(ui->reposButton, &QPushButton::clicked, this, [this, openAccountFolder]() {
+        openAccountFolder("retrogit_repos", tr("Open Repository Folder"));
+    });
 
     // Setup Packfiles Table
     ui->mPackfilesTable->setColumnCount(6);
@@ -109,6 +132,21 @@ void PushesWidget::refresh()
     populateClonesTable();
 }
 
+namespace {
+// Transfer status messages that end a clone or pull without success.
+// (Plain "down" would also match "downloading required packfiles".)
+bool isFailedStatus(const QString &status)
+{
+    static const char *const markers[] = {
+        "failed", "timed out", "went down", "not available", "unavailable", "could not",
+        "invalid", "restricted", "busy", "exceeds", "wrong repository"
+    };
+    for (const char *marker : markers)
+        if (status.contains(QLatin1String(marker), Qt::CaseInsensitive)) return true;
+    return false;
+}
+}
+
 void PushesWidget::handleGitEvent(const RsGitEvent *e)
 {
     if (e->mGitEventCode != RsGitEventCode::CLONE_STATUS_CHANGED &&
@@ -133,25 +171,25 @@ void PushesWidget::handleGitEvent(const RsGitEvent *e)
                 break;
             }
         }
-        populateClonesTable();
+        const bool terminal = e->mCloneSuccess || isFailedStatus(status);
+        // Progress events arrive for every received chunk: rebuild the table at most a few times per second.
+        if (terminal) populateClonesTable();
+        else scheduleClonesTableUpdate();
 
         if (e->mGitGroupId != RsGxsGroupId(mGroupId.toStdString())) return;
 
+        // Event handler: never open modal dialogs here.
         if (e->mCloneSuccess) {
             if (status.contains("sync", Qt::CaseInsensitive)) {
                 // The completed transfer is already shown in the table. Avoid
                 // interrupting the user with a popup for every synchronized pack.
             } else {
-                QMessageBox::information(this, tr("Clone Successful"), tr("Successfully cloned decentral repository."));
+                mMainWidget->showNotice(tr("Clone Successful"), tr("Successfully cloned decentral repository."));
             }
             mMainWidget->updateDisplay();
             mMainWidget->triggerTreeSelectionChanged();
-        } else if (!status.isEmpty() && (status.contains("Failed") || status.contains("failed") || status.contains("down") || status.contains("not available"))) {
-            if (status.contains("sync", Qt::CaseInsensitive)) {
-                QMessageBox::critical(this, tr("Sync Failed"), status);
-            } else {
-                QMessageBox::critical(this, tr("Clone Failed"), status);
-            }
+        } else if (!status.isEmpty() && isFailedStatus(status)) {
+            mMainWidget->showNotice(status.contains("sync", Qt::CaseInsensitive) ? tr("Sync Failed") : tr("Clone Failed"), status);
         }
     } else if (e->mGitEventCode == RsGitEventCode::NEW_POST || e->mGitEventCode == RsGitEventCode::READ_STATUS_CHANGED || e->mGitEventCode == RsGitEventCode::POST_UPDATED) {
         refresh();
@@ -161,6 +199,8 @@ void PushesWidget::handleGitEvent(const RsGitEvent *e)
 void PushesWidget::addCloneRecord(const CloneRecord &rec)
 {
     mCloneHistory.insert(mCloneHistory.begin(), rec);
+    // Keep the transfer history bounded.
+    if (mCloneHistory.size() > 200) mCloneHistory.resize(200);
     populateClonesTable();
 }
 
@@ -241,8 +281,8 @@ void PushesWidget::pollDownloadProgress()
         }
 
         if (hasFile) {
-            if (rsGit) {
-                std::cout << "PushesWidget::pollDownloadProgress: packfile completed, unpacking " << file.mHash.toStdString() << std::endl;
+            // Only packs that were not imported yet; the import runs in the background.
+            if (rsGit && (update.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED)) {
                 if (rsGit->unpackUpdate(RsGxsGroupId(mGroupId.toStdString()), update.mMeta.mMsgId, file.mHash, update.mRefUpdates)) {
                     completedAny = true;
                 }
@@ -353,19 +393,16 @@ void PushesWidget::populatePackfiles()
         }
     }
 
-    std::vector<GitCommitInfo> commits;
-    GitManager::getCommitLog(repoPath, commits);
-
-    std::set<std::string> localCommitShas;
-    for (const auto &c : commits) {
-        localCommitShas.insert(c.hash);
-        localCommitShas.insert(c.full_hash);
-    }
-
     std::vector<RsGitUpdate> updates;
     if (rsGit) {
         rsGit->getUpdates(RsGxsGroupId(mGroupId.toStdString()), updates);
     }
+
+    // Look the published commits up directly (the log only covers the latest 100 commits).
+    std::set<std::string> publishedShas;
+    for (const auto &update : updates)
+        for (const auto &pair : update.mRefUpdates) publishedShas.insert(pair.second);
+    const std::set<std::string> localCommitShas = GitManager::filterExistingCommits(repoPath, publishedShas);
 
     // Filter updates
     for (const auto &update : updates) {
@@ -501,14 +538,15 @@ void PushesWidget::populatePackfiles()
                     hasPendingDownloads = true;
                     QPushButton *btnCancel = new QPushButton(tr("Cancel"), ui->mPackfilesTable);
                     btnCancel->setProperty("fileHash", QString::fromStdString(file.mHash.toStdString()));
-                    connect(btnCancel, &QPushButton::clicked, this, &PushesWidget::onCancelDownloadClicked);
+                    // Queued: the handler rebuilds the table, which deletes this button.
+                    connect(btnCancel, &QPushButton::clicked, this, &PushesWidget::onCancelDownloadClicked, Qt::QueuedConnection);
                     ui->mPackfilesTable->setCellWidget(i, 5, btnCancel);
                 } else {
                     QPushButton *btnDl = new QPushButton(tr("Download"), ui->mPackfilesTable);
                     btnDl->setProperty("fileHash", QString::fromStdString(file.mHash.toStdString()));
                     btnDl->setProperty("fileName", QString::fromStdString(file.mName));
                     btnDl->setProperty("fileSize", (qlonglong)file.mSize);
-                    connect(btnDl, &QPushButton::clicked, this, &PushesWidget::onDownloadClicked);
+                    connect(btnDl, &QPushButton::clicked, this, &PushesWidget::onDownloadClicked, Qt::QueuedConnection);
                     ui->mPackfilesTable->setCellWidget(i, 5, btnDl);
                 }
             }
@@ -520,6 +558,17 @@ void PushesWidget::populatePackfiles()
     } else {
         mDownloadPollTimer->stop();
     }
+}
+
+void PushesWidget::scheduleClonesTableUpdate()
+{
+    if (!mClonesTableTimer) {
+        mClonesTableTimer = new QTimer(this);
+        mClonesTableTimer->setSingleShot(true);
+        mClonesTableTimer->setInterval(250);
+        connect(mClonesTableTimer, &QTimer::timeout, this, &PushesWidget::populateClonesTable);
+    }
+    if (!mClonesTableTimer->isActive()) mClonesTableTimer->start();
 }
 
 void PushesWidget::populateClonesTable()
@@ -569,10 +618,31 @@ void PushesWidget::populateClonesTable()
         const auto& record = filteredHistory[i];
         auto* progress = new QProgressBar(ui->mClonesTable);
         progress->setRange(0, 100);
-        progress->setValue(record.complete ? 100 : (record.total ?
-            int(qMin<uint64_t>(record.received, record.total) * 100 / record.total) : 0));
-        progress->setFormat(record.complete || record.total ? tr("%p%") : tr("Waiting"));
-        progress->setToolTip(tr("Repository response received; unpacking and checkout follow the download."));
+        progress->setTextVisible(true);
+        const int percent = record.total ? int(qMin<uint64_t>(record.received, record.total) * 100 / record.total) : 0;
+        if (record.complete) {
+            progress->setValue(100);
+            progress->setFormat(tr("Done"));
+            progress->setToolTip(tr("The repository was transferred and written to the working folder."));
+        } else if (isFailedStatus(record.status)) {
+            // A failed transfer must not look like it is still waiting.
+            progress->setValue(percent);
+            progress->setFormat(tr("Failed"));
+            progress->setStyleSheet("QProgressBar { color: #c0392b; font-weight: bold; } QProgressBar::chunk { background-color: #e6b0aa; }");
+            progress->setToolTip(record.status);
+        } else if (record.total && record.received >= record.total) {
+            progress->setValue(100);
+            progress->setFormat(tr("Unpacking..."));
+            progress->setToolTip(tr("Repository data received; unpacking and checkout are running."));
+        } else if (record.total) {
+            progress->setValue(percent);
+            progress->setFormat(tr("%p%"));
+            progress->setToolTip(tr("Receiving repository data from the owner."));
+        } else {
+            progress->setValue(0);
+            progress->setFormat(tr("Waiting"));
+            progress->setToolTip(tr("Waiting for the owner's response. The download starts when the secure tunnel is ready."));
+        }
         ui->mClonesTable->setCellWidget(i, 3, progress);
         QString size = record.total ? tr("%1 / %2").arg(misc::friendlyUnit(record.received), misc::friendlyUnit(record.total)) : tr("Unknown");
         auto* sizeItem = new QTableWidgetItem(size);

@@ -57,6 +57,7 @@ private:
     Ui::PullRequestsWidget *ui;
     MainWidget *mMainWidget;
     QString mGroupId;
+    class QTimer *mFilterTimer = nullptr;
 };
 
 #endif // PULLREQUESTSWIDGET_H

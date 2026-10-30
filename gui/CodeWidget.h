@@ -56,6 +56,7 @@ private slots:
 
 private:
     void populateRepoBrowser(const QString &branchOrTag = "");
+    void selectBranchOrTag(const QString &text);
 
     Ui::CodeWidget *ui;
     MainWidget *mMainWidget;

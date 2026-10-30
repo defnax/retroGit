@@ -34,7 +34,13 @@
 #include <retroshare/rsgxsifacetypes.h>
 
 #include <QPoint>
+#include <QPointer>
 #include <QWidget>
+#include <set>
+#include <atomic>
+#include <functional>
+#include <mutex>
+#include "services/GitManager.h"
 
 
 #include "gui/gxs/GxsIdDetails.h"
@@ -45,6 +51,39 @@
 
 class QAction;
 class QLabel;
+class QTimer;
+#include <QMessageBox>
+
+/** Progress shared between a background job and its progress dialog. */
+struct RetroGitProgress
+{
+    std::atomic<bool> canceled{false};
+    std::atomic<uint64_t> current{0};
+    std::atomic<uint64_t> total{0};
+    std::mutex mutex;
+    std::string stage;
+
+    /** Callback for GitManager; returns false once the user canceled. */
+    GitManager::ProgressFn reporter()
+    {
+        return [this](const char *name, uint64_t value, uint64_t maximum) {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                stage = name;
+            }
+            current = value;
+            total = maximum;
+            return !canceled.load();
+        };
+    }
+};
+
+/** One file (or untracked folder, ending in '/') in the commit details tree. */
+struct ChangedFileEntry {
+    QString path;
+    char status;
+    QString color; // empty: default text color
+};
 
 class GxsIdTableItem : public QWidget
 {
@@ -82,6 +121,17 @@ public:
     void hashAndPublishPackfile(const QString &groupId, const std::string &packfileData, RsGitUpdate &update);
     bool publishPullRequestWithPack(RsGitPullRequest &pr, const std::string &pack);
     bool preparePackAttachment(const QString &groupId, const std::string &pack, RsGxsFile &attachment);
+    /** A new temporary pack path for a repository. */
+    QString newTempPackPath(const QString &groupId);
+    /** Share an already written pack file through RetroShare file transfer. */
+    bool hashPackFile(const QString &packPath, RsGxsFile &attachment);
+    /** Publish an update whose pack was written to packPath (inline or as attachment). */
+    void publishPackFile(const QString &groupId, const QString &packPath, uint64_t size, RsGitUpdate &update);
+    /** Run long work in the background with a cancelable progress dialog.
+     *  'work' runs on a worker thread, 'done' on the GUI thread (error is empty when canceled). */
+    void runWithProgress(const QString &title,
+                         std::function<bool(RetroGitProgress &progress, QString &error)> work,
+                         std::function<void(bool ok, const QString &error)> done);
     void refreshGitWidget();
     void refreshCodeWidget();
     void showCommitDetails(const QString &commitHash, const QString &repoPath);
@@ -93,6 +143,8 @@ public:
     void triggerTreeSelectionChanged();
     QString getLocalPath() const;
     QString getSelectedGroupId() const;
+    /** Show a single non-modal notice (safe to call from event handlers). */
+    void showNotice(const QString &title, const QString &text);
     class GitWidget* getGitWidget() const { return mGitWidget; }
     class CodeWidget* getCodeWidget() const { return mCodeWidget; }
 
@@ -119,6 +171,8 @@ private slots:
 
 private:
     void showDiffForFile(const QString &filePath);
+    void fillChangedFilesTree(const std::vector<ChangedFileEntry> &entries, bool prefixStatus);
+    quint64 mDetailsRequestId = 0;
     void refreshCurrentRepo();
     void loadGroupMeta();
     void saveRepoLocalPath(const QString &groupId, const QString &path);
@@ -127,6 +181,9 @@ private:
     void GroupMetaDataToGroupItemInfo(const RsGroupMetaData &groupInfo,
                                     GroupItemInfo &groupItemInfo);
     void handleEvent_main_thread(std::shared_ptr<const RsEvent> event);
+    void scheduleEventProcessing();
+    void processPendingEvents();
+    void checkNewPostNotices(const RsGxsGroupId &groupId);
     void processSettings(bool load);
     void applyRetroGitLightStyles();
 
@@ -134,8 +191,19 @@ private:
     int mGroupSet = 0;
     bool mInitialLoadDone = false;
     bool mGroupMetaLoadPending = false;
+    bool mGroupMetaReloadRequested = false;
 
-    RsEventsHandlerId_t mEventHandlerId;
+    RsEventsHandlerId_t mEventHandlerId = 0;
+
+    // Coalesced backend events (see processPendingEvents()).
+    QTimer *mEventTimer = nullptr;
+    bool mPendingGroupReload = false;
+    bool mPendingRepoRefresh = false;
+    bool mPendingSelectionRefresh = false;
+    bool mPendingPullRequestRefresh = false;
+    std::set<RsGxsGroupId> mPendingNewPostGroups;
+    int mModalDepth = 0;
+    QPointer<QMessageBox> mNotice;
 
     Ui::MainWidget *ui;
     

@@ -35,6 +35,9 @@
 #include <QApplication>
 #include <QStyle>
 #include <QLabel>
+#include <QCompleter>
+#include <QLineEdit>
+#include <QAbstractItemView>
 #include <retroshare/rsinit.h>
 
 extern RsGit *rsGit;
@@ -79,7 +82,36 @@ CodeWidget::CodeWidget(MainWidget *mainWidget, QWidget *parent)
     connect(ui->mBtnOpenFolder, &QPushButton::clicked, this, &CodeWidget::onOpenFolderClicked);
     connect(ui->mBtnCreateBranch, &QPushButton::clicked, this, &CodeWidget::onCreateBranchClicked);
     connect(ui->mBtnPullRequests, &QPushButton::clicked, this, &CodeWidget::onPullRequestsClicked);
-    connect(ui->mBranchCombo, &QComboBox::currentTextChanged, this, &CodeWidget::onBranchComboChanged);
+
+    // Large repositories have dozens of branches and tags: show a limited,
+    // scrollable list and let the user type to filter it.
+    ui->mBranchCombo->setMaxVisibleItems(15);
+    ui->mBranchCombo->setStyleSheet("QComboBox { combobox-popup: 0; }"); // honour maxVisibleItems on every style
+    ui->mBranchCombo->setEditable(true);
+    ui->mBranchCombo->setInsertPolicy(QComboBox::NoInsert);
+    ui->mBranchCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    ui->mBranchCombo->setMinimumContentsLength(18);
+    ui->mBranchCombo->lineEdit()->setPlaceholderText(tr("Filter branches and tags..."));
+    ui->mBranchCombo->setToolTip(tr("Type to filter branches and tags"));
+    QCompleter *completer = new QCompleter(ui->mBranchCombo->model(), ui->mBranchCombo);
+    completer->setCaseSensitivity(Qt::CaseInsensitive);
+    completer->setFilterMode(Qt::MatchContains);
+    completer->setCompletionMode(QCompleter::PopupCompletion);
+    completer->setMaxVisibleItems(15);
+    ui->mBranchCombo->setCompleter(completer);
+
+    // Typing must not switch branches: only a chosen entry does.
+    connect(ui->mBranchCombo, QOverload<int>::of(&QComboBox::activated), this, [this](int index) {
+        selectBranchOrTag(ui->mBranchCombo->itemText(index));
+    });
+    connect(completer, QOverload<const QString &>::of(&QCompleter::activated), this, [this](const QString &text) {
+        selectBranchOrTag(text);
+    });
+    connect(ui->mBranchCombo->lineEdit(), &QLineEdit::editingFinished, this, [this]() {
+        const QString text = ui->mBranchCombo->currentText();
+        if (ui->mBranchCombo->findText(text) >= 0) selectBranchOrTag(text);
+        else ui->mBranchCombo->setEditText(mSelectedBranchOrTag); // unknown text: show the selection again
+    });
 
     int iconSize = qMax(fontMetrics().height(), 24);
     ui->mBranchCombo->setIconSize(QSize(iconSize, iconSize));
@@ -214,7 +246,8 @@ void CodeWidget::refresh()
 
     // Disable signals during combo repopulation to prevent multiple refreshes
     ui->mBranchCombo->blockSignals(true);
-    QString previousSelected = ui->mBranchCombo->currentText();
+    // The edit text may hold a partial filter: keep the actual selection.
+    QString previousSelected = mSelectedBranchOrTag;
     ui->mBranchCombo->clear();
 
     if (GitManager::getBranches(bareRepoPath, branches, currentBranch)) {
@@ -317,6 +350,19 @@ void CodeWidget::onRepoBrowserContextMenu(const QPoint &pos)
     contextMnu.exec(ui->mRepoBrowserList->mapToGlobal(pos));
 }
 
+namespace {
+// Opening these with the system handler runs code: ask first.
+bool isExecutableFile(const QString &path)
+{
+    static const QStringList risky = {
+        "exe", "com", "bat", "cmd", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "msi", "msp",
+        "scr", "pif", "lnk", "hta", "cpl", "jar", "reg", "sh", "bash", "command", "app", "dll", "appx",
+        "msix", "url", "desktop", "scf", "inf", "py", "pyw", "pl", "rb", "apk", "deb", "rpm", "run", "bin"
+    };
+    return risky.contains(QFileInfo(path).suffix().toLower());
+}
+}
+
 void CodeWidget::openSelectedFile()
 {
     QTreeWidgetItem *item = ui->mRepoBrowserList->currentItem();
@@ -324,6 +370,17 @@ void CodeWidget::openSelectedFile()
 
     QString selectedFile = item->data(0, Qt::UserRole).toString();
     if (selectedFile.isEmpty()) return; // Skip folders
+
+    // File names come from the repository, i.e. from a remote peer.
+    if (!GitManager::isSafeRelativePath(selectedFile.toStdString())) {
+        QMessageBox::critical(this, tr("Error"), tr("The file name is not a safe relative path."));
+        return;
+    }
+    if (isExecutableFile(selectedFile) &&
+        QMessageBox::warning(this, tr("Open File"),
+            tr("'%1' may be a program or script. Opening it can run code from the repository on your computer.\n\nOpen it anyway?")
+                .arg(selectedFile), QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
 
     QString rawPath = mMainWidget->getLocalPath();
     QString filePath;
@@ -333,8 +390,8 @@ void CodeWidget::openSelectedFile()
     if (!rawPath.isEmpty()) {
         QString localPath = QDir::cleanPath(rawPath);
         if (QDir(localPath).exists()) {
-            filePath = QDir(localPath).filePath(selectedFile);
-            if (QFile::exists(filePath)) {
+            filePath = QDir::cleanPath(QDir(localPath).filePath(selectedFile));
+            if (filePath.startsWith(localPath + "/") && QFile::exists(filePath)) {
                 QDesktopServices::openUrl(QUrl::fromLocalFile(filePath));
                 opened = true;
             }
@@ -345,14 +402,12 @@ void CodeWidget::openSelectedFile()
     if (!opened) {
         std::string barePath = GitManager::getBareRepoPath(mGroupId.toStdString());
         QString tempDir = QDir::cleanPath(QString::fromStdString(RsAccounts::AccountDirectory()) + "/retrogit_temp/previews/" + mGroupId);
-        QDir().mkpath(tempDir);
-
-        QFileInfo fileInfo(selectedFile);
-        if (!fileInfo.path().isEmpty() && fileInfo.path() != ".") {
-            QDir().mkpath(tempDir + "/" + fileInfo.path());
+        filePath = QDir::cleanPath(tempDir + "/" + selectedFile);
+        if (!filePath.startsWith(tempDir + "/")) {
+            QMessageBox::critical(this, tr("Error"), tr("The file name is not a safe relative path."));
+            return;
         }
-
-        filePath = tempDir + "/" + selectedFile;
+        QDir().mkpath(QFileInfo(filePath).absolutePath());
 
         if (GitManager::extractFile(barePath, selectedFile.toStdString(), filePath.toStdString(), mSelectedBranchOrTag.toStdString())) {
             QDesktopServices::openUrl(QUrl::fromLocalFile(filePath));
@@ -426,6 +481,19 @@ void CodeWidget::populateRepoBrowser(const QString &branchOrTag)
         // Sort items: folders on top, then alphabetical order
         ui->mRepoBrowserList->sortItems(0, Qt::AscendingOrder);
     }
+}
+
+void CodeWidget::selectBranchOrTag(const QString &text)
+{
+    const int index = ui->mBranchCombo->findText(text);
+    if (text.isEmpty() || index < 0) return;
+    if (ui->mBranchCombo->currentIndex() != index) {
+        ui->mBranchCombo->blockSignals(true);
+        ui->mBranchCombo->setCurrentIndex(index);
+        ui->mBranchCombo->blockSignals(false);
+    }
+    if (text == mSelectedBranchOrTag) return; // already shown
+    onBranchComboChanged(text);
 }
 
 void CodeWidget::onBranchComboChanged(const QString &text)

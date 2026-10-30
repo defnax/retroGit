@@ -49,6 +49,7 @@ private:
     MainWidget       *mMainWidget;
     unsigned int      mNewCount;
     RsEventsHandlerId_t mEventHandlerId;
+    class QTimer     *mUpdateTimer;
 };
 
 #endif // GITUSERNOTIFY_H

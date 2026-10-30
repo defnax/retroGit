@@ -25,6 +25,8 @@
 #include <map>
 #include <vector>
 #include <set>
+#include <functional>
+#include <cstdint>
 #include <git2.h>
 
 struct GitCommitInfo {
@@ -33,6 +35,7 @@ struct GitCommitInfo {
     std::string author;
     std::string date;
     std::string full_hash;
+    std::string email;
 };
 
 struct GitDiffLine {
@@ -54,6 +57,20 @@ struct GitCommitFileChange {
 class GitManager
 {
 public:
+    /** Progress report for long operations: stage name, current, total (0 = unknown).
+     *  Return false to cancel. Called from the thread doing the work. */
+    typedef std::function<bool(const char *stage, uint64_t current, uint64_t total)> ProgressFn;
+
+    /** Branches and tags (refs/heads, refs/tags) with their target ids. Cheap. */
+    static bool getPublishableRefs(const std::string& repoPath, std::map<std::string, std::string>& refs);
+
+    /** Build a pack of all branches and tags, omitting what 'known' commits contain,
+     *  and stream it into outPath. Uses all CPU cores. Meant for large repositories. */
+    static bool createPackfileToFile(const std::string& repoPath, const std::string& outPath,
+                                     std::map<std::string, std::string>& outRefUpdates,
+                                     const std::set<std::string>& known, uint64_t *outSize,
+                                     const ProgressFn& progress = ProgressFn(), bool *canceled = nullptr);
+
     /**
      * @brief Initialize libgit2. Must be called once before using any Git features.
      */
@@ -95,6 +112,16 @@ public:
     static bool pullRepository(const std::string& localPath, const std::string& sourcePath = "", std::string* errorMessage = nullptr, const std::string& expectedBranch = "");
     static bool hasCommit(const std::string& path, const std::string& commit);
     static std::set<std::string> knownTips(const std::string& path);
+    /** HEAD commit id of the repository, or an empty string. Cheap; used to detect changes. */
+    static std::string headCommit(const std::string& path);
+    /** Return the subset of candidate object ids that exist in the repository (opens it once). */
+    static std::set<std::string> filterExistingCommits(const std::string& path, const std::set<std::string>& candidates);
+    /** Point branches/tags at already imported commits once their history is complete. */
+    static bool applyRefUpdates(const std::string& repoPath, const std::map<std::string, std::string>& refUpdates);
+    /** Format a git timestamp safely ("" when it cannot be represented). */
+    static std::string formatTime(int64_t when);
+    /** True for a relative path without '.', '..', drive or root components. */
+    static bool isSafeRelativePath(const std::string& path);
 
     /**
      * @brief Commit all changes in the working directory.
@@ -180,7 +207,8 @@ public:
     /**
      * @brief Unpack a received packfile file into the local bare repository and update references.
      */
-    static bool unpackPackfileFromFile(const std::string& repoPath, const std::string& packfilePath, const std::map<std::string, std::string>& refUpdates);
+    static bool unpackPackfileFromFile(const std::string& repoPath, const std::string& packfilePath, const std::map<std::string, std::string>& refUpdates,
+                                       const ProgressFn& progress = ProgressFn());
 
     /**
      * @brief Create a packfile from the local repository and return ref updates.

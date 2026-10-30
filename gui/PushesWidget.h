@@ -69,6 +69,7 @@ private slots:
 private:
     void populatePackfiles();
     void populateClonesTable();
+    void scheduleClonesTableUpdate();
 
     Ui::PushesWidget *ui;
     MainWidget *mMainWidget;
@@ -76,6 +77,7 @@ private:
     std::vector<RsGitUpdate> mAvailableUpdates;
     std::vector<CloneRecord> mCloneHistory;
     class QTimer *mDownloadPollTimer;
+    class QTimer *mClonesTableTimer = nullptr;
 };
 
 #endif // PUSHESWIDGET_H

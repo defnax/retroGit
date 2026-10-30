@@ -41,6 +41,12 @@ static const uint32_t CONFIG_TYPE_RetroGit_PLUGIN = 0xe001;
 
 #define RETRO_GIT_GXS_TUNNEL_SERVICE_ID 0xE001
 
+/** Largest pack sent inside a GXS message; bigger packs are attached as files.
+ *  Keeps every RetroGit message well below RetroShare's 262143 byte item limit. */
+static const size_t RETROGIT_MAX_INLINE_PACK = 180000;
+/** Longest pull request description accepted for publication. */
+static const size_t RETROGIT_MAX_DESCRIPTION = 16000;
+
 /**
  * @brief Data structure representing a RetroGit Group (Repository)
  */

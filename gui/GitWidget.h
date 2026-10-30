@@ -23,11 +23,14 @@
 
 #include <QWidget>
 #include <QString>
+#include <QElapsedTimer>
 #include <memory>
 #include <vector>
 #include <string>
 #include <utility>
 #include "interface/rsGit.h"
+
+#include "services/GitManager.h"
 
 namespace Ui {
 class GitWidget;
@@ -43,11 +46,13 @@ public:
     explicit GitWidget(MainWidget *mainWidget, QWidget *parent = nullptr);
     ~GitWidget();
 
-    void setGroupId(const QString &groupId);
+    void setGroupId(const QString &groupId, bool doRefresh = true);
     void handleGitEvent(const RsGitEvent *e);
     void clear();
     void refresh();
     QString getLocalPath() const;
+    /** Last background status of the working folder, if it is for this path. */
+    bool cachedLocalChanges(const std::string &path, std::vector<GitLocalChange> &changes) const;
 
 private slots:
     void onInitializeClicked();
@@ -60,14 +65,17 @@ private slots:
     void onCommitSelectionChanged();
     void onCommitTableContextMenu(const QPoint &pos);
     void onCommitReadStatusToggled(const QString &msgIdStr, bool markRead);
+    void pollWorkingTree();
 
 private:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+    bool mNeedsSubscription = false;
     void finishFork();
     RsGitGroup mPendingFork;
     QString mPendingForkPath;
     QString chooseRepositoryPath(bool clone);
     void setLocalPath(const QString &path);
-    void populateCommitLog();
+    void populateCommitLog(const std::vector<GitLocalChange> *workingChanges = nullptr);
     void saveRepoLocalPath(const QString &groupId, const QString &path);
     QString loadRepoLocalPath(const QString &groupId);
 
@@ -82,6 +90,16 @@ private:
     std::vector<std::string> mLastCommitHashes;
     std::vector<std::pair<std::string, char>> mLastLocalChanges;
     std::vector<std::pair<std::string, uint32_t>> mLastUpdates;
+
+    void startStatusCheck();
+    std::string mLastWorkingTreeState;
+    std::string mStatusPath;                    // last background status result
+    std::vector<GitLocalChange> mStatusChanges;
+    bool mStatusKnown = false;
+    qint64 mLastStatusCostMs = 0;
+    QElapsedTimer mLastStatusFinished;
+    bool mPushInProgress = false;
+    bool mPollInFlight = false;
 };
 
 #endif // GITWIDGET_H

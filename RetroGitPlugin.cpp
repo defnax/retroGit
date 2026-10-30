@@ -48,8 +48,6 @@
 #define IMAGE_GIT ":/images/git.png"
 
 
-static void *inited = new RetroGitPlugin() ;
-
 extern "C" {
 
 	// This is *the* functions required by RS plugin system to give RS access to the plugin.
@@ -95,6 +93,8 @@ RetroGitPlugin::RetroGitPlugin()
 	qRegisterMetaType<RsPeerId>("RsPeerId");
 	mainpage = NULL ;
 	mRetroGit = NULL ;
+	mRetroGitNetService = NULL ;
+	mRetroGitGUIHandler = NULL ;
 	mPlugInHandler = NULL;
 	mPeers = NULL;
 	mConfigPage = NULL ;
@@ -199,10 +199,16 @@ void RetroGitPlugin::setPlugInHandler(RsPluginHandler *pgHandler)
 
 void RetroGitPlugin::stop()
 {
+	// Finish background git work first: it may still use the GXS service.
 	if(mRetroGit)
-	{
+		mRetroGit->stopWorker();
+
+	// Stop the network service before the exchange service it feeds.
+	if(mRetroGitNetService)
+		mRetroGitNetService->fullstop();
+
+	if(mRetroGit)
 		mRetroGit->fullstop();
-	}
 }
 
 QIcon *RetroGitPlugin::qt_icon() const
