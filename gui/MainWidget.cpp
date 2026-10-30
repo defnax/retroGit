@@ -1004,7 +1004,55 @@ void MainWidget::logCloneAttempt(const QString &groupId, const QString &repoName
     rec.ownerId = ownerId;
     rec.status = ownId.isNull() ? tr("GXS Identity missing. Initiating offline clone...") : tr("Requesting secure tunnel...");
     rec.time = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
-    
+
+    // Everything published is already in RetroGit's local copy (e.g. from a
+    // downloaded pack): clone from it directly instead of asking the owner,
+    // who may be offline.
+    const std::string cached = GitManager::getBareRepoPath(groupId.toStdString());
+    std::set<std::string> published;
+    std::vector<RsGitUpdate> updates;
+    if (rsGit && rsGit->getUpdates(RsGxsGroupId(groupId.toStdString()), updates))
+        for (const auto &update : updates)
+            for (const auto &ref : update.mRefUpdates) published.insert(ref.second);
+    std::map<std::string, std::string> cachedRefs;
+    if (!published.empty() && GitManager::getPublishableRefs(cached, cachedRefs) && !cachedRefs.empty() &&
+        GitManager::filterExistingCommits(cached, published).size() == published.size()) {
+        rec.status = tr("Cloning from the local copy...");
+        if (mPushesWidget) {
+            mPushesWidget->addCloneRecord(rec);
+            ui->rightPaneTabWidget->setCurrentWidget(mPushesWidget);
+        }
+        QPointer<MainWidget> self(this);
+        const std::string target = localPath.toStdString();
+        runWithProgress(tr("Cloning repository..."),
+            [cached, target](RetroGitProgress &, QString &failure) {
+                if (!GitManager::cloneRepository(cached, target)) {
+                    failure = QObject::tr("Could not write the working folder. Choose an empty folder and retry.");
+                    return false;
+                }
+                return true;
+            },
+            [self, groupId](bool ok, const QString &failure) {
+                if (!self) return;
+                if (self->mPushesWidget) {
+                    for (auto &record : self->mPushesWidget->getCloneHistory())
+                        if (record.repoId == groupId && !record.complete) {
+                            record.status = ok ? tr("Clone completed successfully!") : (failure.isEmpty() ? tr("Clone canceled.") : failure);
+                            record.complete = ok;
+                            break;
+                        }
+                    self->mPushesWidget->updateClonesTable();
+                }
+                if (ok) {
+                    self->updateDisplay();
+                    self->triggerTreeSelectionChanged();
+                } else if (!failure.isEmpty()) {
+                    QMessageBox::critical(self, tr("Clone Failed"), failure);
+                }
+            });
+        return;
+    }
+
     if (mPushesWidget) {
         mPushesWidget->addCloneRecord(rec);
         ui->rightPaneTabWidget->setCurrentWidget(mPushesWidget);
