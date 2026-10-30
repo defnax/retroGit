@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 #include <atomic>
+#include <filesystem>
 
 #include "gui/RetroGitNotify.h"
 #include "p3Git.h"
@@ -68,6 +69,33 @@ bool applyIfAlreadyPresent(const std::string &repoPath, const std::map<std::stri
     for (const auto &ref : allRefs) targets.insert(ref.second);
     return GitManager::filterExistingCommits(repoPath, targets).size() == targets.size() &&
            GitManager::applyRefUpdates(repoPath, refsToApply);
+}
+
+// Path of a published pack available on this computer. A finished download
+// is found even when the download folder is not shared (or not indexed yet);
+// after a restart it is found in the download folder by name and size.
+bool findPackFile(const RsFileHash &hash, const std::string &name, uint64_t size, std::string &path)
+{
+    if (!rsFiles || hash.isNull()) return false;
+    FileInfo info;
+    if (rsFiles->FileDetails(hash, RS_FILE_HINTS_DOWNLOAD | RS_FILE_HINTS_SPEC_ONLY, info) &&
+        info.downloadStatus == FT_STATE_COMPLETE && !info.path.empty()) {
+        path = info.path;
+        return true;
+    }
+    if (rsFiles->alreadyHaveFile(hash, info) && !info.path.empty()) { // shared or extra (own) files
+        path = info.path;
+        return true;
+    }
+    // The name comes from a remote message: accept a plain file name only.
+    if (name.empty() || name == "." || name == ".." || name.find_first_of("/\\:") != std::string::npos)
+        return false;
+    const std::string candidate = rsFiles->getDownloadDirectory() + "/" + name;
+    std::error_code ec;
+    const auto found = std::filesystem::file_size(std::filesystem::u8path(candidate), ec);
+    if (ec || found != size) return false;
+    path = candidate;
+    return true;
 }
 
 bool isUnprocessed(const RsMsgMetaData &meta)
@@ -552,11 +580,11 @@ void p3Git::notifyChanges(std::vector<RsGxsNotify *> &changes)
                 const RsGxsGroupId groupId = msgChange->mGroupId;
                 const RsGxsMessageId msgId = msgChange->mMsgId;
                 const std::string packData = gitMsg->mFiles.empty() ? gitMsg->mPackfileData : std::string();
-                const RsFileHash fileHash = gitMsg->mFiles.empty() ? RsFileHash() : gitMsg->mFiles[0].mHash;
+                const RsGxsFile file = gitMsg->mFiles.empty() ? RsGxsFile() : gitMsg->mFiles[0];
                 const std::map<std::string, std::string> refs = gitMsg->mRefUpdates;
                 const rstime_t publishTs = gitMsg->meta.mPublishTs;
-                runJob([this, groupId, msgId, packData, fileHash, refs, publishTs]() {
-                    unpackRootUpdateJob(groupId, msgId, packData, fileHash, refs, publishTs);
+                runJob([this, groupId, msgId, packData, file, refs, publishTs]() {
+                    unpackRootUpdateJob(groupId, msgId, packData, file, refs, publishTs);
                 });
             } else if (gitMsg->mGitMsgType == 2 || gitMsg->mGitMsgType == 3) {
                 postGitEvent(RsGitEventCode::NEW_POST, msgChange->mGroupId, msgChange->mMsgId);
@@ -605,22 +633,25 @@ void p3Git::notifyChanges(std::vector<RsGxsNotify *> &changes)
 }
 
 void p3Git::unpackRootUpdateJob(const RsGxsGroupId &groupId, const RsGxsMessageId &msgId, const std::string &packData,
-                                const RsFileHash &fileHash, const std::map<std::string, std::string> &refUpdates,
+                                const RsGxsFile &file, const std::map<std::string, std::string> &refUpdates,
                                 rstime_t publishTs)
 {
     const std::string repoPath = GitManager::getBareRepoPath(groupId.toStdString());
+    const RsFileHash &fileHash = file.mHash;
     bool unpacked = false;
     if (!fileHash.isNull()) {
-        FileInfo info;
-        if (rsFiles && rsFiles->alreadyHaveFile(fileHash, info)) {
+        std::string packPath;
+        if (findPackFile(fileHash, file.mName, file.mSize, packPath)) {
             const auto refs = refsNotOlderThan(groupId, refUpdates, publishTs);
             unpacked = applyIfAlreadyPresent(repoPath, refUpdates, refs) ||
-                       GitManager::unpackPackfileFromFile(repoPath, info.path, refs);
+                       GitManager::unpackPackfileFromFile(repoPath, packPath, refs);
         } else {
             PendingPackfile pending;
             pending.groupId = groupId;
             pending.msgId = msgId;
             pending.fileHash = fileHash;
+            pending.fileName = file.mName;
+            pending.fileSize = file.mSize;
             pending.refUpdates = refUpdates;
             pending.publishTs = publishTs;
             RS_STACK_MUTEX(mRetroGitMtx);
@@ -739,16 +770,18 @@ void p3Git::service_tick()
             info.tunnel_status == RsGxsTunnelService::RS_GXS_TUNNEL_STATUS_CAN_TALK)
             notifyTunnelStatus(id, info.tunnel_status);
     }
+    // The owner did not answer (offline, or an old plugin): use the packs
+    // published through GXS and file transfer instead.
     for (const auto& id : expired)
-        failTunnelTransfer(id, "Repository transfer timed out. Check that the owner has published commits and both clients use the updated plugin, then retry.");
+        fallBackToOffline(id, "The owner did not answer in time. Using the published packs instead...");
 
     // Downloaded packs are unpacked on the worker.
     std::vector<PendingPackfile> completed;
     {
         RS_STACK_MUTEX(mRetroGitMtx);
         for (auto it = mPendingPackfiles.begin(); it != mPendingPackfiles.end(); ) {
-            FileInfo fi;
-            if (rsFiles && rsFiles->alreadyHaveFile(it->fileHash, fi)) {
+            std::string packPath;
+            if (findPackFile(it->fileHash, it->fileName, it->fileSize, packPath)) {
                 completed.push_back(*it);
                 it = mPendingPackfiles.erase(it);
             } else {
@@ -784,13 +817,13 @@ void p3Git::service_tick()
 void p3Git::unpackDownloadedJob(const PendingPackfile &pending)
 {
     const std::string repoPath = GitManager::getBareRepoPath(pending.groupId.toStdString());
-    FileInfo fi;
+    std::string packPath;
     bool unpacked = false;
-    if (rsFiles && rsFiles->FileDetails(pending.fileHash, RS_FILE_HINTS_LOCAL, fi)) {
-        std::cout << "p3Git: Pending packfile downloaded: " << fi.path << ", unpacking..." << std::endl;
+    if (findPackFile(pending.fileHash, pending.fileName, pending.fileSize, packPath)) {
+        std::cout << "p3Git: Pending packfile downloaded: " << packPath << ", unpacking..." << std::endl;
         const auto refs = refsNotOlderThan(pending.groupId, pending.refUpdates, pending.publishTs);
         unpacked = applyIfAlreadyPresent(repoPath, pending.refUpdates, refs) ||
-                   GitManager::unpackPackfileFromFile(repoPath, fi.path, refs);
+                   GitManager::unpackPackfileFromFile(repoPath, packPath, refs);
         recordUnpackResult(pending.groupId, pending.msgId, pending.refUpdates, pending.publishTs, unpacked);
     }
     {
@@ -806,16 +839,7 @@ void p3Git::unpackDownloadedJob(const PendingPackfile &pending)
 
 bool p3Git::unpackUpdate(const RsGxsGroupId &groupId, const RsGxsMessageId &msgId, const RsFileHash &fileHash, const std::map<std::string, std::string> &refUpdates)
 {
-    FileInfo fi;
-    if (!rsFiles || !rsFiles->FileDetails(fileHash, RS_FILE_HINTS_LOCAL, fi)) return false;
-    {
-        RS_STACK_MUTEX(mRetroGitMtx);
-        // Already unpacked but waiting for an earlier pack: retried automatically.
-        if (mIncompleteUpdates.count(RsGxsGrpMsgIdPair(groupId, msgId))) return false;
-        if (!mUnpacking.insert(RsGxsGrpMsgIdPair(groupId, msgId)).second) return true; // already queued
-        for (auto it = mPendingPackfiles.begin(); it != mPendingPackfiles.end(); )
-            if (it->fileHash == fileHash && it->groupId == groupId) it = mPendingPackfiles.erase(it); else ++it;
-    }
+    // Name and size of the attachment help to find it after a restart.
     PendingPackfile pending;
     pending.groupId = groupId;
     pending.msgId = msgId;
@@ -824,7 +848,21 @@ bool p3Git::unpackUpdate(const RsGxsGroupId &groupId, const RsGxsMessageId &msgI
     MsgCache cache;
     if (cachedMessages(groupId, cache))
         for (const auto &update : cache.updates)
-            if (update.mMeta.mMsgId == msgId) pending.publishTs = update.mMeta.mPublishTs;
+            if (update.mMeta.mMsgId == msgId) {
+                pending.publishTs = update.mMeta.mPublishTs;
+                for (const auto &file : update.mFiles)
+                    if (file.mHash == fileHash) { pending.fileName = file.mName; pending.fileSize = file.mSize; }
+            }
+    std::string packPath;
+    if (!findPackFile(fileHash, pending.fileName, pending.fileSize, packPath)) return false;
+    {
+        RS_STACK_MUTEX(mRetroGitMtx);
+        // Already unpacked but waiting for an earlier pack: retried automatically.
+        if (mIncompleteUpdates.count(RsGxsGrpMsgIdPair(groupId, msgId))) return false;
+        if (!mUnpacking.insert(RsGxsGrpMsgIdPair(groupId, msgId)).second) return true; // already queued
+        for (auto it = mPendingPackfiles.begin(); it != mPendingPackfiles.end(); )
+            if (it->fileHash == fileHash && it->groupId == groupId) it = mPendingPackfiles.erase(it); else ++it;
+    }
     // Unpacking is done on the worker; a NEW_POST event reports completion.
     runJob([this, pending]() { unpackDownloadedJob(pending); });
     return true;
@@ -930,9 +968,10 @@ void p3Git::preparePullRequestJob(RsGitPullRequest pr)
     const std::string path = GitManager::getBareRepoPath(pr.mMeta.mGroupId.toStdString());
     bool imported = false;
     if (!pr.mFiles.empty()) {
-        FileInfo info;
-        if (rsFiles && rsFiles->alreadyHaveFile(pr.mFiles.front().mHash, info))
-            imported = GitManager::unpackPackfileFromFile(path, info.path, {});
+        const auto &file = pr.mFiles.front();
+        std::string packPath;
+        if (findPackFile(file.mHash, file.mName, file.mSize, packPath))
+            imported = GitManager::unpackPackfileFromFile(path, packPath, {});
     } else {
         // Cached pull requests carry no pack data: read this one from the database.
         MsgCache full;
@@ -960,8 +999,8 @@ bool p3Git::preparePullRequest(const RsGitPullRequest &pr)
 
     if (!pr.mFiles.empty() && rsFiles) {
         const auto &file = pr.mFiles.front();
-        FileInfo info;
-        if (!rsFiles->alreadyHaveFile(file.mHash, info)) {
+        std::string packPath;
+        if (!findPackFile(file.mHash, file.mName, file.mSize, packPath)) {
             bool request = false;
             {
                 RS_STACK_MUTEX(mRetroGitMtx);
@@ -1268,10 +1307,10 @@ void p3Git::startOfflineJob(const RsGxsGroupId &groupId)
 
         if (!update.mFiles.empty()) {
             const RsGxsFile &file = update.mFiles[0];
-            FileInfo info;
-            if (rsFiles && rsFiles->alreadyHaveFile(file.mHash, info)) {
-                if (!GitManager::unpackPackfileFromFile(barePath, info.path, {}))
-                    std::cerr << "p3Git: " << label << ": pack " << info.path << " not complete yet for msg "
+            std::string packPath;
+            if (findPackFile(file.mHash, file.mName, file.mSize, packPath)) {
+                if (!GitManager::unpackPackfileFromFile(barePath, packPath, {}))
+                    std::cerr << "p3Git: " << label << ": pack " << packPath << " not complete yet for msg "
                               << update.mMeta.mMsgId.toStdString() << std::endl;
                 continue;
             }
@@ -1293,6 +1332,8 @@ void p3Git::startOfflineJob(const RsGxsGroupId &groupId)
                 pending.groupId = groupId;
                 pending.msgId = update.mMeta.mMsgId;
                 pending.fileHash = file.mHash;
+                pending.fileName = file.mName;
+                pending.fileSize = file.mSize;
                 pending.refUpdates = update.mRefUpdates;
                 pending.publishTs = update.mMeta.mPublishTs;
                 mPendingPackfiles.push_back(pending);
@@ -1549,12 +1590,29 @@ void p3Git::notifyTunnelStatus(const RsGxsTunnelId& tunnel_id, uint32_t tunnel_s
     else if (down)
     {
         std::cout << "p3Git: Tunnel went down. Falling back to offline method for group: " << groupId.toStdString() << std::endl;
-        postCloneStatus(groupId, "Tunnel disconnected. Falling back to offline sync...", false);
-        forgetTunnel(tunnel_id);
-        // Asynchronous: never scan the database on the tunnel thread.
-        if (isPull) requestOfflinePull(groupId, localPath);
-        else requestOfflineClone(groupId, localPath);
+        fallBackToOffline(tunnel_id, "Tunnel disconnected. Falling back to offline sync...");
     }
+}
+
+void p3Git::fallBackToOffline(const RsGxsTunnelId& id, const std::string& reason)
+{
+    RsGxsGroupId groupId;
+    std::string localPath;
+    bool isPull = false;
+    {
+        RS_STACK_MUTEX(mRetroGitMtx);
+        auto clone = mPendingClones.find(id);
+        auto pull = mPendingPulls.find(id);
+        if (clone != mPendingClones.end()) { groupId = clone->second.groupId; localPath = clone->second.localPath; }
+        else if (pull != mPendingPulls.end()) { groupId = pull->second.groupId; localPath = pull->second.localPath; isPull = true; }
+    }
+    forgetTunnel(id);
+    if (mGxsTunnels) mGxsTunnels->closeExistingTunnel(id, RETRO_GIT_GXS_TUNNEL_SERVICE_ID);
+    if (groupId.isNull()) return;
+    postCloneStatus(groupId, reason, false);
+    // Asynchronous: never scan the database on the tunnel or GXS thread.
+    if (isPull) requestOfflinePull(groupId, localPath);
+    else requestOfflineClone(groupId, localPath);
 }
 
 void p3Git::sendOutgoingChunks()

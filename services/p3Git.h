@@ -109,6 +109,8 @@ private:
         RsGxsGroupId groupId;
         RsGxsMessageId msgId;
         RsFileHash fileHash;
+        std::string fileName;
+        uint64_t fileSize = 0;
         std::map<std::string, std::string> refUpdates;
         rstime_t publishTs = 0;
     };
@@ -159,6 +161,7 @@ private:
     void postCloneStatus(const RsGxsGroupId &groupId, const std::string &status, bool success,
                          uint64_t received = 0, uint64_t total = 0);
     void failTunnelTransfer(const RsGxsTunnelId& id, const std::string& reason);
+    void fallBackToOffline(const RsGxsTunnelId& id, const std::string& reason);
     void forgetTunnel(const RsGxsTunnelId& id);
     void sendTransferError(const RsGxsTunnelId& id, const QString& groupId, const QString& error);
 
@@ -188,7 +191,7 @@ private:
 
     // Jobs (worker thread)
     void unpackRootUpdateJob(const RsGxsGroupId &groupId, const RsGxsMessageId &msgId, const std::string &packData,
-                             const RsFileHash &fileHash, const std::map<std::string, std::string> &refUpdates,
+                             const RsGxsFile &file, const std::map<std::string, std::string> &refUpdates,
                              rstime_t publishTs);
     // Updates can be processed out of publish order (downloads finish in any
     // order): an older update must never move a branch set by a newer one.
