@@ -1315,9 +1315,27 @@ void GitWidget::populateCommitLog(const std::vector<GitLocalChange> *workingChan
         }
     }
 
-    // Commits made with RetroGit use "<nickname>@<identity id>" as e-mail.
-    // Only that proves a RetroShare identity wrote the commit: Git names are
-    // free text (a GitHub author may use the same name as an identity).
+    // Commits made with RetroGit use "<nickname>@<identity id>" as e-mail. The
+    // e-mail is free text, so it is only trusted when a signature backs it:
+    // the repository owner signs every update, and a contributor signs the
+    // pull request that delivered the commit.
+    std::map<RsGxsId, std::vector<std::string> > signedProposals;
+    {
+        std::vector<RsGitPullRequest> proposals;
+        if (rsGit && rsGit->getPullRequests(RsGxsGroupId(mGroupId.toStdString()), proposals))
+            for (const auto &pr : proposals)
+                if (!pr.mSourceCommit.empty()) signedProposals[pr.mMeta.mAuthorId].push_back(pr.mSourceCommit);
+    }
+    const std::string identityRepoPath = repoPath;
+    auto isSignedBy = [&](const RsGxsId &identity, const std::string &commit) {
+        if (identity.isNull()) return false;
+        if (!creatorId.isNull() && identity == creatorId) return true;
+        auto proposals = signedProposals.find(identity);
+        if (proposals == signedProposals.end()) return false;
+        for (const auto &tip : proposals->second)
+            if (GitManager::isAncestorOrSelf(identityRepoPath, commit, tip)) return true;
+        return false;
+    };
     auto identityFromEmail = [](const std::string &email) {
         const size_t at = email.rfind('@');
         if (at == std::string::npos) return RsGxsId();
@@ -1350,8 +1368,9 @@ void GitWidget::populateCommitLog(const std::vector<GitLocalChange> *workingChan
         QTableWidgetItem *itemAuth = new QTableWidgetItem(QString::fromStdString(commits[i].author));
         itemAuth->setIcon(FilesDefs::getIconFromQtResourcePath(":/icons/svg/people2.svg"));
 
-        // Show a RetroShare identity only for commits made with RetroGit.
-        const RsGxsId commitIdentity = identityFromEmail(commits[i].email);
+        // Show a RetroShare identity only for RetroGit commits backed by a signature.
+        RsGxsId commitIdentity = identityFromEmail(commits[i].email);
+        if (!isSignedBy(commitIdentity, commits[i].full_hash)) commitIdentity = RsGxsId();
 
         QTableWidgetItem *itemDate = new QTableWidgetItem(QString::fromStdString(commits[i].date));
 

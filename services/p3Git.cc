@@ -1802,10 +1802,13 @@ void p3Git::handleResponseJob(const RsGxsTunnelId &id, QByteArray json)
     if (mGxsTunnels) mGxsTunnels->closeExistingTunnel(id, RETRO_GIT_GXS_TUNNEL_SERVICE_ID);
 
     const std::string barePath = GitManager::getBareRepoPath(expected.toStdString());
+    // The tunnel is only a transport for objects. Branch positions always come
+    // from the owner's signed GXS updates, never from the tunnel answer.
+    std::string signedError;
     if (!expectsPull) {
         postCloneStatus(expected, "Received repository data. Unpacking...", false);
-        if (GitManager::unpackPackfile(barePath, packfileData, refUpdates)) {
-            noteRefsApplied(expected, refUpdates, time(NULL)); // the owner's current state
+        if (GitManager::unpackPackfile(barePath, packfileData, {}) &&
+            applySignedRefs(expected, barePath, refUpdates, signedError)) {
             postCloneStatus(expected, "Repository unpacked. Writing working tree...", false);
             if (GitManager::cloneRepository(barePath, localPath)) {
                 std::cout << "p3Git: Successfully cloned/checked out bare repo to working path: " << localPath << std::endl;
@@ -1817,17 +1820,20 @@ void p3Git::handleResponseJob(const RsGxsTunnelId &id, QByteArray json)
             }
         } else {
             std::cerr << "p3Git: Failed to unpack packfile to bare repository: " << barePath << std::endl;
-            postCloneStatus(expected, "Failed to unpack repository packfile.", false);
+            postCloneStatus(expected, signedError.empty() ? "Failed to unpack repository packfile." : signedError, false);
         }
         return;
     }
 
     postCloneStatus(expected, "Received repository changes. Unpacking...", false);
-    if (!GitManager::unpackPackfile(barePath, packfileData, refUpdates)) {
+    if (!GitManager::unpackPackfile(barePath, packfileData, {})) {
         postCloneStatus(expected, "Failed to unpack sync packfile.", false);
         return;
     }
-    noteRefsApplied(expected, refUpdates, time(NULL)); // the owner's current state
+    if (!applySignedRefs(expected, barePath, refUpdates, signedError)) {
+        postCloneStatus(expected, signedError, false);
+        return;
+    }
     bool pullSuccess = false;
     if (!localPath.empty() && GitManager::isValidRepository(localPath)) {
         postCloneStatus(expected, "Syncing working tree...", false);
@@ -1843,6 +1849,50 @@ void p3Git::handleResponseJob(const RsGxsTunnelId &id, QByteArray json)
         pullSuccess = true;
     }
     if (pullSuccess) postGitEvent(RsGitEventCode::NEW_POST, expected);
+}
+
+bool p3Git::applySignedRefs(const RsGxsGroupId &groupId, const std::string &barePath,
+                            const std::map<std::string, std::string> &tunnelRefs, std::string &error)
+{
+    // Latest position of every branch/tag in the owner-signed root updates.
+    std::vector<RsGitUpdate> updates;
+    if (!getUpdates(groupId, updates)) {
+        error = "Could not read the owner's signed updates. Please retry.";
+        return false;
+    }
+    std::sort(updates.begin(), updates.end(), [](const RsGitUpdate &a, const RsGitUpdate &b) {
+        return a.mMeta.mPublishTs < b.mMeta.mPublishTs;
+    });
+    std::map<std::string, std::pair<std::string, rstime_t> > signedRefs;
+    for (const auto &update : updates)
+        for (const auto &ref : update.mRefUpdates)
+            signedRefs[ref.first] = std::make_pair(ref.second, update.mMeta.mPublishTs);
+    if (signedRefs.empty()) {
+        error = "The owner's signed updates have not arrived yet. The data was stored; retry once the repository has synchronized.";
+        return false;
+    }
+    for (const auto &ref : tunnelRefs) {
+        auto known = signedRefs.find(ref.first);
+        if (known == signedRefs.end() || known->second.first != ref.second)
+            std::cerr << "p3Git: ignoring unsigned position of " << ref.first << " from the tunnel answer" << std::endl;
+    }
+    size_t applied = 0;
+    for (const auto &ref : signedRefs) {
+        const std::map<std::string, std::string> one{{ref.first, ref.second.first}};
+        const auto refs = refsNotOlderThan(groupId, one, ref.second.second);
+        if (refs.empty()) { ++applied; continue; } // a newer update already set it
+        if (GitManager::applyRefUpdates(barePath, refs)) {
+            noteRefsApplied(groupId, refs, ref.second.second);
+            ++applied;
+        } else {
+            std::cerr << "p3Git: signed commit of " << ref.first << " is not in the received data" << std::endl;
+        }
+    }
+    if (applied == 0) {
+        error = "The received data does not contain the commits the owner signed. Please retry later.";
+        return false;
+    }
+    return true;
 }
 
 void p3Git::receiveData(const RsGxsTunnelId& id, unsigned char *data, uint32_t data_size)

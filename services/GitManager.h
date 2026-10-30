@@ -114,6 +114,8 @@ public:
     static std::set<std::string> knownTips(const std::string& path);
     /** HEAD commit id of the repository, or an empty string. Cheap; used to detect changes. */
     static std::string headCommit(const std::string& path);
+    /** True if 'ancestor' equals 'descendant' or is part of its history. */
+    static bool isAncestorOrSelf(const std::string& path, const std::string& ancestor, const std::string& descendant);
     /** Return the subset of candidate object ids that exist in the repository (opens it once). */
     static std::set<std::string> filterExistingCommits(const std::string& path, const std::set<std::string>& candidates);
     /** Point branches/tags at already imported commits once their history is complete. */

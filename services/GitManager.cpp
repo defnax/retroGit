@@ -319,6 +319,19 @@ std::set<std::string> GitManager::knownTips(const std::string& path) {
     git_repository_free(repo); return tips;
 }
 
+bool GitManager::isAncestorOrSelf(const std::string& path, const std::string& ancestor, const std::string& descendant)
+{
+    if (ancestor == descendant) return !ancestor.empty();
+    git_oid a, d;
+    if (ancestor.size() != GIT_OID_HEXSZ || descendant.size() != GIT_OID_HEXSZ ||
+        git_oid_fromstr(&a, ancestor.c_str()) != 0 || git_oid_fromstr(&d, descendant.c_str()) != 0) return false;
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normalizePath(path).c_str()) != 0) return false;
+    const bool result = git_graph_descendant_of(repo, &d, &a) == 1;
+    git_repository_free(repo);
+    return result;
+}
+
 std::string GitManager::headCommit(const std::string& path)
 {
     git_repository *repo = nullptr;

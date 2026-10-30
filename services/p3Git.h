@@ -162,6 +162,9 @@ private:
                          uint64_t received = 0, uint64_t total = 0);
     void failTunnelTransfer(const RsGxsTunnelId& id, const std::string& reason);
     void fallBackToOffline(const RsGxsTunnelId& id, const std::string& reason);
+    /** Point branches/tags at the positions in the owner's signed updates. */
+    bool applySignedRefs(const RsGxsGroupId &groupId, const std::string &barePath,
+                         const std::map<std::string, std::string> &tunnelRefs, std::string &error);
     void forgetTunnel(const RsGxsTunnelId& id);
     void sendTransferError(const RsGxsTunnelId& id, const QString& groupId, const QString& error);
 
