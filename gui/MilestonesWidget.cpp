@@ -201,8 +201,6 @@ void MilestonesWidget::reload()
     mNew->setVisible(mOwner);
     mNew->setProperty("buttonRole", "primary");
     mEmptyCreate->setVisible(mOwner);
-    mSave->setVisible(mOwner);
-    mDelete->setVisible(mOwner);
     mTitle->setReadOnly(!mOwner);
     mDescription->setReadOnly(!mOwner);
     mHasDueDate->setEnabled(mOwner);
