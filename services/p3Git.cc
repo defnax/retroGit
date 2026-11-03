@@ -921,6 +921,21 @@ bool p3Git::updateGroup(RsGitGroup &group)
     return true;
 }
 
+bool p3Git::updateMilestones(const RsGxsGroupId &groupId, const std::string &expected, const std::string &data)
+{
+    if (data.size() > 64000) return false;
+    std::vector<RsGitGroup> groups;
+    invalidateGroups();
+    if (!getGroups({groupId}, groups) || groups.size() != 1 ||
+        !IS_GROUP_ADMIN(groups.front().mMeta.mSubscribeFlags) ||
+        groups.front().mMilestones != expected) return false;
+    auto group = groups.front();
+    group.mMilestones = data;
+    const bool ok = updateGroup(group);
+    invalidateGroups();
+    return ok;
+}
+
 bool p3Git::publishGitUpdate(uint32_t &token, RsGitUpdate &update)
 {
     // Larger packs must be attached as files: GXS items are limited in size.

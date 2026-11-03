@@ -20,6 +20,9 @@
 
 #include "PullRequestsWidget.h"
 #include <QTimer>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <set>
 #include "gui/settings/rsharesettings.h"
 #include <QInputDialog>
@@ -52,6 +55,12 @@ PullRequestsWidget::PullRequestsWidget(const QString &groupId, MainWidget *mainW
     , mGroupId(groupId)
 {
     ui->setupUi(this);
+    auto milestones = new QPushButton(tr("Milestones"), this);
+    milestones->setIcon(QIcon(":/images/milestone.png"));
+    ui->topRowLayout->insertWidget(ui->topRowLayout->count() - 1, milestones);
+    connect(milestones, &QPushButton::clicked, this, [this]() {
+        if (mMainWidget) mMainWidget->showMilestones(mGroupId);
+    });
 
     // New PR button styling (GitHub-like green)
     ui->mBtnNewPR->setStyleSheet("QPushButton { background-color: #2da44e; color: white; border-radius: 6px; padding: 6px 12px; font-weight: bold; border: 1px solid rgba(27, 31, 36, 0.15); }"
@@ -242,11 +251,20 @@ void PullRequestsWidget::populatePRList()
 
     // Determine admin status
     bool isAdmin = false;
+    QMap<QString, QString> milestoneTitles;
     std::list<RsGxsGroupId> groupIds({RsGxsGroupId(mGroupId.toStdString())});
     std::vector<RsGitGroup> groups;
     if (rsGit->getGroups(groupIds, groups) && !groups.empty()) {
         uint32_t flags = groups[0].mMeta.mSubscribeFlags;
         isAdmin = IS_GROUP_ADMIN(flags);
+        const auto data = QJsonDocument::fromJson(QByteArray::fromStdString(groups[0].mMilestones)).object();
+        if (data.value("version").toInt() == 1) {
+            for (const auto &value : data.value("milestones").toArray()) {
+                const auto milestone = value.toObject();
+                for (const auto &id : milestone.value("pullRequests").toArray())
+                    milestoneTitles[id.toString()] = milestone.value("title").toString();
+            }
+        }
     }
 
     int openCount = 0;
@@ -348,6 +366,8 @@ void PullRequestsWidget::populatePRList()
             .arg(QString::fromStdString(pr.mSourceBranch))
             .arg(QString::fromStdString(pr.mTargetBranch));
 
+        if (milestoneTitles.contains(msgIdStr))
+            detailsStr += tr(" | Milestone: %1").arg(milestoneTitles.value(msgIdStr));
         QTableWidgetItem *itemInfo = new QTableWidgetItem("  " + titleStr + "\n  " + detailsStr);
         QFont infoFont = itemInfo->font();
         infoFont.setBold(true);

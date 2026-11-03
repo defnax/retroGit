@@ -12,6 +12,7 @@ RetroGit is a decentralized Git collaboration plugin for RetroShare.
 - Create branches and commit local changes.
 - Rebase a fork onto the upstream repository.
 - Create, review, merge, and close pull requests.
+- Publish [repository milestones](docs/Milestones.md) with pull-request assignments and completion tracking.
 - View commit history, changed files, and diffs.
 - Download repository packs and update working folders.
 - Show repository, commit, pull-request, and notification status.

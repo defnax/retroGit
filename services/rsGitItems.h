@@ -68,8 +68,11 @@ public:
         RS_SERIAL_PROCESS(mGroup.mGroupName);
         RS_SERIAL_PROCESS(mGroup.mGroupDescription);
         // Optional trailing fields: old records remain readable; ordinary groups retain their wire format.
-        if (j == RsGenericSerializer::DESERIALIZE ? ctx.mOffset < ctx.mSize : !mGroup.mUpstreamGroupId.isNull()) {
+        if (j == RsGenericSerializer::DESERIALIZE ? ctx.mOffset < ctx.mSize : (!mGroup.mUpstreamGroupId.isNull() || !mGroup.mMilestones.empty())) {
             RS_SERIAL_PROCESS(mGroup.mUpstreamGroupId);
+        }
+        if (j == RsGenericSerializer::DESERIALIZE ? ctx.mOffset < ctx.mSize : !mGroup.mMilestones.empty()) {
+            RS_SERIAL_PROCESS(mGroup.mMilestones);
         }
     }
 
@@ -78,6 +81,7 @@ public:
         mGroup.mGroupName.clear();
         mGroup.mGroupDescription.clear();
         mGroup.mUpstreamGroupId.clear();
+        mGroup.mMilestones.clear();
     }
 };
 
