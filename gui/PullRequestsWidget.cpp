@@ -352,7 +352,7 @@ void PullRequestsWidget::populatePRList()
         ui->mPRTable->setCellWidget(i, 0, lblIcon);
 
         // Column 1: Info (Title & description metadata)
-        QString titleStr = QString::fromStdString(pr.mTitle);
+        QString titleStr = tr("#%1 %2").arg(i + 1).arg(QString::fromStdString(pr.mTitle));
         QString authorName = QString::fromStdString(pr.mMeta.mAuthorId.toStdString().substr(0, 8));
         if (rsIdentity && !pr.mMeta.mAuthorId.isNull()) {
             RsIdentityDetails identity;

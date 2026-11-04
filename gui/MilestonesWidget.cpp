@@ -262,15 +262,17 @@ void MilestonesWidget::select()
     mDelete->setEnabled(mOwner && !id.isEmpty());
     mRequests->clear();
     const auto assigned = selected.value("pullRequests").toArray();
+    int prNumber = 1;
     for (const auto &pr : mPullRequests) {
         const QString prId = QString::fromStdString(pr.mMeta.mMsgId.toStdString());
+        const QString numberedTitle = tr("#%1 %2").arg(prNumber++).arg(QString::fromStdString(pr.mTitle));
         if (!mOwner && !assigned.contains(prId)) continue;
         QString current;
         for (const auto &value : mMilestones) {
             const auto milestone = value.toObject();
             if (milestone.value("pullRequests").toArray().contains(prId)) current = milestone.value("title").toString();
         }
-        auto item = new QTreeWidgetItem(mRequests, {QString::fromStdString(pr.mTitle),
+        auto item = new QTreeWidgetItem(mRequests, {numberedTitle,
             pr.mStatus == 0 ? tr("Open") : (pr.mStatus == 1 ? tr("Closed") : tr("Merged")), current});
         item->setData(0, Qt::UserRole, prId);
         item->setData(1, Qt::UserRole, pr.mStatus != 0);
@@ -293,9 +295,11 @@ void MilestonesWidget::showDetailsDialog(const QString &id)
     auto layout = new QVBoxLayout(&dialog);
     auto form = new QFormLayout;
     auto title = new QLineEdit(selected.value("title").toString(), &dialog);
+    title->setPlaceholderText(tr("Milestone name"));
     title->setReadOnly(!mOwner);
     form->addRow(tr("Title"), title);
     auto description = new QTextEdit(&dialog);
+    description->setPlaceholderText(tr("Describe your milestone"));
     description->setPlainText(selected.value("description").toString());
     description->setReadOnly(!mOwner);
     description->setMaximumHeight(100);
@@ -327,9 +331,10 @@ void MilestonesWidget::showDetailsDialog(const QString &id)
     requests->setHeaderLabels({tr("Pull request"), tr("Status")});
     requests->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     const auto assigned = selected.value("pullRequests").toArray();
+    int prNumber = 1;
     for (const auto &pr : mPullRequests) {
         const auto prId = QString::fromStdString(pr.mMeta.mMsgId.toStdString());
-        auto item = new QTreeWidgetItem(requests, {QString::fromStdString(pr.mTitle), pr.mStatus == 0 ? tr("Open") : (pr.mStatus == 1 ? tr("Closed") : tr("Merged"))});
+        auto item = new QTreeWidgetItem(requests, {tr("#%1 %2").arg(prNumber++).arg(QString::fromStdString(pr.mTitle)), pr.mStatus == 0 ? tr("Open") : (pr.mStatus == 1 ? tr("Closed") : tr("Merged"))});
         item->setData(0, Qt::UserRole, prId);
         item->setCheckState(0, assigned.contains(prId) ? Qt::Checked : Qt::Unchecked);
         if (!mOwner) item->setFlags(item->flags() & ~Qt::ItemIsUserCheckable);
@@ -386,9 +391,11 @@ void MilestonesWidget::createMilestoneDialog()
     auto form = new QFormLayout;
     auto title = new QLineEdit(&dialog);
     title->setMaxLength(200);
+    title->setPlaceholderText(tr("Milestone name"));
     form->addRow(tr("Title"), title);
     auto description = new QTextEdit(&dialog);
     description->setAcceptRichText(false);
+    description->setPlaceholderText(tr("Describe your milestone"));
     description->setMaximumHeight(100);
     form->addRow(tr("Description"), description);
     auto dateRow = new QHBoxLayout;
@@ -409,8 +416,9 @@ void MilestonesWidget::createMilestoneDialog()
     requests->setRootIsDecorated(false);
     requests->setHeaderLabels({tr("Pull request"), tr("Status")});
     requests->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    int prNumber = 1;
     for (const auto &pr : mPullRequests) {
-        auto item = new QTreeWidgetItem(requests, {QString::fromStdString(pr.mTitle),
+        auto item = new QTreeWidgetItem(requests, {tr("#%1 %2").arg(prNumber++).arg(QString::fromStdString(pr.mTitle)),
             pr.mStatus == 0 ? tr("Open") : (pr.mStatus == 1 ? tr("Closed") : tr("Merged"))});
         item->setData(0, Qt::UserRole, QString::fromStdString(pr.mMeta.mMsgId.toStdString()));
         item->setCheckState(0, Qt::Unchecked);
