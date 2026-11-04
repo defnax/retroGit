@@ -236,7 +236,7 @@ MainPage *RetroGitPlugin::qt_page() const
 
 std::string RetroGitPlugin::getShortPluginDescription() const
 {
-	return "RetroGit";
+	return "RetroGit is a decentralized Git collaboration plugin for RetroShare.";
 }
 
 std::string RetroGitPlugin::getPluginName() const
