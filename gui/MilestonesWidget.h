@@ -23,54 +23,45 @@
 
 #include <QWidget>
 #include <QJsonArray>
+#include <QJsonObject>
+#include <vector>
 #include "interface/rsGit.h"
 
-class QComboBox;
-class QTreeWidget;
-class QLineEdit;
-class QTextEdit;
-class QCheckBox;
-class QDateEdit;
-class QPushButton;
-class QLabel;
-class QStackedWidget;
+namespace Ui {
+class MilestonesWidget;
+}
+
 class MainWidget;
 
 class MilestonesWidget : public QWidget
 {
+    Q_OBJECT
+
 public:
-    MilestonesWidget(const QString &groupId, MainWidget *mainWidget, QWidget *parent);
+    MilestonesWidget(const QString &groupId, MainWidget *mainWidget, QWidget *parent = nullptr);
+    ~MilestonesWidget() override;
+
     QString groupId() const { return QString::fromStdString(mGroupId.toStdString()); }
+
 private:
     void reload();
     void populate();
-    void select();
-    void filterRequests();
-    void createMilestoneDialog();
-    void showDetailsDialog(const QString &id);
-    void save();
-    void remove();
+    void showContextMenu(const QPoint &pos);
+    void createMilestone();
+    void openMilestone(const QString &id);
+    void deleteMilestone(const QString &id);
+    // Replaces (or appends) one milestone; its pull requests are removed from
+    // every other milestone, since a pull request belongs to one milestone.
+    QJsonArray withMilestone(const QJsonObject &milestone) const;
     bool publish(const QJsonArray &milestones);
-    QString selectedId() const;
+
+    Ui::MilestonesWidget *ui;
     RsGxsGroupId mGroupId;
     std::string mSnapshot;
     QJsonArray mMilestones;
     std::vector<RsGitPullRequest> mPullRequests;
     bool mOwner = false;
-    QComboBox *mFilter;
-    QComboBox *mPRFilter;
-    QTreeWidget *mList;
-    QWidget *mEmptyState;
-    QPushButton *mEmptyCreate;
-    QTreeWidget *mRequests;
-    QLineEdit *mTitle;
-    QTextEdit *mDescription;
-    QCheckBox *mHasDueDate;
-    QDateEdit *mDueDate;
-    QCheckBox *mClosed;
-    QPushButton *mNew;
-    QPushButton *mSave;
-    QPushButton *mDelete;
-    QLabel *mSummary;
+    bool mValid = false;
 };
+
 #endif

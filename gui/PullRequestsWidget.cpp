@@ -19,6 +19,7 @@
  ********************************************************************************/
 
 #include "PullRequestsWidget.h"
+#include "PullRequestNumbers.h"
 #include <QTimer>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -249,6 +250,9 @@ void PullRequestsWidget::populatePRList()
         return;
     }
 
+    // Numbered from the complete list so numbers match every other view.
+    const auto prNumbers = pullRequestNumbers(pullRequests);
+
     // Determine admin status
     bool isAdmin = false;
     QMap<QString, QString> milestoneTitles;
@@ -352,7 +356,9 @@ void PullRequestsWidget::populatePRList()
         ui->mPRTable->setCellWidget(i, 0, lblIcon);
 
         // Column 1: Info (Title & description metadata)
-        QString titleStr = tr("#%1 %2").arg(i + 1).arg(QString::fromStdString(pr.mTitle));
+        const auto numberIt = prNumbers.find(pr.mMeta.mMsgId);
+        const int prNumber = numberIt != prNumbers.end() ? numberIt->second : i + 1;
+        QString titleStr = tr("#%1 %2").arg(prNumber).arg(QString::fromStdString(pr.mTitle));
         QString authorName = QString::fromStdString(pr.mMeta.mAuthorId.toStdString().substr(0, 8));
         if (rsIdentity && !pr.mMeta.mAuthorId.isNull()) {
             RsIdentityDetails identity;
@@ -360,7 +366,7 @@ void PullRequestsWidget::populatePRList()
                 authorName = QString::fromStdString(identity.mNickname);
         }
         QString detailsStr = tr("#%1 opened %2 by %3 from %4 into %5")
-            .arg(i + 1)
+            .arg(prNumber)
             .arg(QDateTime::fromSecsSinceEpoch(static_cast<qint64>(pr.mMeta.mPublishTs)).toString("yyyy-MM-dd HH:mm"))
             .arg(authorName.toHtmlEscaped())
             .arg(QString::fromStdString(pr.mSourceBranch))
@@ -373,7 +379,7 @@ void PullRequestsWidget::populatePRList()
         infoFont.setBold(true);
         itemInfo->setFont(infoFont);
         itemInfo->setToolTip(tr("<b>Pull Request #%1</b><br>Author: <b>%2</b><br>Identity: %3<br><i>Hover the author avatar for the RetroShare profile.</i>")
-            .arg(i + 1).arg(authorName.toHtmlEscaped())
+            .arg(prNumber).arg(authorName.toHtmlEscaped())
             .arg(QString::fromStdString(pr.mMeta.mAuthorId.toStdString()).toHtmlEscaped()));
         QFont font = itemInfo->font();
         font.setBold(pr.mMeta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD);

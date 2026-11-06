@@ -1879,7 +1879,7 @@ void MainWidget::showPullRequests(const QString &groupId)
 void MainWidget::showMilestones(const QString &groupId)
 {
     for (int i = 3; i < ui->rightPaneTabWidget->count(); ++i) {
-        auto milestones = dynamic_cast<MilestonesWidget *>(ui->rightPaneTabWidget->widget(i));
+        auto milestones = qobject_cast<MilestonesWidget *>(ui->rightPaneTabWidget->widget(i));
         if (milestones && milestones->groupId() == groupId) {
             ui->rightPaneTabWidget->setCurrentIndex(i);
             return;

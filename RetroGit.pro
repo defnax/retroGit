@@ -66,6 +66,7 @@ SOURCES = RetroGitPlugin.cpp               \
           gui/CodeWidget.cpp \
           gui/PullRequestsWidget.cpp \
           gui/MilestonesWidget.cpp \
+          gui/MilestoneDialog.cpp \
           gui/PullRequestDetailsWidget.cpp \
           gui/PushesWidget.cpp
 
@@ -86,6 +87,8 @@ HEADERS = RetroGitPlugin.h                 \
           gui/CodeWidget.h \
           gui/PullRequestsWidget.h \
           gui/MilestonesWidget.h \
+          gui/MilestoneDialog.h \
+          gui/PullRequestNumbers.h \
           gui/PullRequestDetailsWidget.h \
           gui/PushesWidget.h
 
@@ -94,6 +97,8 @@ FORMS += \
           gui/GitWidget.ui \
           gui/CodeWidget.ui \
           gui/PullRequestsWidget.ui \
+          gui/MilestonesWidget.ui \
+          gui/MilestoneDialog.ui \
           gui/PullRequestDetailsWidget.ui \
           gui/PushesWidget.ui \
 
