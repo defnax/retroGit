@@ -55,6 +55,8 @@ struct RsGitGroup : public RsGxsGenericGroupData
       std::string mGroupName;
       std::string mGroupDescription;
     RsGxsGroupId mUpstreamGroupId;
+    // Versioned JSON milestone definitions and PR assignments, signed with the group.
+    std::string mMilestones;
 };
 
 struct RsGitUpdate
@@ -140,6 +142,7 @@ public:
     // Blocking Interfaces.
     virtual bool createGroup(RsGitGroup &group) = 0;
     virtual bool updateGroup(RsGitGroup &group) = 0;
+    virtual bool updateMilestones(const RsGxsGroupId &groupId, const std::string &expected, const std::string &data) = 0;
 
     /**
      * @brief Publish a Git Push/Update (Packfile + Refs) to a Repository.

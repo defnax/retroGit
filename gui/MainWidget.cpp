@@ -21,6 +21,7 @@
 #include "MainWidget.h"
 #include <QUuid>
 #include "PullRequestsWidget.h"
+#include "MilestonesWidget.h"
 #include "PullRequestDetailsWidget.h"
 #include "GitCommitDialog.h"
 #include "GitGroupDialog.h"
@@ -1873,6 +1874,20 @@ void MainWidget::showPullRequests(const QString &groupId)
         bar->setTabButton(1, QTabBar::RightSide, nullptr);
         bar->setTabButton(2, QTabBar::RightSide, nullptr);
     }
+}
+
+void MainWidget::showMilestones(const QString &groupId)
+{
+    for (int i = 3; i < ui->rightPaneTabWidget->count(); ++i) {
+        auto milestones = dynamic_cast<MilestonesWidget *>(ui->rightPaneTabWidget->widget(i));
+        if (milestones && milestones->groupId() == groupId) {
+            ui->rightPaneTabWidget->setCurrentIndex(i);
+            return;
+        }
+    }
+    auto milestones = new MilestonesWidget(groupId, this, ui->rightPaneTabWidget);
+    const int index = ui->rightPaneTabWidget->addTab(milestones, QIcon(":/images/milestone.png"), tr("Milestones"));
+    ui->rightPaneTabWidget->setCurrentIndex(index);
 }
 
 void MainWidget::showPullRequestDetails(const QString &groupId, const RsGxsMessageId &msgId)

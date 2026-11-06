@@ -65,6 +65,7 @@ SOURCES = RetroGitPlugin.cpp               \
           gui/GitWidget.cpp \
           gui/CodeWidget.cpp \
           gui/PullRequestsWidget.cpp \
+          gui/MilestonesWidget.cpp \
           gui/PullRequestDetailsWidget.cpp \
           gui/PushesWidget.cpp
 
@@ -84,6 +85,7 @@ HEADERS = RetroGitPlugin.h                 \
           gui/GitWidget.h \
           gui/CodeWidget.h \
           gui/PullRequestsWidget.h \
+          gui/MilestonesWidget.h \
           gui/PullRequestDetailsWidget.h \
           gui/PushesWidget.h
 

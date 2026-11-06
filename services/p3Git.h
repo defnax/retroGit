@@ -75,6 +75,7 @@ public:
     // Blocking Interfaces.
     virtual bool createGroup(RsGitGroup &group) override;
     virtual bool updateGroup(RsGitGroup &group) override;
+    bool updateMilestones(const RsGxsGroupId &groupId, const std::string &expected, const std::string &data) override;
 
     virtual bool publishGitUpdate(uint32_t &token, RsGitUpdate &update) override;
     bool preparePullRequest(const RsGitPullRequest &pr) override;

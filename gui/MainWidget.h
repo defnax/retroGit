@@ -138,6 +138,7 @@ public:
     void hideCommitDetails();
     void showDiffForCommit(const QString &commitHash);
     void showPullRequests(const QString &groupId);
+    void showMilestones(const QString &groupId);
     void showPullRequestDetails(const QString &groupId, const RsGxsMessageId &msgId);
     void markRepositoryAsRead();
     void triggerTreeSelectionChanged();
