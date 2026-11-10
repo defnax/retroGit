@@ -123,6 +123,11 @@ private:
         // packs that completed out of order still update the branches.
         std::vector<std::pair<RsGxsMessageId, IncompleteUpdate> > updatesInOrder;
         std::chrono::steady_clock::time_point started;
+        // Packs still to download (hash -> size), for the progress shown in the GUI.
+        std::map<RsFileHash, uint64_t> packs;
+        uint64_t lastReceived = 0;
+        size_t lastDone = 0;
+        bool progressPosted = false;
     };
 
     struct MsgCache {
@@ -174,6 +179,7 @@ private:
                             const std::map<std::string, std::string> &refUpdates, rstime_t publishTs, bool unpacked);
     void startOfflineJob(const RsGxsGroupId &groupId);
     void finalizeOfflineJob(const RsGxsGroupId &groupId);
+    void postOfflineProgress();
     void preparePullRequestJob(RsGitPullRequest pr);
     bool requestOffline(const RsGxsGroupId &groupId, const std::string &localPath, bool isPull);
 

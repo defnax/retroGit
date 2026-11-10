@@ -145,6 +145,12 @@ bool isFailedStatus(const QString &status)
         if (status.contains(QLatin1String(marker), Qt::CaseInsensitive)) return true;
     return false;
 }
+
+bool isPullStatus(const QString &status)
+{
+    return status.contains(QLatin1String("pull"), Qt::CaseInsensitive) ||
+           status.contains(QLatin1String("sync"), Qt::CaseInsensitive);
+}
 }
 
 void PushesWidget::handleGitEvent(const RsGitEvent *e)
@@ -157,10 +163,9 @@ void PushesWidget::handleGitEvent(const RsGitEvent *e)
         // Find active clone in history and update it
         QString status = QString::fromStdString(e->mCloneStatus);
         for (int i = 0; i < (int)mCloneHistory.size(); ++i) {
+            // The newest record of this repository that is still running.
             if (mCloneHistory[i].repoId == QString::fromStdString(e->mGitGroupId.toStdString()) &&
-                !mCloneHistory[i].status.contains("Successful") && 
-                !mCloneHistory[i].status.contains("Failed") && 
-                !mCloneHistory[i].status.contains("completed")) 
+                !mCloneHistory[i].complete && !isFailedStatus(mCloneHistory[i].status))
             {
                 mCloneHistory[i].status = status;
                 if (e->mCloneBytesTotal > 0) {
@@ -180,7 +185,7 @@ void PushesWidget::handleGitEvent(const RsGitEvent *e)
 
         // Event handler: never open modal dialogs here.
         if (e->mCloneSuccess) {
-            if (status.contains("sync", Qt::CaseInsensitive)) {
+            if (isPullStatus(status)) {
                 // The completed transfer is already shown in the table. Avoid
                 // interrupting the user with a popup for every synchronized pack.
             } else {
@@ -189,7 +194,7 @@ void PushesWidget::handleGitEvent(const RsGitEvent *e)
             mMainWidget->updateDisplay();
             mMainWidget->triggerTreeSelectionChanged();
         } else if (!status.isEmpty() && isFailedStatus(status)) {
-            mMainWidget->showNotice(status.contains("sync", Qt::CaseInsensitive) ? tr("Sync Failed") : tr("Clone Failed"), status);
+            mMainWidget->showNotice(isPullStatus(status) ? tr("Pull Failed") : tr("Clone Failed"), status);
         }
     } else if (e->mGitEventCode == RsGitEventCode::NEW_POST || e->mGitEventCode == RsGitEventCode::READ_STATUS_CHANGED || e->mGitEventCode == RsGitEventCode::POST_UPDATED) {
         refresh();
@@ -596,15 +601,17 @@ void PushesWidget::populateClonesTable()
         itemTime->setToolTip(filteredHistory[i].time);
         itemStatus->setToolTip(filteredHistory[i].status);
 
-        if (filteredHistory[i].status.contains("Requesting") || filteredHistory[i].status.contains("secured") || filteredHistory[i].status.contains("Unpacking")) {
+        // Green when done, red when failed, blue while running. ("downloading"
+        // must not look like an error.)
+        if (filteredHistory[i].complete) {
+            itemStatus->setForeground(QBrush(QColor("#27ae60")));
+        } else if (isFailedStatus(filteredHistory[i].status)) {
+            itemStatus->setForeground(QBrush(QColor("#c0392b")));
+        } else {
             QFont font = itemStatus->font();
             font.setBold(true);
             itemStatus->setFont(font);
             itemStatus->setForeground(QBrush(QColor("#2980b9")));
-        } else if (filteredHistory[i].status.contains("Successful") || filteredHistory[i].status.contains("completed")) {
-            itemStatus->setForeground(QBrush(QColor("#27ae60")));
-        } else if (filteredHistory[i].status.contains("Failed") || filteredHistory[i].status.contains("down")) {
-            itemStatus->setForeground(QBrush(QColor("#c0392b")));
         }
 
         ui->mClonesTable->setItem(i, 0, itemRepo);
@@ -633,7 +640,7 @@ void PushesWidget::populateClonesTable()
         } else if (record.total && record.received >= record.total) {
             progress->setValue(100);
             progress->setFormat(tr("Unpacking..."));
-            progress->setToolTip(tr("Repository data received; unpacking and checkout are running."));
+            progress->setToolTip(tr("All packs are downloaded; unpacking and checkout are running."));
         } else if (record.total) {
             progress->setValue(percent);
             progress->setFormat(tr("%p%"));
@@ -646,7 +653,7 @@ void PushesWidget::populateClonesTable()
         ui->mClonesTable->setCellWidget(i, 3, progress);
         QString size = record.total ? tr("%1 / %2").arg(misc::friendlyUnit(record.received), misc::friendlyUnit(record.total)) : tr("Unknown");
         auto* sizeItem = new QTableWidgetItem(size);
-        sizeItem->setToolTip(tr("Transferred repository response, including encoding and metadata. The total becomes known when data arrives."));
+        sizeItem->setToolTip(tr("Downloaded size of the published packs this clone or pull needs."));
         ui->mClonesTable->setItem(i, 4, sizeItem);
         ui->mClonesTable->setItem(i, 5, itemTime);
     }

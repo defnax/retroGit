@@ -91,10 +91,6 @@ bool findPackFile(const RsFileHash &hash, const std::string &name, uint64_t size
     return true;
 }
 
-bool isUnprocessed(const RsMsgMetaData &meta)
-{
-    return meta.mMsgStatus & GXS_SERV::GXS_MSG_STATUS_UNPROCESSED;
-}
 }
 
 static uint32_t retroGitAuthenPolicy()
@@ -763,7 +759,7 @@ void p3Git::service_tick()
         runJob([this, pending]() { unpackDownloadedJob(pending); });
 
     // Offline clones/pulls whose packs are all present, or that timed out.
-    std::vector<RsGxsGroupId> ready, timedOut;
+    std::vector<RsGxsGroupId> ready, timedOut, timedOutPulls;
     {
         RS_STACK_MUTEX(mRetroGitMtx);
         for (auto &entry : mPendingOffline) {
@@ -773,15 +769,71 @@ void p3Git::service_tick()
                 offline.finalizing = true;
                 ready.push_back(entry.first);
             } else if (now - offline.started > OFFLINE_TIMEOUT) {
-                timedOut.push_back(entry.first);
+                (offline.isPull ? timedOutPulls : timedOut).push_back(entry.first);
             }
         }
         for (const auto &groupId : timedOut) mPendingOffline.erase(groupId);
+        for (const auto &groupId : timedOutPulls) mPendingOffline.erase(groupId);
     }
     for (const auto &groupId : ready)
         runJob([this, groupId]() { finalizeOfflineJob(groupId); });
     for (const auto &groupId : timedOut)
-        postCloneStatus(groupId, "Offline transfer failed: the published packs could not be downloaded. Please retry.", false);
+        postCloneStatus(groupId, "Clone failed: the published packs could not be downloaded. Please retry.", false);
+    for (const auto &groupId : timedOutPulls)
+        postCloneStatus(groupId, "Pull failed: the published packs could not be downloaded. Please retry.", false);
+
+    postOfflineProgress();
+}
+
+// Clone/pull progress: bytes of the published packs downloaded so far. Runs
+// once a second; only posts an event when something changed.
+void p3Git::postOfflineProgress()
+{
+    if (!rsFiles) return;
+    struct Active { RsGxsGroupId groupId; bool isPull; std::map<RsFileHash, uint64_t> packs; };
+    std::vector<Active> active;
+    {
+        RS_STACK_MUTEX(mRetroGitMtx);
+        for (const auto &entry : mPendingOffline) {
+            const PendingOffline &offline = entry.second;
+            if (offline.preparing || offline.finalizing || offline.packs.empty()) continue;
+            active.push_back({entry.first, offline.isPull, offline.packs});
+        }
+    }
+    for (const auto &job : active) {
+        uint64_t received = 0, total = 0;
+        size_t done = 0;
+        for (const auto &pack : job.packs) {
+            total += pack.second;
+            FileInfo info;
+            if (rsFiles->FileDetails(pack.first, RS_FILE_HINTS_DOWNLOAD | RS_FILE_HINTS_SPEC_ONLY, info) &&
+                info.downloadStatus != FT_STATE_COMPLETE) {
+                received += std::min<uint64_t>(info.transfered, pack.second);
+            } else {
+                std::string path;
+                if (findPackFile(pack.first, std::string(), pack.second, path)) {
+                    received += pack.second;
+                    ++done;
+                }
+            }
+        }
+        {
+            RS_STACK_MUTEX(mRetroGitMtx);
+            auto it = mPendingOffline.find(job.groupId);
+            if (it == mPendingOffline.end() || it->second.finalizing) continue;
+            PendingOffline &offline = it->second;
+            if (offline.progressPosted && offline.lastReceived == received && offline.lastDone == done) continue;
+            offline.progressPosted = true;
+            offline.lastReceived = received;
+            offline.lastDone = done;
+        }
+        const std::string label = job.isPull ? "Pull" : "Clone";
+        const std::string status = done < job.packs.size()
+            ? label + ": downloading packs (" + std::to_string(done) + " of " + std::to_string(job.packs.size()) + " complete)..."
+            : label + ": unpacking downloaded packs...";
+        // Never report 0 bytes as the total: the GUI treats that as unknown.
+        postCloneStatus(job.groupId, status, false, received, std::max<uint64_t>(total, 1));
+    }
 }
 
 void p3Git::unpackDownloadedJob(const PendingPackfile &pending)
@@ -1224,7 +1276,7 @@ bool p3Git::requestOffline(const RsGxsGroupId &groupId, const std::string &local
         offline.started = std::chrono::steady_clock::now();
         mPendingOffline[groupId] = offline;
     }
-    postCloneStatus(groupId, isPull ? "Offline sync: checking GXS database..." : "Offline clone: checking GXS database...", false);
+    postCloneStatus(groupId, isPull ? "Pull: reading the signed updates..." : "Clone: reading the signed updates...", false);
     runJob([this, groupId]() { startOfflineJob(groupId); });
     return true;
 }
@@ -1238,8 +1290,8 @@ bool p3Git::requestOfflinePull(const RsGxsGroupId &groupId, const std::string &l
 {
     std::string barePath = GitManager::getBareRepoPath(groupId.toStdString());
     if (!GitManager::isValidRepository(barePath)) {
-        std::cerr << "p3Git: Offline pull failed: local repository not initialized." << std::endl;
-        postCloneStatus(groupId, "Offline pull failed: local repository not initialized.", false);
+        std::cerr << "p3Git: Pull failed: local repository not initialized." << std::endl;
+        postCloneStatus(groupId, "Pull failed: local repository not initialized.", false);
         return false;
     }
     return requestOffline(groupId, localPath, true);
@@ -1254,7 +1306,7 @@ void p3Git::startOfflineJob(const RsGxsGroupId &groupId)
         if (it == mPendingOffline.end()) return;
         isPull = it->second.isPull;
     }
-    const std::string label = isPull ? "Offline sync" : "Offline clone";
+    const std::string label = isPull ? "Pull" : "Clone";
     auto abort = [&](const std::string &reason) {
         {
             RS_STACK_MUTEX(mRetroGitMtx);
@@ -1280,14 +1332,20 @@ void p3Git::startOfflineJob(const RsGxsGroupId &groupId)
     });
 
     std::set<RsGxsMessageId> pendingMsgIds;
+    std::map<RsFileHash, uint64_t> packs;
     std::vector<std::pair<RsGxsMessageId, IncompleteUpdate> > inOrder;
     for (auto &update : updates) {
         if (mStopping) return;
-        if (!isUnprocessed(update.mMeta)) continue;
         IncompleteUpdate entry;
         entry.refUpdates = update.mRefUpdates;
         entry.publishTs = update.mMeta.mPublishTs;
         inOrder.push_back(std::make_pair(update.mMeta.mMsgId, entry));
+        // "Processed" only means the update was applied once; the local copy may
+        // have been reset since. Check the commits themselves instead.
+        std::set<std::string> targets;
+        for (const auto &ref : update.mRefUpdates) targets.insert(ref.second);
+        if (!targets.empty() && GitManager::filterExistingCommits(barePath, targets).size() == targets.size())
+            continue;
         // Objects only here: branches are set in publish order once every pack is present.
 
         if (!update.mFiles.empty()) {
@@ -1300,6 +1358,7 @@ void p3Git::startOfflineJob(const RsGxsGroupId &groupId)
                 continue;
             }
             pendingMsgIds.insert(update.mMeta.mMsgId);
+            packs[file.mHash] = file.mSize;
             if (rsFiles) {
                 // Request the file from remote peers who have it
                 FileInfo fileInfo;
@@ -1336,10 +1395,10 @@ void p3Git::startOfflineJob(const RsGxsGroupId &groupId)
         if (it == mPendingOffline.end()) return;
         it->second.pendingMsgIds = pendingMsgIds;
         it->second.updatesInOrder = inOrder;
+        it->second.packs = packs;
         it->second.preparing = false;
     }
-    if (!pendingMsgIds.empty())
-        postCloneStatus(groupId, label + ": downloading required packfiles...", false);
+    // Progress (bytes of the packs) is posted by service_tick() from now on.
     // service_tick() finalizes as soon as no pack is pending.
 }
 
@@ -1374,24 +1433,37 @@ void p3Git::finalizeOfflineJob(const RsGxsGroupId &groupId)
         std::cerr << "p3Git: some published updates of " << groupId.toStdString()
                   << " are missing history; the newest complete state is used." << std::endl;
 
+    // Never write an empty working folder and call it a success.
+    std::map<std::string, std::string> branches;
+    if (!GitManager::getPublishableRefs(barePath, branches) || branches.empty()) {
+        {
+            RS_STACK_MUTEX(mRetroGitMtx);
+            mPendingOffline.erase(groupId);
+        }
+        postCloneStatus(groupId, std::string(offline.isPull ? "Pull" : "Clone") +
+            " failed: the history of the published updates is incomplete on this computer. "
+            "Wait until RetroShare has received all updates of this repository, then retry.", false);
+        return;
+    }
+
     if (offline.isPull) {
         bool hasWorkingDir = !offline.localPath.empty() && GitManager::isValidRepository(offline.localPath);
         if (hasWorkingDir) {
-            postCloneStatus(groupId, "Offline sync: updating working tree...", false);
+            postCloneStatus(groupId, "Pull: updating working tree...", false);
             std::string error;
             if (GitManager::pullRepository(offline.localPath, barePath, &error))
-                postCloneStatus(groupId, "Offline sync completed successfully!", true);
+                postCloneStatus(groupId, "Pull completed successfully!", true);
             else
-                postCloneStatus(groupId, "Offline sync failed to update working tree. " + error, false);
+                postCloneStatus(groupId, "Pull failed to update working tree. " + error, false);
         } else {
-            postCloneStatus(groupId, "Offline sync completed successfully!", true);
+            postCloneStatus(groupId, "Pull completed successfully!", true);
         }
     } else {
-        postCloneStatus(groupId, "Offline clone: writing working tree...", false);
+        postCloneStatus(groupId, "Clone: writing working tree...", false);
         if (GitManager::cloneRepository(barePath, offline.localPath))
-            postCloneStatus(groupId, "Offline clone completed successfully!", true);
+            postCloneStatus(groupId, "Clone completed successfully!", true);
         else
-            postCloneStatus(groupId, "Offline clone failed to write working tree.", false);
+            postCloneStatus(groupId, "Clone failed to write working tree.", false);
     }
     {
         RS_STACK_MUTEX(mRetroGitMtx);
