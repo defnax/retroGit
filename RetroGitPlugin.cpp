@@ -40,7 +40,6 @@
 #include "pqi/p3cfgmgr.h"
 
 #include <retroshare/rsinit.h>
-#include <retroshare/rsgxstunnel.h>
 #include <retroshare/rsplugin.h>
 #include <retroshare/rsversion.h>
 #include <retroshare/rsreputations.h>
@@ -109,7 +108,6 @@ RetroGitPlugin::RetroGitPlugin()
     mGxsCircles = NULL;
     mGxsIdService = NULL;
     mPgpAuxUtils = NULL;
-    mGxsTunnels = NULL;
 
     GitManager::init();
 }
@@ -130,7 +128,6 @@ void RetroGitPlugin::setInterfaces(RsPlugInInterfaces &interfaces)
     mGxsIdService = interfaces.mGxsIdService;
     mPgpAuxUtils = interfaces.mPgpAuxUtils;
     mGxsDir = interfaces.mGxsDir;
-    mGxsTunnels = interfaces.mGxsTunnels;
 }
 
 ConfigPage *RetroGitPlugin::qt_config_page() const
@@ -168,9 +165,6 @@ p3Service *RetroGitPlugin::p3_service() const
                         RS_SERVICE_TYPE_RetroGit_PLUGIN, NULL, "");
 
         mRetroGit = new p3Git(mGds, NULL, mGixs, mRetroGitNotify);
-        if (mGxsTunnels) {
-            mRetroGit->connectToGxsTunnelService(mGxsTunnels);
-        }
 
         mRetroGitNetService = new RsGxsNetService(
                         RS_SERVICE_TYPE_RetroGit_PLUGIN, mGds, mNxsMgr, 

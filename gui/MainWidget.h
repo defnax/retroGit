@@ -116,8 +116,8 @@ public:
     virtual class UserNotify *createUserNotify(QObject *parent) override;
 
     // Public Coordinator/Helper methods for sub-widgets
-    void logCloneAttempt(const QString &groupId, const QString &repoName, const QString &ownerId, const RsGxsId &ownId, const QString &localPath);
-    void logPullAttempt(const QString &groupId, const QString &repoName, const QString &ownerId, const RsGxsId &ownId, const QString &localPath);
+    void logCloneAttempt(const QString &groupId, const QString &repoName, const QString &ownerId, const QString &localPath);
+    void logPullAttempt(const QString &groupId, const QString &repoName, const QString &ownerId, const QString &localPath);
     void hashAndPublishPackfile(const QString &groupId, const std::string &packfileData, RsGitUpdate &update);
     bool publishPullRequestWithPack(RsGitPullRequest &pr, const std::string &pack);
     bool preparePackAttachment(const QString &groupId, const std::string &pack, RsGxsFile &attachment);

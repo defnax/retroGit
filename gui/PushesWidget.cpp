@@ -637,11 +637,11 @@ void PushesWidget::populateClonesTable()
         } else if (record.total) {
             progress->setValue(percent);
             progress->setFormat(tr("%p%"));
-            progress->setToolTip(tr("Receiving repository data from the owner."));
+            progress->setToolTip(tr("Receiving the published repository packs."));
         } else {
             progress->setValue(0);
             progress->setFormat(tr("Waiting"));
-            progress->setToolTip(tr("Waiting for the owner's response. The download starts when the secure tunnel is ready."));
+            progress->setToolTip(tr("Waiting for the published packs to download from your RetroShare network."));
         }
         ui->mClonesTable->setCellWidget(i, 3, progress);
         QString size = record.total ? tr("%1 / %2").arg(misc::friendlyUnit(record.received), misc::friendlyUnit(record.total)) : tr("Unknown");

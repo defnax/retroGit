@@ -61,3 +61,11 @@ temp/obj/ForkWorkflowTest.o
 
 temp/AncestryTest.exe
 temp/obj/AncestryTest.o
+temp/moc/moc_MilestoneDialog.cpp
+temp/moc/moc_MilestonesWidget.cpp
+temp/obj/MilestoneDialog.o
+temp/obj/MilestonesWidget.o
+temp/obj/moc_MilestoneDialog.o
+temp/obj/moc_MilestonesWidget.o
+temp/ui/ui_MilestoneDialog.h
+temp/ui/ui_MilestonesWidget.h
