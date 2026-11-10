@@ -110,6 +110,7 @@ RetroGitPlugin::RetroGitPlugin()
     mGxsIdService = NULL;
     mPgpAuxUtils = NULL;
     mGxsTunnels = NULL;
+    mGxsNetTunnel = NULL;
 
     GitManager::init();
 }
@@ -131,6 +132,9 @@ void RetroGitPlugin::setInterfaces(RsPlugInInterfaces &interfaces)
     mPgpAuxUtils = interfaces.mPgpAuxUtils;
     mGxsDir = interfaces.mGxsDir;
     mGxsTunnels = interfaces.mGxsTunnels;
+#ifdef RS_PLUGIN_HAS_GXS_NET_TUNNEL
+    mGxsNetTunnel = interfaces.mGxsNetTunnel;
+#endif
 }
 
 ConfigPage *RetroGitPlugin::qt_config_page() const
@@ -176,7 +180,10 @@ p3Service *RetroGitPlugin::p3_service() const
                         RS_SERVICE_TYPE_RetroGit_PLUGIN, mGds, mNxsMgr, 
             mRetroGit, mRetroGit->getServiceInfo(), 
             dynamic_cast<RsGixsReputation*>(mReputations), mGxsCircles, mGxsIdService,
-            mPgpAuxUtils);
+            mPgpAuxUtils, mGxsNetTunnel,
+            // Like channels: repositories also sync over anonymous tunnels when
+            // no friend has them. Integrity still comes from the GXS signatures.
+            RS_GXS_NET_SERVICE_DEFAULT_SYNC_FLAGS | RsGxsNetServiceSyncFlags::DISTANT_SYNC);
 
         mRetroGit->setNetworkExchangeService(mRetroGitNetService);
         mRetroGit->start("RetroGit Engine");
