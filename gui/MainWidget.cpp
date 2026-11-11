@@ -997,18 +997,17 @@ void MainWidget::hideCommitDetails()
     }
 }
 
-void MainWidget::logCloneAttempt(const QString &groupId, const QString &repoName, const QString &ownerId, const RsGxsId &ownId, const QString &localPath)
+void MainWidget::logCloneAttempt(const QString &groupId, const QString &repoName, const QString &ownerId, const QString &localPath)
 {
     PushesWidget::CloneRecord rec;
     rec.repoId = groupId;
     rec.repoName = repoName;
     rec.ownerId = ownerId;
-    rec.status = ownId.isNull() ? tr("GXS Identity missing. Initiating offline clone...") : tr("Requesting secure tunnel...");
+    rec.status = tr("Clone requested. Collecting the published packs...");
     rec.time = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
 
     // Everything published is already in RetroGit's local copy (e.g. from a
-    // downloaded pack): clone from it directly instead of asking the owner,
-    // who may be offline.
+    // downloaded pack): clone from it directly instead of waiting for packs.
     const std::string cached = GitManager::getBareRepoPath(groupId.toStdString());
     std::set<std::string> published;
     std::vector<RsGitUpdate> updates;
@@ -1059,23 +1058,20 @@ void MainWidget::logCloneAttempt(const QString &groupId, const QString &repoName
         ui->rightPaneTabWidget->setCurrentWidget(mPushesWidget);
     }
 
-    bool success = false;
-    if (!ownId.isNull()) {
-        success = rsGit->requestCloneOverTunnel(RsGxsGroupId(groupId.toStdString()), RsGxsId(ownerId.toStdString()), ownId, localPath.toStdString());
-    } else {
-        success = rsGit->requestOfflineClone(RsGxsGroupId(groupId.toStdString()), localPath.toStdString());
-    }
+    // Repository data only comes from the owner's signed GXS updates and the
+    // packs they reference; there is no direct connection to the owner.
+    const bool success = rsGit->requestOfflineClone(RsGxsGroupId(groupId.toStdString()), localPath.toStdString());
 
     if (!success) {
         if (mPushesWidget && !mPushesWidget->getCloneHistory().empty()) {
-            mPushesWidget->getCloneHistory()[0].status = ownId.isNull() ? tr("Failed to initiate offline clone.") : tr("Failed to initiate request.");
+            mPushesWidget->getCloneHistory()[0].status = tr("Failed to start the clone.");
             mPushesWidget->updateClonesTable();
         }
-        QMessageBox::critical(this, tr("Clone Failed"), tr("Could not initiate clone request. Please check connections or GXS services."));
+        QMessageBox::critical(this, tr("Clone Failed"), tr("Could not start the clone. A clone of this repository may already be running."));
     }
 }
 
-void MainWidget::logPullAttempt(const QString &groupId, const QString &repoName, const QString &ownerId, const RsGxsId &ownId, const QString &localPath)
+void MainWidget::logPullAttempt(const QString &groupId, const QString &repoName, const QString &ownerId, const QString &localPath)
 {
     if (!rsGit) return;
     const std::string cached = GitManager::getBareRepoPath(groupId.toStdString());
@@ -1101,7 +1097,7 @@ void MainWidget::logPullAttempt(const QString &groupId, const QString &repoName,
     rec.repoId = groupId;
     rec.repoName = repoName;
     rec.ownerId = ownerId;
-    rec.status = ownId.isNull() ? tr("GXS Identity missing. Initiating offline pull...") : tr("Requesting secure pull tunnel...");
+    rec.status = tr("Pull requested. Collecting the published packs...");
     rec.time = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
 
     if (mPushesWidget) {
@@ -1109,19 +1105,14 @@ void MainWidget::logPullAttempt(const QString &groupId, const QString &repoName,
         ui->rightPaneTabWidget->setCurrentWidget(mPushesWidget);
     }
 
-    bool success = false;
-    if (!ownId.isNull()) {
-        success = rsGit->requestPullOverTunnel(RsGxsGroupId(groupId.toStdString()), RsGxsId(ownerId.toStdString()), ownId, localPath.toStdString());
-    } else {
-        success = rsGit->requestOfflinePull(RsGxsGroupId(groupId.toStdString()), localPath.toStdString());
-    }
+    const bool success = rsGit->requestOfflinePull(RsGxsGroupId(groupId.toStdString()), localPath.toStdString());
 
     if (!success) {
         if (mPushesWidget && !mPushesWidget->getCloneHistory().empty()) {
-            mPushesWidget->getCloneHistory()[0].status = ownId.isNull() ? tr("Failed to initiate offline pull.") : tr("Failed to initiate sync request.");
+            mPushesWidget->getCloneHistory()[0].status = tr("Failed to start the pull.");
             mPushesWidget->updateClonesTable();
         }
-        QMessageBox::critical(this, tr("Pull Failed"), ownId.isNull() ? tr("Failed to initiate offline pull.") : tr("Failed to initiate pull tunnel request."));
+        QMessageBox::critical(this, tr("Pull Failed"), tr("Could not start the pull. A pull of this repository may already be running."));
     }
 }
 

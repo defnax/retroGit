@@ -589,21 +589,6 @@ bool GitManager::createPackfileToFile(const std::string& repoPath, const std::st
     return ok;
 }
 
-bool GitManager::createPackfile(const std::string& repoPath, std::string& outPackfileData,
-    std::map<std::string, std::string>& outRefUpdates, const std::set<std::string>& known)
-{
-    outRefUpdates.clear();
-    git_repository *repo = nullptr;
-    if (git_repository_open(&repo, normalizePath(repoPath).c_str()) != 0) return false;
-    outRefUpdates = publishableRefsOf(repo);
-    const PackSink sink = [&](const void *data, size_t size) {
-        outPackfileData.append(static_cast<const char*>(data), size);
-        return true;
-    };
-    const bool ok = buildObjectPack(repo, outRefUpdates, known, sink, [&]() { outPackfileData.clear(); });
-    git_repository_free(repo); return ok;
-}
-
 bool GitManager::createPackfileForRef(const std::string& repoPath, const std::string& refName,
     std::string& outPackfileData, std::map<std::string, std::string>& outRefUpdates, const std::set<std::string>& known)
 {

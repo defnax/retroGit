@@ -213,11 +213,6 @@ public:
                                        const ProgressFn& progress = ProgressFn());
 
     /**
-     * @brief Create a packfile from the local repository and return ref updates.
-     */
-    static bool createPackfile(const std::string &repoPath, std::string &packfileData, std::map<std::string, std::string> &refUpdates, const std::set<std::string>& known = {});
-
-    /**
      * @brief Create a packfile for a specific reference (branch).
      */
     static bool createPackfileForRef(const std::string& repoPath, const std::string& refName, std::string& outPackfileData, std::map<std::string, std::string>& outRefUpdates, const std::set<std::string>& known = {});

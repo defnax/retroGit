@@ -33,7 +33,6 @@
 #include <set>
 #include <string>
 #include <thread>
-#include "TunnelTransfer.h"
 #include "gxs/rsgenexchange.h"
 #include "plugins/rspqiservice.h"
 #include "retroshare/rsidentity.h"
@@ -42,7 +41,6 @@
 #include "services/p3service.h"
 #include "services/rsGitItems.h"
 #include <retroshare/rsgxsifacehelper.h>
-#include <retroshare/rsgxstunnel.h>
 #include <interface/rsGit.h>
 
 bool retroGitDebugEnabled();
@@ -50,7 +48,7 @@ void setRetroGitDebugEnabled(bool enabled);
 
 class RetroGitNotify;
 
-class p3Git: public RsGenExchange, public RsGit, public p3Config, public RsGxsIfaceHelper, public RsGxsTunnelService::RsGxsTunnelClientService
+class p3Git: public RsGenExchange, public RsGit, public p3Config, public RsGxsIfaceHelper
 {
 public:
     p3Git(RsGeneralDataService *gds, RsNetworkExchangeService *nes, RsGixs *gixs,RetroGitNotify *notifier);
@@ -91,18 +89,10 @@ public:
     virtual bool subscribe(const RsGxsGroupId &groupId, bool subscribe) override;
     virtual bool setMessageReadStatus(const RsGxsGrpMsgIdPair &msgId,bool read) override;
     virtual void setMessageReadStatus(uint32_t &token,const RsGxsGrpMsgIdPair &msgId,bool read) override;
-    virtual bool requestCloneOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &toId, const RsGxsId &ownId, const std::string &localPath) override;
-    virtual bool requestPullOverTunnel(const RsGxsGroupId &groupId, const RsGxsId &toId, const RsGxsId &ownId, const std::string &localPath) override;
     virtual bool requestOfflineClone(const RsGxsGroupId &groupId, const std::string &localPath) override;
     virtual bool requestOfflinePull(const RsGxsGroupId &groupId, const std::string &localPath) override;
     virtual bool isCloneInProgress(const RsGxsGroupId &groupId) override;
     virtual bool getGitStatistics(GxsServiceStatistic &stats) override;
-
-    // RsGxsTunnelClientService methods
-    virtual void notifyTunnelStatus(const RsGxsTunnelId& tunnel_id, uint32_t tunnel_status) override;
-    virtual void receiveData(const RsGxsTunnelId& id, unsigned char *data, uint32_t data_size) override;
-    virtual void connectToGxsTunnelService(RsGxsTunnelService *tunnel_service) override;
-    virtual bool acceptDataFromPeer(const RsGxsId& gxs_id, const RsGxsTunnelId& tunnel_id, bool am_I_client_side) override;
 
 private:
     struct PendingPackfile
@@ -121,16 +111,6 @@ private:
         rstime_t publishTs = 0;
     };
 
-    struct PendingClone {
-        RsGxsGroupId groupId;
-        std::string localPath;
-    };
-
-    struct PendingPull {
-        RsGxsGroupId groupId;
-        std::string localPath;
-    };
-
     /** Offline clone or pull waiting for published packs to download. */
     struct PendingOffline {
         RsGxsGroupId groupId;
@@ -143,12 +123,11 @@ private:
         // packs that completed out of order still update the branches.
         std::vector<std::pair<RsGxsMessageId, IncompleteUpdate> > updatesInOrder;
         std::chrono::steady_clock::time_point started;
-    };
-
-    struct OutgoingTransfer {
-        QByteArray response;
-        int offset = 0;
-        QString groupId;
+        // Packs still to download (hash -> size), for the progress shown in the GUI.
+        std::map<RsFileHash, uint64_t> packs;
+        uint64_t lastReceived = 0;
+        size_t lastDone = 0;
+        bool progressPosted = false;
     };
 
     struct MsgCache {
@@ -161,16 +140,9 @@ private:
     void postGitEvent(RsGitEventCode code, const RsGxsGroupId &groupId, const RsGxsMessageId &msgId = RsGxsMessageId());
     void postCloneStatus(const RsGxsGroupId &groupId, const std::string &status, bool success,
                          uint64_t received = 0, uint64_t total = 0);
-    void failTunnelTransfer(const RsGxsTunnelId& id, const std::string& reason);
-    void fallBackToOffline(const RsGxsTunnelId& id, const std::string& reason);
-    /** Point branches/tags at the positions in the owner's signed updates. */
-    bool applySignedRefs(const RsGxsGroupId &groupId, const std::string &barePath,
-                         const std::map<std::string, std::string> &tunnelRefs, std::string &error);
-    void forgetTunnel(const RsGxsTunnelId& id);
-    void sendTransferError(const RsGxsTunnelId& id, const QString& groupId, const QString& error);
 
     // Background worker: all git and database work that can take long runs
-    // here, never on the GXS service thread, the tunnel thread or the GUI.
+    // here, never on the GXS service thread or the GUI.
     void runJob(std::function<void()> job);
     void workerLoop();
 
@@ -207,17 +179,11 @@ private:
                             const std::map<std::string, std::string> &refUpdates, rstime_t publishTs, bool unpacked);
     void startOfflineJob(const RsGxsGroupId &groupId);
     void finalizeOfflineJob(const RsGxsGroupId &groupId);
+    void postOfflineProgress();
     void preparePullRequestJob(RsGitPullRequest pr);
-    void serveRequestJob(const RsGxsTunnelId &id, const RsGxsId &requester, QString type, QString groupIdStr,
-                         std::set<std::string> known, bool chunked);
-    void handleResponseJob(const RsGxsTunnelId &id, QByteArray json);
     bool requestOffline(const RsGxsGroupId &groupId, const std::string &localPath, bool isPull);
-    void sendOutgoingChunks();
 
     // --- state ---
-    std::map<RsGxsTunnelId, std::chrono::steady_clock::time_point> mTransferActivity;
-    std::map<RsGxsTunnelId, GitTunnelTransfer::Assembly> mIncomingTransfers;
-    std::set<RsGxsTunnelId> mSentRequests;
     RsMutex mRetroGitMtx;
     RetroGitNotify *mNotify;
     std::map<uint32_t, uint32_t> mKnownGit;
@@ -225,14 +191,7 @@ private:
     std::set<RsGxsGrpMsgIdPair> mUnpacking;            // downloaded packs queued on the worker
     std::map<RsGxsGrpMsgIdPair, IncompleteUpdate> mIncompleteUpdates; // waiting for earlier packs
     std::map<RsGxsGroupId, std::map<std::string, rstime_t> > mRefTimes; // publish time of the update that set each ref
-    RsGxsTunnelService *mGxsTunnels;
-    std::map<RsGxsTunnelId, PendingClone> mPendingClones;
-    std::map<RsGxsTunnelId, PendingPull> mPendingPulls;
-    std::map<RsGxsTunnelId, RsGxsId> mTunnelToGxsIdMap;
     std::map<RsGxsGroupId, PendingOffline> mPendingOffline;
-    std::set<RsGxsTunnelId> mServingTunnels;           // requests being answered (rate limit)
-    std::map<RsGxsTunnelId, OutgoingTransfer> mOutgoing;
-    std::map<RsGxsTunnelId, std::chrono::steady_clock::time_point> mLastProgressPost;
     std::set<RsGxsMessageId> mPreparingPullRequests;
     std::set<RsFileHash> mRequestedFiles;
     std::list<std::pair<uint32_t, std::chrono::steady_clock::time_point> > mTrackedTokens;

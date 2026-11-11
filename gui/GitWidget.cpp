@@ -508,16 +508,7 @@ void GitWidget::onCloneClicked()
     if (localPath.isEmpty()) return;
     setLocalPath(localPath);
 
-    RsGxsId ownId;
-    if (rsIdentity) {
-        std::list<RsGxsId> ownIds;
-        rsIdentity->getOwnIds(ownIds);
-        if (!ownIds.empty()) {
-            ownId = ownIds.front();
-        }
-    }
-
-    mMainWidget->logCloneAttempt(mGroupId, repoName, QString::fromStdString(creatorId.toStdString()), ownId, localPath);
+    mMainWidget->logCloneAttempt(mGroupId, repoName, QString::fromStdString(creatorId.toStdString()), localPath);
     refresh();
 }
 
@@ -590,7 +581,7 @@ void GitWidget::onForkClicked()
     mPendingFork.mMeta.mCircleId = upstream.mMeta.mCircleId;
     mPendingFork.mMeta.mInternalCircle = upstream.mMeta.mInternalCircle;
     mPendingForkPath = QDir::cleanPath(path->text().trimmed());
-    // Prefer the downloaded repository; otherwise the existing transfer service downloads it.
+    // Prefer the downloaded repository; otherwise collect the published packs.
     const std::string source = GitManager::getBareRepoPath(upstream.mMeta.mGroupId.toStdString());
     std::vector<std::string> branches;
     std::string current;
@@ -601,8 +592,7 @@ void GitWidget::onForkClicked()
             QMessageBox::critical(this, tr("Fork Failed"), tr("Could not copy the downloaded repository into the chosen folder."));
         }
     } else {
-        bool queued = rsGit->requestCloneOverTunnel(upstream.mMeta.mGroupId, upstream.mMeta.mAuthorId,
-            mPendingFork.mMeta.mAuthorId, mPendingForkPath.toStdString());
+        bool queued = rsGit->requestOfflineClone(upstream.mMeta.mGroupId, mPendingForkPath.toStdString());
         if (!queued) {
             mPendingForkPath.clear();
             QMessageBox::critical(this, tr("Fork Failed"), tr("Could not start downloading the original repository. Clone it first and retry."));
@@ -711,16 +701,7 @@ void GitWidget::onPullClicked()
         return;
     }
 
-    RsGxsId ownId;
-    if (rsIdentity) {
-        std::list<RsGxsId> ownIds;
-        rsIdentity->getOwnIds(ownIds);
-        if (!ownIds.empty()) {
-            ownId = ownIds.front();
-        }
-    }
-
-    mMainWidget->logPullAttempt(mGroupId, repoName, QString::fromStdString(creatorId.toStdString()), ownId, localPath);
+    mMainWidget->logPullAttempt(mGroupId, repoName, QString::fromStdString(creatorId.toStdString()), localPath);
 }
 
 void GitWidget::onRebaseClicked()
@@ -1218,15 +1199,6 @@ void GitWidget::populateCommitLog(const std::vector<GitLocalChange> *workingChan
         repoName = QString::fromUtf8(groups[0].mGroupName.c_str());
     }
 
-    RsGxsId ownId;
-    if (rsIdentity) {
-        std::list<RsGxsId> ownIds;
-        rsIdentity->getOwnIds(ownIds);
-        if (!ownIds.empty()) {
-            ownId = ownIds.front();
-        }
-    }
-
     // 1. Populate undownloaded updates
     for (int i = 0; i < (int)undownloadedUpdates.size(); ++i) {
         const auto &update = undownloadedUpdates[i];
@@ -1305,8 +1277,8 @@ void GitWidget::populateCommitLog(const std::vector<GitLocalChange> *workingChan
             QPushButton *btnPull = new QPushButton(isAdmin ? tr("Update Working Folder") : tr("Pull"), ui->mCommitTable);
             btnPull->setStyleSheet("QPushButton { font-weight: bold; color: #2980b9; }");
             QString localPath = mLocalPath;
-            connect(btnPull, &QPushButton::clicked, this, [this, creatorId, ownId, localPath, repoName]() {
-                mMainWidget->logPullAttempt(mGroupId, repoName, QString::fromStdString(creatorId.toStdString()), ownId, localPath);
+            connect(btnPull, &QPushButton::clicked, this, [this, creatorId, localPath, repoName]() {
+                mMainWidget->logPullAttempt(mGroupId, repoName, QString::fromStdString(creatorId.toStdString()), localPath);
             }, Qt::QueuedConnection);
             ui->mCommitTable->setCellWidget(rowIdx, 5, btnPull);
         } else {
