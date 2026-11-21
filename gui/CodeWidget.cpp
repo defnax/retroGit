@@ -146,12 +146,7 @@ void CodeWidget::clear()
     ui->mTagCountLabel->setText("0 Tags");
     mGroupId.clear();
     mSelectedBranchOrTag.clear();
-    if (mRepoAvatarLabel) mRepoAvatarLabel->clear();
-    if (mRepoAuthorLabel) mRepoAuthorLabel->clear();
-    if (mRepoMessageLabel) mRepoMessageLabel->clear();
-    if (mRepoHashLabel) mRepoHashLabel->clear();
-    if (mRepoDateLabel) mRepoDateLabel->clear();
-    if (mRepoCommitCountLabel) mRepoCommitCountLabel->clear();
+    clearRepoSummary();
 }
 
 void CodeWidget::setGroupId(const QString &groupId)
@@ -172,12 +167,7 @@ void CodeWidget::refresh()
     // Reset repository summary before loading the newly selected repository.
     // Otherwise values from the previous repository remain visible when the
     // new repository has no commits or is still being populated.
-    if (mRepoAvatarLabel) mRepoAvatarLabel->clear();
-    if (mRepoAuthorLabel) mRepoAuthorLabel->clear();
-    if (mRepoMessageLabel) mRepoMessageLabel->clear();
-    if (mRepoHashLabel) mRepoHashLabel->clear();
-    if (mRepoDateLabel) mRepoDateLabel->clear();
-    if (mRepoCommitCountLabel) mRepoCommitCountLabel->clear();
+    clearRepoSummary();
 
     // Check if user is Admin of the repository
     bool isAdmin = false;
@@ -186,8 +176,14 @@ void CodeWidget::refresh()
     if (rsGit && rsGit->getGroups(groupIds, groups) && !groups.empty()) {
         uint32_t flags = groups[0].mMeta.mSubscribeFlags;
         isAdmin = IS_GROUP_ADMIN(flags);
-        if (mRepoAvatarLabel)
-            mRepoAvatarLabel->setPixmap(GxsIdDetails::makeDefaultIcon(groups[0].mMeta.mAuthorId, GxsIdDetails::SMALL));
+        mRepoOwnerId = groups[0].mMeta.mAuthorId;
+        if (mRepoAvatarLabel) {
+            mRepoAvatarLabel->setPixmap(GxsIdDetails::makeDefaultIcon(mRepoOwnerId, GxsIdDetails::SMALL));
+            if (mRepoOwnerId.isNull())
+                mRepoAvatarLabel->setToolTip(tr("Repository owner: anonymous"));
+            else
+                GxsIdDetails::process(mRepoOwnerId, &CodeWidget::ownerIdFillCallback, this);
+        }
     }
 
     QString rawPath = mMainWidget->getLocalPath();
@@ -302,6 +298,11 @@ void CodeWidget::refresh()
         const QString hash = QString::fromStdString(latest.hash).toHtmlEscaped();
         const QString date = QString::fromStdString(latest.date).toHtmlEscaped();
         mRepoAuthorLabel->setText(author);
+        QString authorTip = tr("Commit author: <b>%1</b>").arg(author);
+        if (!latest.email.empty())
+            authorTip += "<br/>" + QString::fromStdString(latest.email).toHtmlEscaped();
+        authorTip += "<br/>" + QString::fromStdString(latest.full_hash.empty() ? latest.hash : latest.full_hash).toHtmlEscaped();
+        mRepoAuthorLabel->setToolTip(authorTip);
         mRepoMessageLabel->setText(message);
         mRepoHashLabel->setText(hash);
         mRepoDateLabel->setText(date);
@@ -314,6 +315,34 @@ void CodeWidget::refresh()
     if (mMainWidget) {
         mMainWidget->refreshGitWidget();
     }
+}
+
+void CodeWidget::clearRepoSummary()
+{
+    mRepoOwnerId.clear();
+    for (QLabel *label : {mRepoAvatarLabel, mRepoAuthorLabel, mRepoMessageLabel,
+                          mRepoHashLabel, mRepoDateLabel, mRepoCommitCountLabel}) {
+        if (!label) continue;
+        label->clear();
+        label->setToolTip(QString());
+    }
+}
+
+void CodeWidget::ownerIdFillCallback(GxsIdDetailsType type, const RsIdentityDetails &details, QObject *object, const QVariant &)
+{
+    CodeWidget *self = qobject_cast<CodeWidget*>(object);
+    if (!self || !self->mRepoAvatarLabel) return;
+    if (details.mId != self->mRepoOwnerId) return; // another repository was selected meanwhile
+
+    if (type == GXS_ID_DETAILS_TYPE_DONE) {
+        QPixmap pix;
+        if (details.mAvatar.mSize > 0 &&
+            GxsIdDetails::loadPixmapFromData(details.mAvatar.mData, details.mAvatar.mSize, pix, GxsIdDetails::SMALL))
+            self->mRepoAvatarLabel->setPixmap(pix);
+    }
+
+    const QString tip = GxsIdTableItem::makeToolTip(details, self->fontMetrics().height());
+    self->mRepoAvatarLabel->setToolTip(tr("Repository owner") + "<br/>" + tip);
 }
 
 void CodeWidget::handleGitEvent(const RsGitEvent *e)

@@ -24,6 +24,7 @@
 #include <QWidget>
 #include <QString>
 #include "interface/rsGit.h"
+#include "gui/gxs/GxsIdDetails.h"
 
 namespace Ui {
 class CodeWidget;
@@ -57,6 +58,8 @@ private slots:
 private:
     void populateRepoBrowser(const QString &branchOrTag = "");
     void selectBranchOrTag(const QString &text);
+    void clearRepoSummary();
+    static void ownerIdFillCallback(GxsIdDetailsType type, const RsIdentityDetails &details, QObject *object, const QVariant &data);
 
     Ui::CodeWidget *ui;
     MainWidget *mMainWidget;
@@ -68,6 +71,7 @@ private:
     QLabel *mRepoHashLabel = nullptr;
     QLabel *mRepoDateLabel = nullptr;
     QLabel *mRepoCommitCountLabel = nullptr;
+    RsGxsId mRepoOwnerId;
 };
 
 #endif // CODEWIDGET_H

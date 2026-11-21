@@ -203,14 +203,14 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
     /* Setup Group Tree */
     mActiveGroupsItem = ui->treeWidget->treeWidget()->invisibleRootItem();
 
-    // RetroGit has no distant (network-wide) group search: hide that line edit.
-    ui->treeWidget->setDistSearchVisible(false);
-
     /* Add the New Group button */
     QToolButton *newGroupButton = new QToolButton(this);
     newGroupButton->setIcon(QIcon(":/icons/png/add.png"));
     newGroupButton->setToolTip(tr("Create Group"));
     ui->treeWidget->addToolButton(newGroupButton);
+
+    // RetroGit has no distant (network-wide) group search: hide that line edit.
+    ui->treeWidget->setDistSearchVisible(false);
     
     // Clear Right Pane and add modular sub-widgets
     ui->rightPaneTabWidget->clear();
@@ -1786,6 +1786,11 @@ void GxsIdTableItem::fillCallback(GxsIdDetailsType type, const RsIdentityDetails
     }
     item->mIconLabel->setPixmap(combinedPixmap);
     
+    item->setToolTip(makeToolTip(details, item->fontMetrics().height()));
+}
+
+QString GxsIdTableItem::makeToolTip(const RsIdentityDetails &details, int fontHeight)
+{
     QString t = GxsIdDetails::getComment(details);
     
     if (rsReputations) {
@@ -1807,13 +1812,13 @@ void GxsIdTableItem::fillCallback(GxsIdDetailsType type, const RsIdentityDetails
         pix = GxsIdDetails::makeDefaultIcon(details.mId, GxsIdDetails::LARGE);
     }
     
-    int S = item->fontMetrics().height();
+    const int S = fontHeight;
     QString embeddedImage;
     if (RsHtml::makeEmbeddedImage(pix.scaled(QSize(5*S, 5*S), Qt::KeepAspectRatio, Qt::SmoothTransformation).toImage(), embeddedImage, -1)) {
         embeddedImage.insert(embeddedImage.indexOf("src="), "style=\"float:left\" ");
         t = "<table><tr><td>" + embeddedImage + "</td><td>" + t + "</td></tr></table>";
     }
-    item->setToolTip(t);
+    return t;
 }
 
 void MainWidget::showPullRequests(const QString &groupId)

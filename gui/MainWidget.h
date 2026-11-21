@@ -93,6 +93,9 @@ public:
     void setId(const RsGxsId &id);
     bool getId(RsGxsId &id) const;
 
+    /** Rich identity tooltip (avatar, name, comment, votes), shared with other widgets. */
+    static QString makeToolTip(const RsIdentityDetails &details, int fontHeight);
+
 private:
     static void fillCallback(GxsIdDetailsType type, const RsIdentityDetails &details, QObject *object, const QVariant &data);
     RsGxsId mId;
