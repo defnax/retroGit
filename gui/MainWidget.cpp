@@ -56,6 +56,9 @@
 #include "util/misc.h"
 #include <util/rsthreads.h>
 #include <QLabel>
+#include <QScrollBar>
+#include <QScrollArea>
+#include <QSplitter>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QVBoxLayout>
@@ -200,6 +203,9 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
     /* Setup Group Tree */
     mActiveGroupsItem = ui->treeWidget->treeWidget()->invisibleRootItem();
 
+    // RetroGit has no distant (network-wide) group search: hide that line edit.
+    ui->treeWidget->setDistSearchVisible(false);
+
     /* Add the New Group button */
     QToolButton *newGroupButton = new QToolButton(this);
     newGroupButton->setIcon(QIcon(":/icons/png/add.png"));
@@ -246,79 +252,29 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
     QShortcut *refreshShortcut = new QShortcut(QKeySequence(Qt::Key_F5), this);
     connect(refreshShortcut, SIGNAL(activated()), this, SLOT(refreshCurrentRepo()));
 
-    // Create Commit Details panel
-    mCommitDetailsWidget = new QWidget(ui->layoutWidget);
-    QVBoxLayout *detailsLayout = new QVBoxLayout(mCommitDetailsWidget);
-    detailsLayout->setContentsMargins(0, 10, 0, 0);
-    detailsLayout->setSpacing(6);
+    // Commit Details panel (left pane, below the repository list): defined in MainWidget.ui
+    mCommitDetailsWidget = ui->commitDetailsWidget;
+    mDetailsHashLabel = ui->detailsHashLabel;
+    mDetailsTitleLabel = ui->detailsTitleLabel;
+    mDetailsBodyText = ui->detailsBodyText;
+    mDetailsAuthorFrame = ui->detailsAuthorFrame;
+    mDetailsAuthorNameLabel = ui->detailsAuthorNameLabel;
+    mDetailsAuthorEmailLabel = ui->detailsAuthorEmailLabel;
+    mDetailsDateLabel = ui->detailsDateLabel;
+    mChangedFilesTree = ui->changedFilesTree;
 
-    // Separator line 1
-    QFrame *line1 = new QFrame(mCommitDetailsWidget);
-    line1->setFrameShape(QFrame::HLine);
-    line1->setFrameShadow(QFrame::Sunken);
-    detailsLayout->addWidget(line1);
+    // A transparent scroll area so long commit messages scroll instead of growing the pane.
+    ui->detailsScrollArea->viewport()->setAutoFillBackground(false);
+    ui->detailsScrollContents->setAutoFillBackground(false);
 
-    // SHA/Hash
-    mDetailsHashLabel = new QLabel(mCommitDetailsWidget);
-    mDetailsHashLabel->setStyleSheet("font-weight: bold; color: #d35400; font-size: 24px; font-family: 'DejaVu Sans Mono', monospace; qproperty-alignment: AlignCenter; padding-top: 5px;");
-    detailsLayout->addWidget(mDetailsHashLabel);
-
-    // Title / Summary
-    mDetailsTitleLabel = new QLabel(mCommitDetailsWidget);
-    mDetailsTitleLabel->setStyleSheet("font-weight: bold; font-size: 16px; color: #2c3e50; qproperty-alignment: AlignCenter;");
-    mDetailsTitleLabel->setWordWrap(true);
-    detailsLayout->addWidget(mDetailsTitleLabel);
-
-    // Body / Message description
-    mDetailsBodyText = new QLabel(mCommitDetailsWidget);
-    mDetailsBodyText->setStyleSheet("font-size: 13px; color: #34495e; qproperty-alignment: AlignCenter;");
-    mDetailsBodyText->setWordWrap(true);
-    detailsLayout->addWidget(mDetailsBodyText);
-
-    // Author & Date Frame (grey card style)
-    mDetailsAuthorFrame = new QFrame(mCommitDetailsWidget);
-    mDetailsAuthorFrame->setStyleSheet("QFrame { background-color: #e0e0e0; border: none; border-radius: 4px; }");
-    QVBoxLayout *authorLayout = new QVBoxLayout(mDetailsAuthorFrame);
-    authorLayout->setContentsMargins(8, 8, 8, 8);
-    authorLayout->setSpacing(4);
-
-    mDetailsAuthorNameLabel = new QLabel(mDetailsAuthorFrame);
-    mDetailsAuthorNameLabel->setStyleSheet("font-weight: bold; font-size: 13px; color: #2c3e50; border: none; background: transparent;");
-    mDetailsAuthorNameLabel->setWordWrap(true);
-    authorLayout->addWidget(mDetailsAuthorNameLabel);
-
-    mDetailsAuthorEmailLabel = new QLabel(mDetailsAuthorFrame);
-    mDetailsAuthorEmailLabel->setStyleSheet("color: #555555; font-size: 12px; border: none; background: transparent;");
-    mDetailsAuthorEmailLabel->setWordWrap(true);
-    authorLayout->addWidget(mDetailsAuthorEmailLabel);
-
-    mDetailsDateLabel = new QLabel(mDetailsAuthorFrame);
-    mDetailsDateLabel->setStyleSheet("color: #555555; font-size: 12px; border: none; background: transparent;");
-    authorLayout->addWidget(mDetailsDateLabel);
-
-    detailsLayout->addWidget(mDetailsAuthorFrame);
-
-    // Separator line 4
-    QFrame *line4 = new QFrame(mCommitDetailsWidget);
-    line4->setFrameShape(QFrame::HLine);
-    line4->setFrameShadow(QFrame::Sunken);
-    detailsLayout->addWidget(line4);
-
-    // Changed Files Tree
-    mChangedFilesTree = new QTreeWidget(mCommitDetailsWidget);
-    mChangedFilesTree->setHeaderHidden(true);
-    mChangedFilesTree->setStyleSheet("QTreeView { border: none; background: transparent; }");
-    mChangedFilesTree->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(mChangedFilesTree, SIGNAL(customContextMenuRequested(QPoint)), this, SLOT(onChangedFilesContextMenu(QPoint)));
     connect(mChangedFilesTree, SIGNAL(itemDoubleClicked(QTreeWidgetItem*,int)), this, SLOT(onChangedFilesDoubleClicked(QTreeWidgetItem*,int)));
-    detailsLayout->addWidget(mChangedFilesTree);
 
     // Commit metadata comes from remote peers: never interpret it as rich text.
     for (QLabel *label : {mDetailsHashLabel, mDetailsTitleLabel, mDetailsBodyText,
                           mDetailsAuthorNameLabel, mDetailsAuthorEmailLabel, mDetailsDateLabel})
         label->setTextFormat(Qt::PlainText);
 
-    ui->verticalLayout->addWidget(mCommitDetailsWidget);
     mCommitDetailsWidget->hide(); // Hide initially until a commit is selected!
 
     loadGroupMeta();
@@ -408,12 +364,20 @@ void MainWidget::processSettings(bool load)
 
     // state of splitter
     ui->splitter->restoreState(Settings->value("SplitterList").toByteArray());
+    // Repository list | commit details: 50/50 unless the user resized it before
+    if (!ui->leftSplitter->restoreState(Settings->value("LeftSplitter").toByteArray()))
+        ui->leftSplitter->setSizes({1000, 1000});
+    // Commit message | changed files
+    if (!ui->detailsSplitter->restoreState(Settings->value("DetailsSplitter").toByteArray()))
+        ui->detailsSplitter->setSizes({1000, 1000});
 
   } else {
     // save settings
 
     // state of splitter
     Settings->setValue("SplitterList", ui->splitter->saveState());
+    Settings->setValue("LeftSplitter", ui->leftSplitter->saveState());
+    Settings->setValue("DetailsSplitter", ui->detailsSplitter->saveState());
   }
 
   Settings->endGroup();
@@ -1400,10 +1364,24 @@ void MainWidget::fillChangedFilesTree(const std::vector<ChangedFileEntry> &entri
     mChangedFilesTree->setUpdatesEnabled(true);
 }
 
+void MainWidget::showCommitDetailsPane()
+{
+    mCommitDetailsWidget->show();
+
+    // A pane that was hidden when the layout was saved can come back with 0 height:
+    // give the repository list and the commit details half of the space each.
+    QList<int> sizes = ui->leftSplitter->sizes();
+    if (sizes.size() == 2 && sizes.at(1) <= 0) {
+        const int half = qMax(1, (sizes.at(0) + sizes.at(1)) / 2);
+        ui->leftSplitter->setSizes({half, half});
+    }
+}
+
 void MainWidget::showCommitDetails(const QString &fullHash, const QString &qRepoPath)
 {
     mCurrentCommitHash = fullHash;
     const quint64 requestId = ++mDetailsRequestId; // newer selections win
+    ui->detailsScrollArea->verticalScrollBar()->setValue(0);
     std::string repoPath = qRepoPath.toStdString();
     if (fullHash != "LOCAL_CHANGES" && !GitManager::hasCommit(repoPath, fullHash.toStdString()))
         repoPath = GitManager::getBareRepoPath(getSelectedGroupId().toStdString());
@@ -1418,7 +1396,7 @@ void MainWidget::showCommitDetails(const QString &fullHash, const QString &qRepo
         
         mDetailsBodyText->setText(tr("Uncommitted changes in the working directory."));
         mDetailsBodyText->setStyleSheet("color: #34495e; font-style: normal; font-size: 13px;");
-        mDetailsBodyText->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        mDetailsBodyText->setAlignment(Qt::AlignLeft | Qt::AlignTop);
         
         QDateTime now = QDateTime::currentDateTime();
         mDetailsDateLabel->setText(now.toString("yyyy-MM-dd hh:mm"));
@@ -1438,7 +1416,7 @@ void MainWidget::showCommitDetails(const QString &fullHash, const QString &qRepo
             loading->setFlags(Qt::ItemIsEnabled);
             mChangedFilesTree->addTopLevelItem(loading);
         }
-        mCommitDetailsWidget->show();
+        showCommitDetailsPane();
 
         // The status of a large working folder is slow: compute it in the background.
         QPointer<MainWidget> self(this);
@@ -1483,11 +1461,11 @@ void MainWidget::showCommitDetails(const QString &fullHash, const QString &qRepo
             if (body.empty()) {
                 mDetailsBodyText->setText(tr("<No description provided>"));
                 mDetailsBodyText->setStyleSheet("color: #777777; font-style: italic; font-size: 13px;");
-                mDetailsBodyText->setAlignment(Qt::AlignCenter);
+                mDetailsBodyText->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
             } else {
                 mDetailsBodyText->setText(QString::fromStdString(body));
                 mDetailsBodyText->setStyleSheet("color: #34495e; font-style: normal; font-size: 13px;");
-                mDetailsBodyText->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+                mDetailsBodyText->setAlignment(Qt::AlignLeft | Qt::AlignTop);
             }
             
             mDetailsDateLabel->setText(QString::fromStdString(date));
@@ -1497,7 +1475,7 @@ void MainWidget::showCommitDetails(const QString &fullHash, const QString &qRepo
             for (const GitCommitFileChange &change : changedFiles)
                 entries.push_back({QString::fromStdString(change.path), change.status, QString()});
             fillChangedFilesTree(entries, false);
-            mCommitDetailsWidget->show();
+            showCommitDetailsPane();
         } else {
             mCommitDetailsWidget->hide();
         }

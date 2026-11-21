@@ -136,6 +136,7 @@ public:
     void refreshCodeWidget();
     void showCommitDetails(const QString &commitHash, const QString &repoPath);
     void hideCommitDetails();
+    void showCommitDetailsPane();
     void showDiffForCommit(const QString &commitHash);
     void showPullRequests(const QString &groupId);
     void showMilestones(const QString &groupId);
