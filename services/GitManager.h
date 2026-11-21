@@ -36,6 +36,7 @@ struct GitCommitInfo {
     std::string date;
     std::string full_hash;
     std::string email;
+    int64_t time = 0; // author time, seconds since epoch
 };
 
 struct GitDiffLine {
@@ -163,6 +164,19 @@ public:
      * @brief Retrieve the commit log from the repository.
      */
     static bool getCommitLog(const std::string& repoPath, std::vector<GitCommitInfo>& commits, const std::string& branchOrTag = "");
+
+    /**
+     * @brief Commit history of a branch/tag, newest first (by commit time).
+     * @param skip       number of matching commits to skip (paging)
+     * @param limit      maximum number of commits to return (0 = only count)
+     * @param author     if not empty, only commits whose author name or email equals it
+     * @param total      if set, receives the number of matching commits
+     * @param authors    if set, receives all author names of the branch (ignores the filter)
+     */
+    static bool getCommitHistory(const std::string& repoPath, std::vector<GitCommitInfo>& commits,
+                                 const std::string& branchOrTag, size_t skip, size_t limit,
+                                 const std::string& author = "", size_t* total = nullptr,
+                                 std::set<std::string>* authors = nullptr);
 
     /**
      * @brief Retrieve all commit SHAs present in the repository (across all references).

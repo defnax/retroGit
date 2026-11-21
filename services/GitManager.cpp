@@ -679,6 +679,7 @@ bool GitManager::getCommitLog(const std::string &repoPath, std::vector<GitCommit
                 info.email = sig->email ? sig->email : "";
                 
                 info.date = formatGitTime(sig->when.time);
+                info.time = static_cast<int64_t>(sig->when.time);
             }
             
             commits.push_back(info);
@@ -686,6 +687,108 @@ bool GitManager::getCommitLog(const std::string &repoPath, std::vector<GitCommit
         }
     }
 
+    git_revwalk_free(walker);
+    git_repository_free(repo);
+    return true;
+}
+
+bool GitManager::getCommitHistory(const std::string& repoPath, std::vector<GitCommitInfo>& commits,
+                                  const std::string& branchOrTag, size_t skip, size_t limit,
+                                  const std::string& author, size_t* total,
+                                  std::set<std::string>* authors)
+{
+    if (total) *total = 0;
+    std::string normPath = normalizePath(repoPath);
+    git_repository *repo = nullptr;
+    if (git_repository_open(&repo, normPath.c_str()) != 0)
+        return false;
+
+    git_revwalk *walker = nullptr;
+    if (git_revwalk_new(&walker, repo) != 0) {
+        git_repository_free(repo);
+        return false;
+    }
+    git_revwalk_sorting(walker, GIT_SORT_TOPOLOGICAL | GIT_SORT_TIME);
+
+    bool pushed = false;
+    if (!branchOrTag.empty()) {
+        git_oid oid;
+        const char *prefixes[] = { "", "refs/heads/", "refs/tags/", "refs/remotes/origin/" };
+        for (const char *prefix : prefixes) {
+            if (*prefix == '\0' && branchOrTag.rfind("refs/", 0) != 0) continue;
+            if (git_reference_name_to_id(&oid, repo, (prefix + branchOrTag).c_str()) == 0) {
+                // Tags may point to tag objects: peel them to the commit
+                git_object *peeled = nullptr, *obj = nullptr;
+                if (git_object_lookup(&obj, repo, &oid, GIT_OBJECT_ANY) == 0) {
+                    if (git_object_peel(&peeled, obj, GIT_OBJECT_COMMIT) == 0) {
+                        pushed = git_revwalk_push(walker, git_object_id(peeled)) == 0;
+                        git_object_free(peeled);
+                    }
+                    git_object_free(obj);
+                }
+                break;
+            }
+        }
+    }
+    if (!pushed && git_revwalk_push_head(walker) != 0) {
+        git_oid oid;
+        if (git_reference_name_to_id(&oid, repo, "refs/heads/master") == 0 ||
+            git_reference_name_to_id(&oid, repo, "refs/heads/main") == 0) {
+            git_revwalk_push(walker, &oid);
+        } else {
+            git_revwalk_free(walker);
+            git_repository_free(repo);
+            return true; // empty repository
+        }
+    }
+
+    // Author details are only needed when filtering or listing authors.
+    const bool needAuthor = !author.empty() || authors;
+    size_t matched = 0;
+    git_oid oid;
+    while (git_revwalk_next(&oid, walker) == 0) {
+        const bool inPage = matched >= skip && commits.size() < limit;
+        if (!needAuthor && !inPage) {
+            if (!total) {
+                if (commits.size() >= limit) break; // page full and nothing to count
+            }
+            ++matched;
+            continue;
+        }
+
+        git_commit *commit = nullptr;
+        if (git_commit_lookup(&commit, repo, &oid) != 0) continue;
+        const git_signature *sig = git_commit_author(commit);
+        const std::string name = (sig && sig->name) ? sig->name : "";
+        const std::string email = (sig && sig->email) ? sig->email : "";
+        if (authors && !name.empty()) authors->insert(name);
+
+        if (!author.empty() && name != author && email != author) {
+            git_commit_free(commit);
+            continue;
+        }
+
+        if (matched >= skip && commits.size() < limit) {
+            GitCommitInfo info;
+            char oid_str[GIT_OID_HEXSZ + 1];
+            git_oid_tostr(oid_str, sizeof(oid_str), &oid);
+            info.full_hash = oid_str;
+            info.hash = info.full_hash.substr(0, 8);
+            const char *summary = git_commit_summary(commit);
+            info.message = summary ? summary : "";
+            info.author = name;
+            info.email = email;
+            if (sig) {
+                info.time = static_cast<int64_t>(sig->when.time);
+                info.date = formatGitTime(sig->when.time);
+            }
+            commits.push_back(info);
+        }
+        ++matched;
+        git_commit_free(commit);
+    }
+
+    if (total) *total = matched;
     git_revwalk_free(walker);
     git_repository_free(repo);
     return true;

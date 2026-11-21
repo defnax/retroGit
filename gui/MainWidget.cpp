@@ -22,6 +22,7 @@
 #include <QUuid>
 #include "PullRequestsWidget.h"
 #include "MilestonesWidget.h"
+#include "CommitHistoryWidget.h"
 #include "PullRequestDetailsWidget.h"
 #include "GitCommitDialog.h"
 #include "GitGroupDialog.h"
@@ -1847,6 +1848,28 @@ void MainWidget::showPullRequests(const QString &groupId)
         bar->setTabButton(0, QTabBar::RightSide, nullptr);
         bar->setTabButton(1, QTabBar::RightSide, nullptr);
         bar->setTabButton(2, QTabBar::RightSide, nullptr);
+    }
+}
+
+void MainWidget::showCommitHistory(const QString &groupId, const QString &branchOrTag)
+{
+    for (int i = 3; i < ui->rightPaneTabWidget->count(); ++i) {
+        auto history = qobject_cast<CommitHistoryWidget *>(ui->rightPaneTabWidget->widget(i));
+        if (history && history->groupId() == groupId) {
+            history->setBranchOrTag(branchOrTag);
+            ui->rightPaneTabWidget->setCurrentIndex(i);
+            return;
+        }
+    }
+
+    auto history = new CommitHistoryWidget(this, groupId, branchOrTag, ui->rightPaneTabWidget);
+    const int index = ui->rightPaneTabWidget->addTab(history, QIcon(":/images/commit-24_.png"), tr("Commits"));
+    ui->rightPaneTabWidget->setCurrentIndex(index);
+
+    // Keep the three core tabs without close button
+    if (QTabBar *bar = ui->rightPaneTabWidget->findChild<QTabBar*>()) {
+        for (int i = 0; i < 3 && i < bar->count(); ++i)
+            bar->setTabButton(i, QTabBar::RightSide, nullptr);
     }
 }
 

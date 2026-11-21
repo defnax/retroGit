@@ -54,6 +54,7 @@ private slots:
     void onBranchComboChanged(const QString &text);
     void onCreateBranchClicked();
     void onPullRequestsClicked();
+    void onCommitHistoryClicked();
 
 private:
     void populateRepoBrowser(const QString &branchOrTag = "");
@@ -70,8 +71,8 @@ private:
     QLabel *mRepoMessageLabel = nullptr;
     QLabel *mRepoHashLabel = nullptr;
     QLabel *mRepoDateLabel = nullptr;
-    QLabel *mRepoCommitCountLabel = nullptr;
     RsGxsId mRepoOwnerId;
+    quint64 mCountRequestId = 0;
 };
 
 #endif // CODEWIDGET_H

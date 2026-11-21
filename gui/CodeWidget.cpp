@@ -39,6 +39,11 @@
 #include <QLineEdit>
 #include <QAbstractItemView>
 #include <retroshare/rsinit.h>
+#include <QPointer>
+#include <QLocale>
+#include <QToolButton>
+#include "util/qtthreadsutils.h"
+#include <util/rsthreads.h>
 
 extern RsGit *rsGit;
 
@@ -73,11 +78,12 @@ CodeWidget::CodeWidget(MainWidget *mainWidget, QWidget *parent)
     mRepoMessageLabel = ui->mRepoMessageLabel;
     mRepoHashLabel = ui->mRepoHashLabel;
     mRepoDateLabel = ui->mRepoDateLabel;
-    mRepoCommitCountLabel = ui->mRepoCommitCountLabel;
 
     ui->mRepoBrowserList->setContextMenuPolicy(Qt::CustomContextMenu);
     ui->mRepoBrowserList->setHeaderHidden(true);
     connect(ui->mRepoBrowserList, &QTreeWidget::customContextMenuRequested, this, &CodeWidget::onRepoBrowserContextMenu);
+    connect(ui->mBtnCommitHistory, &QToolButton::clicked, this, &CodeWidget::onCommitHistoryClicked);
+    ui->mBtnCommitHistory->hide();
     connect(ui->mRepoBrowserList, &QTreeWidget::itemDoubleClicked, this, &CodeWidget::openSelectedFile);
     connect(ui->mBtnOpenFolder, &QPushButton::clicked, this, &CodeWidget::onOpenFolderClicked);
     connect(ui->mBtnCreateBranch, &QPushButton::clicked, this, &CodeWidget::onCreateBranchClicked);
@@ -298,15 +304,26 @@ void CodeWidget::refresh()
         const QString hash = QString::fromStdString(latest.hash).toHtmlEscaped();
         const QString date = QString::fromStdString(latest.date).toHtmlEscaped();
         mRepoAuthorLabel->setText(author);
-        QString authorTip = tr("Commit author: <b>%1</b>").arg(author);
-        if (!latest.email.empty())
-            authorTip += "<br/>" + QString::fromStdString(latest.email).toHtmlEscaped();
-        authorTip += "<br/>" + QString::fromStdString(latest.full_hash.empty() ? latest.hash : latest.full_hash).toHtmlEscaped();
-        mRepoAuthorLabel->setToolTip(authorTip);
         mRepoMessageLabel->setText(message);
         mRepoHashLabel->setText(hash);
         mRepoDateLabel->setText(date);
-        mRepoCommitCountLabel->setText(tr("%1 Commits").arg(summaryCommits.size()));
+        // The full count needs a walk over the whole history: compute it in the background.
+        ui->mBtnCommitHistory->setText(tr("Commits"));
+        ui->mBtnCommitHistory->show();
+        const quint64 requestId = ++mCountRequestId;
+        const std::string countPath = bareRepoPath;
+        const std::string countRef = mSelectedBranchOrTag.toStdString();
+        QPointer<CodeWidget> self(this);
+        RsThread::async([self, requestId, countPath, countRef]() {
+            std::vector<GitCommitInfo> none;
+            size_t total = 0;
+            const bool ok = GitManager::getCommitHistory(countPath, none, countRef, 0, 0, "", &total);
+            RsQThreadUtils::postToObject([self, requestId, ok, total]() {
+                if (!self || requestId != self->mCountRequestId || !ok) return;
+                self->ui->mBtnCommitHistory->setText(total == 1 ? tr("1 Commit")
+                    : tr("%1 Commits").arg(QLocale().toString(qulonglong(total))));
+            }, qApp);
+        });
     } else {
         mRepoMessageLabel->setText(tr("No commits available"));
     }
@@ -320,8 +337,11 @@ void CodeWidget::refresh()
 void CodeWidget::clearRepoSummary()
 {
     mRepoOwnerId.clear();
+    ++mCountRequestId; // drop a commit count still being computed
+    ui->mBtnCommitHistory->setText(QString());
+    ui->mBtnCommitHistory->hide();
     for (QLabel *label : {mRepoAvatarLabel, mRepoAuthorLabel, mRepoMessageLabel,
-                          mRepoHashLabel, mRepoDateLabel, mRepoCommitCountLabel}) {
+                          mRepoHashLabel, mRepoDateLabel}) {
         if (!label) continue;
         label->clear();
         label->setToolTip(QString());
@@ -343,6 +363,12 @@ void CodeWidget::ownerIdFillCallback(GxsIdDetailsType type, const RsIdentityDeta
 
     const QString tip = GxsIdTableItem::makeToolTip(details, self->fontMetrics().height());
     self->mRepoAvatarLabel->setToolTip(tr("Repository owner") + "<br/>" + tip);
+}
+
+void CodeWidget::onCommitHistoryClicked()
+{
+    if (mMainWidget && !mGroupId.isEmpty())
+        mMainWidget->showCommitHistory(mGroupId, mSelectedBranchOrTag);
 }
 
 void CodeWidget::handleGitEvent(const RsGitEvent *e)
