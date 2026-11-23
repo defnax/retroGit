@@ -27,6 +27,7 @@
 #include <set>
 #include "gui/settings/rsharesettings.h"
 #include <QInputDialog>
+#include <QMenu>
 #include "ui_PullRequestsWidget.h"
 #include "MainWidget.h"
 #include "GitNewPRDialog.h"
@@ -56,6 +57,22 @@ PullRequestsWidget::PullRequestsWidget(const QString &groupId, MainWidget *mainW
     , mGroupId(groupId)
 {
     ui->setupUi(this);
+    ui->mPRTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(ui->mPRTable, &QTableWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        const QTableWidgetItem *item = ui->mPRTable->itemAt(pos);
+        const QTableWidgetItem *idItem = item ? ui->mPRTable->item(item->row(), 0) : nullptr;
+        const QString msgId = idItem ? idItem->data(Qt::UserRole).toString() : QString();
+        if (msgId.isEmpty() || !mMainWidget) return;
+        QString title;
+        std::vector<RsGitPullRequest> prs;
+        if (rsGit && rsGit->getPullRequests(RsGxsGroupId(mGroupId.toStdString()), prs))
+            for (const auto &pr : prs)
+                if (QString::fromStdString(pr.mMeta.mMsgId.toStdString()) == msgId) title = QString::fromUtf8(pr.mTitle.c_str());
+        QMenu menu(this);
+        QAction *copyLink = menu.addAction(tr("Copy RetroShare Link"));
+        if (menu.exec(ui->mPRTable->viewport()->mapToGlobal(pos)) == copyLink)
+            mMainWidget->copyRetroGitLink(mGroupId, title.isEmpty() ? tr("Pull request") : title, QString(), msgId);
+    });
     auto milestones = new QPushButton(tr("Milestones"), this);
     milestones->setIcon(QIcon(":/images/milestone.png"));
     ui->topRowLayout->insertWidget(ui->topRowLayout->count() - 1, milestones);

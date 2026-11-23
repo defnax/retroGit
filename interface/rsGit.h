@@ -39,6 +39,16 @@ extern RsGit *rsGit;
 
 static const uint32_t CONFIG_TYPE_RetroGit_PLUGIN = 0xe001;
 
+/* RetroShare links:
+ *   retroshare://git?name=<text>&id=<repository>[&data=<signed repository group, base64>]
+ *                    [&commit=<sha1>][&pr=<pull request message id>]  */
+constexpr const char *RETROGIT_LINK_HOST   = "git";
+constexpr const char *RETROGIT_LINK_NAME   = "name";
+constexpr const char *RETROGIT_LINK_ID     = "id";
+constexpr const char *RETROGIT_LINK_DATA   = "data";
+constexpr const char *RETROGIT_LINK_COMMIT = "commit";
+constexpr const char *RETROGIT_LINK_PR     = "pr";
+
 /** Largest pack sent inside a GXS message; bigger packs are attached as files.
  *  Keeps every RetroGit message well below RetroShare's 262143 byte item limit. */
 static const size_t RETROGIT_MAX_INLINE_PACK = 180000;
@@ -121,6 +131,14 @@ public:
 
     virtual bool requestOfflineClone(const RsGxsGroupId &groupId, const std::string &localPath) = 0;
     virtual bool requestOfflinePull(const RsGxsGroupId &groupId, const std::string &localPath) = 0;
+
+    /** RetroShare link to a repository (like RsGxsChannels::exportChannelLink()).
+     *  With includeGxsData the link carries the signed repository group, so a
+     *  receiver can add the repository before GXS has synchronized it. */
+    virtual bool exportGitLink(std::string &link, const RsGxsGroupId &groupId, bool includeGxsData, std::string &errMsg) = 0;
+    /** Add the repository carried by a link (or by its bare base64 data). It is
+     *  validated like a repository received from the network. */
+    virtual bool importGitLink(const std::string &link, RsGxsGroupId &groupId, std::string &errMsg) = 0;
 
     /** Return true while a clone for this repository is still transferring or being written. */
     virtual bool isCloneInProgress(const RsGxsGroupId &groupId) = 0;

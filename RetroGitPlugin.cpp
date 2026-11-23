@@ -40,6 +40,8 @@
 #include "pqi/p3cfgmgr.h"
 
 #include <retroshare/rsinit.h>
+#include "gui/RetroShareLink.h"
+#include "interface/rsGit.h"
 #include <retroshare/rsplugin.h>
 #include <retroshare/rsversion.h>
 #include <retroshare/rsreputations.h>
@@ -114,6 +116,11 @@ RetroGitPlugin::RetroGitPlugin()
 
 RetroGitPlugin::~RetroGitPlugin()
 {
+#ifdef RSLINK_HAS_PLUGIN_HOSTS
+	// RetroShare unloads this library right after deleting the plugin: its
+	// link handler must not outlive it, even if the page was never destroyed.
+	RetroShareLink::unregisterPluginHost(RETROGIT_LINK_HOST);
+#endif
 	delete mRetroGitNotify;
     GitManager::shutdown();
 }

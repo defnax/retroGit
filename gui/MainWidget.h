@@ -34,6 +34,7 @@
 #include <retroshare/rsgxsifacetypes.h>
 
 #include <QPoint>
+#include <QUrl>
 #include <QPointer>
 #include <QWidget>
 #include <set>
@@ -152,6 +153,11 @@ public:
     QString getSelectedGroupId() const;
     /** Show a single non-modal notice (safe to call from event handlers). */
     void showNotice(const QString &title, const QString &text);
+    /** Open a retroshare://git link (repository, commit or pull request). */
+    bool openLink(const QUrl &url);
+    /** Copy a RetroShare link to a repository, or to one of its commits or pull requests. */
+    void copyRetroGitLink(const QString &groupId, const QString &name,
+                          const QString &commit = QString(), const QString &prMsgId = QString());
     class GitWidget* getGitWidget() const { return mGitWidget; }
     class CodeWidget* getCodeWidget() const { return mCodeWidget; }
 
@@ -193,6 +199,14 @@ private:
     void checkNewPostNotices(const RsGxsGroupId &groupId);
     void processSettings(bool load);
     void applyRetroGitLightStyles();
+    QString retroGitLink(const QString &groupId, const QString &name, const QString &commit, const QString &prMsgId) const;
+    /** Select what mPendingLink points to once its repository is listed. */
+    void applyPendingLink();
+
+    QUrl mPendingLink;
+    qint64 mPendingLinkStarted = 0;
+    bool mPendingLinkImported = false;
+    bool mPendingLinkReloaded = false;
 
     QTreeWidgetItem *mActiveGroupsItem;
     int mGroupSet = 0;

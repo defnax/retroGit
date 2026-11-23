@@ -91,6 +91,8 @@ public:
     virtual void setMessageReadStatus(uint32_t &token,const RsGxsGrpMsgIdPair &msgId,bool read) override;
     virtual bool requestOfflineClone(const RsGxsGroupId &groupId, const std::string &localPath) override;
     virtual bool requestOfflinePull(const RsGxsGroupId &groupId, const std::string &localPath) override;
+    bool exportGitLink(std::string &link, const RsGxsGroupId &groupId, bool includeGxsData, std::string &errMsg) override;
+    bool importGitLink(const std::string &link, RsGxsGroupId &groupId, std::string &errMsg) override;
     virtual bool isCloneInProgress(const RsGxsGroupId &groupId) override;
     virtual bool getGitStatistics(GxsServiceStatistic &stats) override;
 

@@ -978,12 +978,14 @@ void GitWidget::onCommitTableContextMenu(const QPoint &pos)
     QAction *actionDiff = nullptr;
     QAction *actionDiscard = nullptr;
     QAction *actionMarkRead = nullptr;
+    QAction *actionCopyLink = nullptr;
 
     if (fullHash == "LOCAL_CHANGES") {
         actionDiff = menu.addAction(tr("Show Diff of Local Changes"));
         actionDiscard = menu.addAction(tr("Discard Changes"));
     } else {
         actionDiff = menu.addAction(tr("Show Commit Diff"));
+        actionCopyLink = menu.addAction(tr("Copy RetroShare Link"));
         actionMarkRead = menu.addAction(tr("Mark Repository As Read"));
     }
 
@@ -1007,6 +1009,9 @@ void GitWidget::onCommitTableContextMenu(const QPoint &pos)
                 }
             }
         }
+    } else if (selected == actionCopyLink) {
+        const QTableWidgetItem *messageItem = ui->mCommitTable->item(row, 1);
+        mMainWidget->copyRetroGitLink(mGroupId, messageItem ? messageItem->text() : fullHash.left(8), fullHash);
     } else if (selected == actionMarkRead) {
         mMainWidget->markRepositoryAsRead();
     }
@@ -1445,9 +1450,38 @@ void GitWidget::populateCommitLog(const std::vector<GitLocalChange> *workingChan
     ui->mBtnPush->setEnabled(isAdmin && pathExists && !mPushInProgress);
     ui->mBtnPush->setToolTip(tr("Publish local commits to this repository."));
     ui->mBtnCommit->setEnabled(hasPath && pathExists && isAdmin && hasLocalChanges);
+
+    applyPendingCommit(true);
 }
 
 QString GitWidget::getLocalPath() const
 {
     return mLocalPath;
+}
+
+void GitWidget::selectCommit(const QString &hash)
+{
+    mPendingCommit = hash.trimmed().toLower();
+    if (!applyPendingCommit(false))
+        refresh(); // selected once the log is loaded
+}
+
+bool GitWidget::applyPendingCommit(bool showIfMissing)
+{
+    if (mPendingCommit.isEmpty()) return false;
+    for (int row = 0; row < ui->mCommitTable->rowCount(); ++row) {
+        QTableWidgetItem *item = ui->mCommitTable->item(row, 0);
+        if (item && item->data(Qt::UserRole).toString() == mPendingCommit) {
+            mPendingCommit.clear();
+            ui->mCommitTable->selectRow(row);
+            ui->mCommitTable->scrollToItem(item);
+            return true;
+        }
+    }
+    if (!showIfMissing) return false;
+    // Not in the visible log (older, or not checked out): show it from the repository copy.
+    const QString hash = mPendingCommit;
+    mPendingCommit.clear();
+    mMainWidget->showCommitDetails(hash, QString::fromStdString(GitManager::getBareRepoPath(mGroupId.toStdString())));
+    return false;
 }
