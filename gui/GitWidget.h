@@ -51,6 +51,8 @@ public:
     void clear();
     void refresh();
     QString getLocalPath() const;
+    /** Select a commit in the log (opened from a RetroShare link). */
+    void selectCommit(const QString &hash);
     /** Last background status of the working folder, if it is for this path. */
     bool cachedLocalChanges(const std::string &path, std::vector<GitLocalChange> &changes) const;
 
@@ -85,6 +87,8 @@ private:
     QString mLocalPath;
 
     QString mLastGroupId;
+    QString mPendingCommit;   // commit to select once the log has loaded
+    bool applyPendingCommit(bool showIfMissing);
     std::string mLastRepoPath;
     std::string mLastSelectedBranch;
     std::vector<std::string> mLastCommitHashes;

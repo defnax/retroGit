@@ -27,6 +27,11 @@
 #include "GitCommitDialog.h"
 #include "GitGroupDialog.h"
 #include "ui_MainWidget.h"
+#include "gui/MainWindow.h"
+#include "gui/RetroShareLink.h"
+#include <QApplication>
+#include <QClipboard>
+#include <QUrlQuery>
 
 #include "gui/common/RSTreeWidget.h"
 #include "gui/gxs/GxsIdDetails.h"
@@ -249,6 +254,13 @@ MainWidget::MainWidget(QWidget *parent, RetroGitNotify *notify):
     connect(newGroupButton, SIGNAL(clicked()), this, SLOT(createGroup()));
     connect(ui->treeWidget->treeWidget(), SIGNAL(itemSelectionChanged()), this, SLOT(onTreeSelectionChanged()));
 
+#ifdef RSLINK_HAS_PLUGIN_HOSTS
+    // retroshare://git?... links in chats, mails and forums open here.
+    QPointer<MainWidget> linkTarget(this);
+    RetroShareLink::registerPluginHost(RETROGIT_LINK_HOST, tr("RetroGit repository"),
+        [linkTarget](const QUrl &url) { return linkTarget && linkTarget->openLink(url); });
+#endif
+
     // Create F5 shortcut for silent repository refresh
     QShortcut *refreshShortcut = new QShortcut(QKeySequence(Qt::Key_F5), this);
     connect(refreshShortcut, SIGNAL(activated()), this, SLOT(refreshCurrentRepo()));
@@ -328,6 +340,9 @@ void MainWidget::applyRetroGitLightStyles()
 
 MainWidget::~MainWidget()
 {
+#ifdef RSLINK_HAS_PLUGIN_HOSTS
+    RetroShareLink::unregisterPluginHost(RETROGIT_LINK_HOST);
+#endif
     if (rsEvents)
         rsEvents->unregisterEventsHandler(mEventHandlerId);
 
@@ -541,6 +556,10 @@ void MainWidget::insertGroupsData(const std::list<RsGroupMetaData> &gitList)
   }
 
   ui->treeWidget->fillGroupItems(mActiveGroupsItem, activeList);
+
+  // A link waits for its repository to be listed.
+  if (!mPendingLink.isEmpty())
+    QTimer::singleShot(0, this, [this]() { applyPendingLink(); });
 }
 
 void MainWidget::selectGroupSet(int index)
@@ -776,6 +795,10 @@ void MainWidget::groupListCustomPopupMenu(QPoint /*point*/)
             action->setEnabled(true);
         }
     }
+
+    contextMnu.addSeparator();
+    action = contextMnu.addAction(QIcon(), tr("Copy RetroShare Link"));
+    connect(action, &QAction::triggered, this, [this, groupId]() { copyRetroGitLink(groupId, QString()); });
 
     contextMnu.exec(QCursor::pos());
 }
@@ -1916,8 +1939,133 @@ void MainWidget::showPullRequestDetails(const QString &groupId, const RsGxsMessa
     }
 }
 
+/* ------------------------------------------------------------------------ */
+/* RetroShare links                                                          */
+/* ------------------------------------------------------------------------ */
 
+namespace {
+// Repository links carry the signed repository group only while the link stays
+// a reasonable size for chats and mails (milestones can make the group large).
+const int MAX_LINK_WITH_DATA = 16 * 1024;
+}
 
+QString MainWidget::retroGitLink(const QString &groupId, const QString &name, const QString &commit, const QString &prMsgId) const
+{
+    const RsGxsGroupId gid(groupId.toStdString());
+    if (gid.isNull() || !rsGit) return QString();
 
+    if (commit.isEmpty() && prMsgId.isEmpty()) {
+        std::string link, error;
+        if (rsGit->exportGitLink(link, gid, true, error) && link.size() <= size_t(MAX_LINK_WITH_DATA))
+            return QString::fromStdString(link);
+        if (rsGit->exportGitLink(link, gid, false, error))
+            return QString::fromStdString(link);
+        return QString();
+    }
 
+    QUrl url;
+    url.setScheme("retroshare");
+    url.setHost(RETROGIT_LINK_HOST);
+    QUrlQuery query;
+    query.addQueryItem(RETROGIT_LINK_NAME, QString::fromLatin1(QUrl::toPercentEncoding(name)));
+    query.addQueryItem(RETROGIT_LINK_ID, groupId);
+    if (!commit.isEmpty()) query.addQueryItem(RETROGIT_LINK_COMMIT, commit);
+    if (!prMsgId.isEmpty()) query.addQueryItem(RETROGIT_LINK_PR, prMsgId);
+    url.setQuery(query);
+    return url.toString(QUrl::FullyEncoded);
+}
 
+void MainWidget::copyRetroGitLink(const QString &groupId, const QString &name, const QString &commit, const QString &prMsgId)
+{
+    const QString link = retroGitLink(groupId, name, commit, prMsgId);
+    if (link.isEmpty()) {
+        showNotice(tr("Copy RetroShare Link"), tr("Could not create a link for this repository."));
+        return;
+    }
+#ifdef RSLINK_HAS_PLUGIN_HOSTS
+    // As an HTML link, so it pastes as a clickable link in chats, mails and forums.
+    const RetroShareLink rsLink(QUrl::fromEncoded(link.toUtf8()));
+    if (rsLink.valid()) {
+        RSLinkClipboard::copyLinks(QList<RetroShareLink>() << rsLink);
+        return;
+    }
+#endif
+    QApplication::clipboard()->setText(link);
+}
+
+bool MainWidget::openLink(const QUrl &url)
+{
+    const QUrlQuery query(url);
+    const RsGxsGroupId gid(query.queryItemValue(RETROGIT_LINK_ID).toStdString());
+    if (gid.isNull()) return false;
+
+    MainWindow::showWindow(this);
+    mPendingLink = url;
+    mPendingLinkStarted = QDateTime::currentMSecsSinceEpoch();
+    mPendingLinkImported = false;
+    mPendingLinkReloaded = false;
+    applyPendingLink();
+    return true;
+}
+
+void MainWidget::applyPendingLink()
+{
+    if (mPendingLink.isEmpty()) return;
+    const QUrlQuery query(mPendingLink);
+    const QString groupId = query.queryItemValue(RETROGIT_LINK_ID);
+    const RsGxsGroupId gid(groupId.toStdString());
+
+    std::vector<RsGitGroup> groups;
+    const bool known = rsGit && rsGit->getGroups({gid}, groups) && !groups.empty();
+    if (!known) {
+        // Add the repository the link carries; it is validated like a received one.
+        const QString data = query.queryItemValue(RETROGIT_LINK_DATA, QUrl::FullyDecoded);
+        if (!mPendingLinkImported && !data.isEmpty() && rsGit) {
+            mPendingLinkImported = true;
+            std::string error;
+            RsGxsGroupId imported;
+            if (rsGit->importGitLink(data.toStdString(), imported, error) && imported == gid) {
+                showNotice(tr("Adding Repository"),
+                           tr("The repository from this link is being added. It opens as soon as RetroShare has verified it."));
+                return; // the repository list reloads when it arrives
+            }
+            mPendingLink.clear();
+            showNotice(tr("Repository Link"), tr("The repository in this link could not be added. %1")
+                       .arg(QString::fromStdString(error)));
+            return;
+        }
+        // Still being verified: wait for the repository to arrive (at most 2 minutes).
+        if (mPendingLinkImported && QDateTime::currentMSecsSinceEpoch() - mPendingLinkStarted < 120000) return;
+        mPendingLink.clear();
+        showNotice(tr("Repository Not Found"),
+                   tr("This repository has not reached you yet. Ask for a repository link, "
+                      "or wait until RetroShare has synchronized it."));
+        return;
+    }
+
+    if (!ui->treeWidget->activateId(groupId, false)) {
+        // Known, but not in the current list: show all repositories and retry
+        // once the list has been reloaded.
+        if (mGroupSet != 0) {
+            ui->comboBox->setCurrentIndex(0);
+            return;
+        }
+        if (!mPendingLinkReloaded) {
+            mPendingLinkReloaded = true;
+            updateDisplay();
+            return;
+        }
+        mPendingLink.clear();
+        return;
+    }
+
+    mPendingLink.clear();
+    const QString commit = query.queryItemValue(RETROGIT_LINK_COMMIT);
+    const QString pr = query.queryItemValue(RETROGIT_LINK_PR);
+    if (!pr.isEmpty()) {
+        showPullRequestDetails(groupId, RsGxsMessageId(pr.toStdString()));
+    } else if (!commit.isEmpty() && mGitWidget) {
+        ui->rightPaneTabWidget->setCurrentWidget(mGitWidget);
+        mGitWidget->selectCommit(commit);
+    }
+}

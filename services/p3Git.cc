@@ -35,6 +35,8 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QVariantMap>
+#include <QUrl>
+#include <QUrlQuery>
 #include <retroshare/rsfiles.h>
 #include <retroshare/rsgxscircles.h>
 #include <retroshare/rsservicecontrol.h>
@@ -1477,4 +1479,43 @@ bool p3Git::isCloneInProgress(const RsGxsGroupId &groupId)
     RS_STACK_MUTEX(mRetroGitMtx);
     auto offline = mPendingOffline.find(groupId);
     return offline != mPendingOffline.end() && !offline->second.isPull;
+}
+
+/* ------------------------------------------------------------------------ */
+/* RetroShare links                                                          */
+/* ------------------------------------------------------------------------ */
+
+bool p3Git::exportGitLink(std::string &link, const RsGxsGroupId &groupId, bool includeGxsData, std::string &errMsg)
+{
+    link.clear();
+    if (groupId.isNull()) { errMsg = "repository id cannot be null"; return false; }
+    std::vector<RsGitGroup> groups;
+    if (!getGroups({groupId}, groups) || groups.empty()) { errMsg = "unknown repository"; return false; }
+
+    std::string radix;
+    if (includeGxsData && !RsGenExchange::exportGroupBase64(radix, groupId, errMsg)) return false;
+
+    // Same encoding as RetroShare's own links: values percent-encoded, read back FullyDecoded.
+    QUrl url;
+    url.setScheme("retroshare");
+    url.setHost(RETROGIT_LINK_HOST);
+    QUrlQuery query;
+    query.addQueryItem(RETROGIT_LINK_NAME, QString::fromLatin1(QUrl::toPercentEncoding(QString::fromUtf8(groups.front().mMeta.mGroupName.c_str()))));
+    query.addQueryItem(RETROGIT_LINK_ID, QString::fromStdString(groupId.toStdString()));
+    if (!radix.empty())
+        query.addQueryItem(RETROGIT_LINK_DATA, QString::fromLatin1(QUrl::toPercentEncoding(QString::fromStdString(radix))));
+    url.setQuery(query);
+    link = url.toString(QUrl::FullyEncoded).toStdString();
+    return true;
+}
+
+bool p3Git::importGitLink(const std::string &link, RsGxsGroupId &groupId, std::string &errMsg)
+{
+    std::string radix = link;
+    const QUrl url(QString::fromStdString(link));
+    if (url.scheme() == "retroshare")
+        radix = QUrlQuery(url).queryItemValue(RETROGIT_LINK_DATA, QUrl::FullyDecoded).toStdString();
+    if (radix.empty()) { errMsg = "the link carries no repository data"; return false; }
+    // Imported as "pending validation": signatures are checked like for any received group.
+    return RsGenExchange::importGroupBase64(radix, groupId, errMsg);
 }
