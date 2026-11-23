@@ -65,7 +65,7 @@
          <string/>
         </property>
         <property name="pixmap">
-         <pixmap resource="images.qrc">:/images/git.png</pixmap>
+         <pixmap resource="RetroGit_images.qrc">:/images/git.png</pixmap>
         </property>
         <property name="scaledContents">
          <bool>true</bool>
@@ -422,7 +422,7 @@
   </customwidget>
  </customwidgets>
  <resources>
-  <include location="images.qrc"/>
+  <include location="RetroGit_images.qrc"/>
  </resources>
  <connections/>
 </ui>

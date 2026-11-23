@@ -209,7 +209,7 @@ QIcon *RetroGitPlugin::qt_icon() const
 {
 	if (mIcon == NULL)
 	{
-		Q_INIT_RESOURCE(images);
+		Q_INIT_RESOURCE(RetroGit_images);
 
 		mIcon = new QIcon(IMAGE_GIT);
 	}

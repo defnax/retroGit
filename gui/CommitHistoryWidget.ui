@@ -78,7 +78,7 @@
         <string>Reload</string>
        </property>
        <property name="icon">
-        <iconset resource="images.qrc">
+        <iconset resource="RetroGit_images.qrc">
          <normaloff>:/images/sync.png</normaloff>:/images/sync.png</iconset>
        </property>
        <property name="autoRaise">
@@ -165,7 +165,7 @@
   </layout>
  </widget>
  <resources>
-  <include location="images.qrc"/>
+  <include location="RetroGit_images.qrc"/>
  </resources>
  <connections/>
 </ui>

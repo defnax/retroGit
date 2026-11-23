@@ -64,7 +64,7 @@
         <string>Clone Repository</string>
        </property>
        <property name="icon">
-        <iconset resource="images.qrc">
+        <iconset resource="RetroGit_images.qrc">
          <normaloff>:/images/terminal-16_.png</normaloff>:/images/terminal-16_.png</iconset>
        </property>
       </widget>
@@ -75,7 +75,7 @@
         <string>Commit Changes</string>
        </property>
        <property name="icon">
-        <iconset resource="images.qrc">
+        <iconset resource="RetroGit_images.qrc">
          <normaloff>:/images/commit-24_.png</normaloff>:/images/commit-24_.png</iconset>
        </property>
       </widget>
@@ -86,7 +86,7 @@
         <string>Push / Publish</string>
        </property>
        <property name="icon">
-        <iconset resource="images.qrc">
+        <iconset resource="RetroGit_images.qrc">
          <normaloff>:/images/repo-push.png</normaloff>:/images/repo-push.png</iconset>
        </property>
       </widget>
@@ -97,7 +97,7 @@
         <string>Sync / Pull</string>
        </property>
        <property name="icon">
-        <iconset resource="images.qrc">
+        <iconset resource="RetroGit_images.qrc">
          <normaloff>:/images/sync.png</normaloff>:/images/sync.png</iconset>
        </property>
       </widget>
@@ -108,7 +108,7 @@
         <string>Rebase on Upstream</string>
        </property>
        <property name="icon">
-        <iconset resource="images.qrc">
+        <iconset resource="RetroGit_images.qrc">
          <normaloff>:/images/git-compare.png</normaloff>:/images/git-compare.png</iconset>
        </property>
       </widget>
@@ -119,7 +119,7 @@
         <string>Fork Repository</string>
        </property>
        <property name="icon">
-        <iconset resource="images.qrc">
+        <iconset resource="RetroGit_images.qrc">
          <normaloff>:/images/Git-fork.png</normaloff>:/images/Git-fork.png</iconset>
        </property>
       </widget>
@@ -152,7 +152,7 @@
   </layout>
  </widget>
  <resources>
-  <include location="images.qrc"/>
+  <include location="RetroGit_images.qrc"/>
  </resources>
  <connections/>
 </ui>

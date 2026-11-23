@@ -104,4 +104,4 @@ FORMS += \
           gui/PullRequestDetailsWidget.ui \
           gui/PushesWidget.ui \
 
-RESOURCES = gui/images.qrc
+RESOURCES = gui/RetroGit_images.qrc
