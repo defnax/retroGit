@@ -1114,7 +1114,7 @@ bool MainWidget::hashPackFile(const QString &tempFilePath, RsGxsFile &attachment
         return false;
     }
     TransferRequestFlags flags = RS_FILE_REQ_ANONYMOUS_ROUTING;
-    rsFiles->ExtraFileHash(tempFilePath.toStdString(), 3600 * 24 * 30, flags);
+    rsFiles->ExtraFileHash(tempFilePath.toStdString(), RETROGIT_PACK_SHARE_PERIOD, flags);
 
     FileInfo fi;
     // 60 s plus one second per MiB: large repositories take a while to hash,

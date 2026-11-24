@@ -69,3 +69,9 @@ temp/obj/moc_MilestoneDialog.o
 temp/obj/moc_MilestonesWidget.o
 temp/ui/ui_MilestoneDialog.h
 temp/ui/ui_MilestonesWidget.h
+temp/moc/moc_CommitHistoryWidget.cpp
+temp/obj/CommitHistoryWidget.o
+temp/obj/moc_CommitHistoryWidget.o
+temp/obj/qrc_RetroGit_images.o
+temp/qrc/qrc_RetroGit_images.cpp
+temp/ui/ui_CommitHistoryWidget.h

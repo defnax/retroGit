@@ -42,6 +42,9 @@ static const uint32_t CONFIG_TYPE_RetroGit_PLUGIN = 0xe001;
 /** Largest pack sent inside a GXS message; bigger packs are attached as files.
  *  Keeps every RetroGit message well below RetroShare's 262143 byte item limit. */
 static const size_t RETROGIT_MAX_INLINE_PACK = 180000;
+// Published packs stay shared (anonymous routing) this long, by the publisher and
+// by everyone who downloaded them: longer than GXS keeps the update messages (~1 year).
+static const uint32_t RETROGIT_PACK_SHARE_PERIOD = 3600 * 24 * 730;
 /** Longest pull request description accepted for publication. */
 static const size_t RETROGIT_MAX_DESCRIPTION = 16000;
 

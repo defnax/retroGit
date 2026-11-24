@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <ctime>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -62,6 +63,17 @@ bool applyIfAlreadyPresent(const std::string &repoPath, const std::map<std::stri
     for (const auto &ref : allRefs) targets.insert(ref.second);
     return GitManager::filterExistingCommits(repoPath, targets).size() == targets.size() &&
            GitManager::applyRefUpdates(repoPath, refsToApply);
+}
+
+// Offer a downloaded pack to everyone (anonymous routing), so clones and pulls
+// still work while its publisher is offline. Shared once: RetroShare keeps its
+// extra files across restarts until the period ends.
+void sharePackFile(const std::string &path)
+{
+    if (!rsFiles || path.empty()) return;
+    FileInfo info;
+    if (rsFiles->ExtraFileStatus(path, info)) return; // already shared (e.g. our own push)
+    rsFiles->ExtraFileHash(path, RETROGIT_PACK_SHARE_PERIOD, TransferRequestFlags(RS_FILE_REQ_ANONYMOUS_ROUTING));
 }
 
 // Path of a published pack available on this computer. A finished download
@@ -843,6 +855,7 @@ void p3Git::unpackDownloadedJob(const PendingPackfile &pending)
     bool unpacked = false;
     if (findPackFile(pending.fileHash, pending.fileName, pending.fileSize, packPath)) {
         std::cout << "p3Git: Pending packfile downloaded: " << packPath << ", unpacking..." << std::endl;
+        sharePackFile(packPath);
         const auto refs = refsNotOlderThan(pending.groupId, pending.refUpdates, pending.publishTs);
         unpacked = applyIfAlreadyPresent(repoPath, pending.refUpdates, refs) ||
                    GitManager::unpackPackfileFromFile(repoPath, packPath, refs);
@@ -1316,9 +1329,22 @@ void p3Git::startOfflineJob(const RsGxsGroupId &groupId)
     };
 
     const std::string barePath = GitManager::getBareRepoPath(groupId.toStdString());
-    if (!GitManager::isValidRepository(barePath) && !GitManager::initRepository(barePath, true)) {
-        abort(label + ": failed to initialize local bare repository.");
-        return;
+    if (!GitManager::isValidRepository(barePath)) {
+        // The local copy is only a cache of the published updates. A broken one
+        // (e.g. from an interrupted clone) is moved aside and rebuilt.
+        std::error_code ec;
+        const auto bare = std::filesystem::u8path(barePath);
+        if (std::filesystem::exists(bare, ec)) {
+            const auto aside = std::filesystem::u8path(barePath + ".broken-" + std::to_string(time(nullptr)));
+            std::filesystem::rename(bare, aside, ec);
+            std::cerr << "p3Git: " << label << ": moved broken local repository to " << aside.u8string()
+                      << (ec ? " failed: " + ec.message() : std::string()) << std::endl;
+        }
+        std::string error;
+        if (!GitManager::initRepository(barePath, true, &error)) {
+            abort(label + " failed: the local repository could not be created (" + error + ").");
+            return;
+        }
     }
 
     MsgCache messages;
@@ -1327,6 +1353,11 @@ void p3Git::startOfflineJob(const RsGxsGroupId &groupId)
         return;
     }
     std::vector<RsGitUpdate> &updates = messages.updates;
+    if (updates.empty()) {
+        abort(label + " failed: no updates of this repository have been received yet. "
+              "They arrive from friends who are subscribed to it; wait a while, then retry.");
+        return;
+    }
     std::sort(updates.begin(), updates.end(), [](const RsGitUpdate &a, const RsGitUpdate &b) {
         return a.mMeta.mPublishTs < b.mMeta.mPublishTs;
     });
@@ -1339,6 +1370,7 @@ void p3Git::startOfflineJob(const RsGxsGroupId &groupId)
         IncompleteUpdate entry;
         entry.refUpdates = update.mRefUpdates;
         entry.publishTs = update.mMeta.mPublishTs;
+        entry.name = update.mMeta.mMsgName;
         inOrder.push_back(std::make_pair(update.mMeta.mMsgId, entry));
         // "Processed" only means the update was applied once; the local copy may
         // have been reset since. Check the commits themselves instead.
@@ -1415,6 +1447,7 @@ void p3Git::finalizeOfflineJob(const RsGxsGroupId &groupId)
 
     // Packs may have completed in any order: apply branch updates in publish order now.
     bool allApplied = true;
+    std::vector<const IncompleteUpdate *> notApplied; // in publish order
     for (const auto &update : offline.updatesInOrder) {
         const auto refs = refsNotOlderThan(groupId, update.second.refUpdates, update.second.publishTs);
         if (GitManager::applyRefUpdates(barePath, refs)) {
@@ -1427,6 +1460,7 @@ void p3Git::finalizeOfflineJob(const RsGxsGroupId &groupId)
             setMessageProcessedStatus(token, RsGxsGrpMsgIdPair(groupId, update.first), true);
         } else {
             allApplied = false;
+            notApplied.push_back(&update.second);
         }
     }
     if (!allApplied)
@@ -1440,9 +1474,19 @@ void p3Git::finalizeOfflineJob(const RsGxsGroupId &groupId)
             RS_STACK_MUTEX(mRetroGitMtx);
             mPendingOffline.erase(groupId);
         }
-        postCloneStatus(groupId, std::string(offline.isPull ? "Pull" : "Clone") +
-            " failed: the history of the published updates is incomplete on this computer. "
-            "Wait until RetroShare has received all updates of this repository, then retry.", false);
+        std::string reason = std::string(offline.isPull ? "Pull" : "Clone") +
+            " failed: the history of the published updates is incomplete on this computer.";
+        if (!notApplied.empty()) {
+            // The first update that cannot be applied lacks commits of an older one:
+            // at least one update published before it has not arrived here.
+            const IncompleteUpdate &first = *notApplied.front();
+            reason += " " + std::to_string(notApplied.size()) + " of " + std::to_string(offline.updatesInOrder.size()) +
+                      " received updates cannot be applied. The first is \"" + first.name + "\" from " +
+                      GitManager::formatTime(static_cast<int64_t>(first.publishTs)) +
+                      "; at least one update published before it is missing.";
+        }
+        reason += " Wait until the missing updates arrive, or ask the owner to publish a full snapshot, then retry.";
+        postCloneStatus(groupId, reason, false);
         return;
     }
 

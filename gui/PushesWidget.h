@@ -67,6 +67,8 @@ private slots:
     void onClonesTableContextMenu(const QPoint &pos);
 
 private:
+    /** Status / Progress cell of a push: a progress bar (percent < 0: empty bar). */
+    void setPackStatus(int row, int percent, const QString &text, const QString &toolTip = QString());
     void populatePackfiles();
     void populateClonesTable();
     void scheduleClonesTableUpdate();

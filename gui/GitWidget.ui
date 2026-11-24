@@ -92,6 +92,20 @@
       </widget>
      </item>
      <item>
+      <widget class="QPushButton" name="mBtnSnapshot">
+       <property name="toolTip">
+        <string>Publish all commits, branches and tags again as one self-contained update. Anyone can clone from it alone, even when older updates are missing.</string>
+       </property>
+       <property name="text">
+        <string>Publish Full Snapshot</string>
+       </property>
+       <property name="icon">
+        <iconset resource="RetroGit_images.qrc">
+         <normaloff>:/images/database_.png</normaloff>:/images/database_.png</iconset>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QPushButton" name="mBtnPull">
        <property name="text">
         <string>Sync / Pull</string>

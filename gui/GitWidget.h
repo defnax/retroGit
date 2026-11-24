@@ -60,6 +60,7 @@ private slots:
     void onForkClicked();
     void onCommitClicked();
     void onPushClicked();
+    void onSnapshotClicked();
     void onPullClicked();
     void onRebaseClicked();
     void onCommitSelectionChanged();

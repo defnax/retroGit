@@ -95,6 +95,7 @@ GitWidget::GitWidget(MainWidget *mainWidget, QWidget *parent)
     connect(ui->mBtnClone, &QPushButton::clicked, this, &GitWidget::onCloneClicked);
     connect(ui->mBtnCommit, &QPushButton::clicked, this, &GitWidget::onCommitClicked);
     connect(ui->mBtnPush, &QPushButton::clicked, this, &GitWidget::onPushClicked);
+    connect(ui->mBtnSnapshot, &QPushButton::clicked, this, &GitWidget::onSnapshotClicked);
     connect(ui->mBtnPull, &QPushButton::clicked, this, &GitWidget::onPullClicked);
     connect(ui->mBtnRebase, &QPushButton::clicked, this, &GitWidget::onRebaseClicked);
     connect(ui->mCommitTable, &QTableWidget::itemSelectionChanged, this, &GitWidget::onCommitSelectionChanged);
@@ -125,6 +126,7 @@ void GitWidget::clear()
     ui->mBtnClone->setEnabled(false);
     ui->mBtnCommit->setEnabled(false);
     ui->mBtnPush->setEnabled(false);
+    ui->mBtnSnapshot->setVisible(false);
     ui->mBtnPull->setEnabled(false);
     ui->mBtnRebase->setVisible(false);
     ui->mBtnRebase->setEnabled(false);
@@ -219,6 +221,8 @@ void GitWidget::refresh()
     ui->mBtnRebase->setEnabled(isFork && isCloned);
     ui->mBtnFork->setEnabled(mPendingForkPath.isEmpty());
     ui->mBtnPush->setEnabled(isAdmin && isCloned && !mPushInProgress);
+    ui->mBtnSnapshot->setVisible(isAdmin);
+    ui->mBtnSnapshot->setEnabled(isAdmin && !mPushInProgress);
     ui->mBtnPush->setToolTip(tr("Publish local commits to this repository."));
     ui->mBtnInitialize->setVisible(isAdmin && !isCloned);
     ui->mBtnInitialize->setEnabled(isAdmin && !isCloned);
@@ -878,6 +882,7 @@ void GitWidget::onPushClicked()
     const QString packPath = mMainWidget->newTempPackPath(groupId);
     mPushInProgress = true;
     ui->mBtnPush->setEnabled(false);
+    ui->mBtnSnapshot->setEnabled(false);
 
     QPointer<GitWidget> self(this);
     MainWidget *mainWidget = mMainWidget;
@@ -925,6 +930,67 @@ void GitWidget::onPushClicked()
             update.mMeta.mGroupId = RsGxsGroupId(groupId.toStdString());
             update.mRefUpdates = refUpdates;
             update.mMeta.mMsgName = QString("New Commit: %1").arg(QString::fromStdString(result->commitMsg)).toStdString();
+            mainWidget->publishPackFile(groupId, packPath, result->size, update);
+        });
+}
+
+// Publish everything this repository has published so far again, as one update
+// that does not depend on older ones: repairs clones when old updates are missing.
+void GitWidget::onSnapshotClicked()
+{
+    if (mGroupId.isEmpty() || mPushInProgress) return;
+    const QString groupId = mGroupId;
+    // The serving cache holds exactly the published state: no unpublished local
+    // commits, and no branch is moved back to an older local position.
+    const std::string bareRepoPath = GitManager::getBareRepoPath(groupId.toStdString());
+    std::map<std::string, std::string> refs;
+    if (!GitManager::isValidRepository(bareRepoPath) || !GitManager::getPublishableRefs(bareRepoPath, refs) || refs.empty()) {
+        QMessageBox::information(this, tr("Nothing to Publish"),
+            tr("This computer has no published state of this repository yet. Use Push / Publish first."));
+        return;
+    }
+    if (QMessageBox::question(this, tr("Publish Full Snapshot"),
+            tr("Publish all commits, branches and tags of this repository again as one self-contained update?\n\n"
+               "Anyone can clone from this update alone, even when older updates are missing on their computer. "
+               "It is as large as the whole repository."),
+            QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    struct SnapshotResult { uint64_t size = 0; std::map<std::string, std::string> refs; };
+    auto result = std::make_shared<SnapshotResult>();
+    const QString packPath = mMainWidget->newTempPackPath(groupId);
+    mPushInProgress = true;
+    ui->mBtnPush->setEnabled(false);
+    ui->mBtnSnapshot->setEnabled(false);
+
+    QPointer<GitWidget> self(this);
+    MainWidget *mainWidget = mMainWidget;
+    mMainWidget->runWithProgress(tr("Publishing full snapshot..."),
+        [bareRepoPath, packPath, result](RetroGitProgress &progress, QString &failure) {
+            bool canceled = false;
+            // No known commits: the pack contains every object of every branch and tag.
+            if (!GitManager::createPackfileToFile(bareRepoPath, packPath.toStdString(), result->refs, {},
+                                                  &result->size, progress.reporter(), &canceled) || result->refs.empty()) {
+                if (!canceled) failure = QObject::tr("Failed to create the packfile. Check disk space and retry.");
+                return false;
+            }
+            return true;
+        },
+        [self, mainWidget, groupId, packPath, result](bool ok, const QString &failure) {
+            if (self) {
+                self->mPushInProgress = false;
+                self->refresh();
+            }
+            if (!ok) {
+                QFile::remove(packPath);
+                if (!failure.isEmpty()) QMessageBox::critical(self, QObject::tr("Snapshot Failed"), failure);
+                return;
+            }
+            RsGitUpdate update;
+            update.mMeta.mGroupId = RsGxsGroupId(groupId.toStdString());
+            update.mRefUpdates = result->refs; // every branch and tag, so this update alone is enough
+            update.mMeta.mMsgName = QObject::tr("Full snapshot: %1 branches and tags")
+                                        .arg(result->refs.size()).toStdString();
             mainWidget->publishPackFile(groupId, packPath, result->size, update);
         });
 }
@@ -1443,6 +1509,8 @@ void GitWidget::populateCommitLog(const std::vector<GitLocalChange> *workingChan
     bool pathExists = hasPath && QDir(QDir::cleanPath(rawPath)).exists();
 
     ui->mBtnPush->setEnabled(isAdmin && pathExists && !mPushInProgress);
+    ui->mBtnSnapshot->setVisible(isAdmin);
+    ui->mBtnSnapshot->setEnabled(isAdmin && !mPushInProgress);
     ui->mBtnPush->setToolTip(tr("Publish local commits to this repository."));
     ui->mBtnCommit->setEnabled(hasPath && pathExists && isAdmin && hasLocalChanges);
 }

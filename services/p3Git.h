@@ -109,6 +109,7 @@ private:
     struct IncompleteUpdate {
         std::map<std::string, std::string> refUpdates;
         rstime_t publishTs = 0;
+        std::string name; // message name, for error messages
     };
 
     /** Offline clone or pull waiting for published packs to download. */
